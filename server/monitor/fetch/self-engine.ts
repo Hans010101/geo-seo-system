@@ -1,5 +1,4 @@
-// L1: self-hosted scrape — plain fetch + readability + turndown. Free. Wins on most 中文 stations.
-import { JSDOM, VirtualConsole } from "jsdom";
+import { parseHTML } from "linkedom";
 import { Readability } from "@mozilla/readability";
 import TurndownService from "turndown";
 import type { FetchEngine, FetchResult } from "./types";
@@ -36,9 +35,8 @@ export const selfEngine: FetchEngine = {
       const resp = await timedFetch(url);
       if (!resp.ok) return { success: false, engine: "self", costUsd: 0, status: "failed", error: `HTTP ${resp.status}` };
       const html = await resp.text();
-      const vc = new VirtualConsole(); // swallow noisy CSS/JS parse errors from jsdom
-      const dom = new JSDOM(html, { url, virtualConsole: vc });
-      const article = new Readability(dom.window.document).parse();
+      const { document } = parseHTML(html);
+      const article = new Readability(document as any).parse();
       const text = (article?.textContent || "").replace(/\s+/g, " ").trim();
       if (text.length < MIN_FULL_CHARS) {
         return { success: false, engine: "self", costUsd: 0, status: "failed", error: "content too short" };
