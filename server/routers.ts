@@ -1869,7 +1869,7 @@ const schedulerState = {
 };
 
 async function initScheduler() {
-  if (typeof (globalThis as any).__CF_ENV__ !== "undefined" || typeof process === "undefined" || !process.versions?.node) {
+  if (typeof WebSocketPair !== "undefined") {
     log.info("Running in Cloudflare Workers; skipping scheduler");
     return;
   }
@@ -2112,7 +2112,7 @@ async function runMonitorCycleGuarded(tbs?: string): Promise<MonitorCycleResult 
 }
 
 async function initMonitorScheduler() {
-  if (typeof (globalThis as any).__CF_ENV__ !== "undefined" || typeof process === "undefined" || !process.versions?.node) {
+  if (typeof WebSocketPair !== "undefined") {
     log.info("Running in Cloudflare Workers; skipping monitor scheduler");
     return;
   }
@@ -2161,7 +2161,7 @@ initGuard("monitor-scheduler-boot", async () => {
 //  · 08:30 Monday — 舆情周报 for LAST week;  08:40 on the 1st — 舆情月报 for LAST month.
 // Report push (飞书/TG) is separately gated by sysConfigs monitor_report_push_enabled (default OFF).
 initGuard("monitor-maintenance-crons", async () => {
-  if (typeof process !== "undefined" && process.env?.CF_PAGES === "1") {
+  if (typeof WebSocketPair !== "undefined") {
     log.info("Running in Cloudflare Workers; skipping monitor maintenance crons");
     return;
   }
