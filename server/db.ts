@@ -488,7 +488,18 @@ export async function getSentimentTrend(questionId: string, platform?: string) {
 // ==================== Dashboard Helpers ====================
 export async function getDashboardSummary(startTime?: number, endTime?: number) {
   const db = await getDb();
-  if (!db) return null;
+  if (!db) {
+    return {
+      overallSentimentAvg: 0,
+      friendlySourceRate: 0,
+      targetFactsCoverage: 0,
+      ourContentRate: 0,
+      totalCollections: 0,
+      platformBreakdown: {},
+      citationPlatformBreakdown: {},
+      isArchivedMode: false,
+    };
+  }
 
   const conditions = [eq(collections.status, "success")];
   if (startTime) conditions.push(gte(collections.timestamp, startTime));
