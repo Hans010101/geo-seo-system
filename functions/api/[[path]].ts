@@ -1,3 +1,8 @@
+// Polyfill MessagePort for undici in Cloudflare Workers
+if (typeof (globalThis as any).MessagePort === "undefined") {
+  (globalThis as any).MessagePort = class MessagePort {};
+}
+
 import { handle } from "hono/cloudflare-pages";
 import app from "../../workers/index";
 

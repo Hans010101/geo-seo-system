@@ -32,7 +32,8 @@ export async function sendEmailAlert(subject: string, html: string): Promise<{ s
       log.warn(`email alert skipped: ${!apiKey ? "Resend key 未配置" : "收件邮箱未配置"}`); // 静默降级,不报错不阻塞
       return { sent: false, error: !apiKey ? "Resend 未配置" : "收件邮箱未配置" };
     }
-    const { Resend } = await import("resend");
+    const pkg = "resend";
+    const { Resend } = await import(/* @vite-ignore */ pkg);
     const { error } = await new Resend(apiKey).emails.send({ from, to: recipient, subject, html });
     if (error) { log.warn(`email alert failed: ${(error as any)?.message || error}`); return { sent: false, error: String((error as any)?.message || error).slice(0, 200) }; }
     return { sent: true };

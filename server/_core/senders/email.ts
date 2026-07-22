@@ -10,7 +10,8 @@ export async function sendEmail(
     const to = (config.to || []).filter(Boolean);
     if (!config.apiKey) return { success: false, error: "Resend 未配置(缺 api key)" };
     if (!to.length) return { success: false, error: "无收件邮箱" };
-    const { Resend } = await import("resend");
+    const pkg = "resend";
+    const { Resend } = await import(/* @vite-ignore */ pkg);
     const resend = new Resend(config.apiKey);
     const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     const html = `<div style="font-family:sans-serif;max-width:600px;margin:0 auto">

@@ -1,4 +1,4 @@
-import { parseHTML } from "linkedom";
+// L1: self-hosted scrape — plain fetch + readability + turndown. Free. Wins on most 中文 stations.
 import { Readability } from "@mozilla/readability";
 import TurndownService from "turndown";
 import type { FetchEngine, FetchResult } from "./types";
@@ -35,8 +35,17 @@ export const selfEngine: FetchEngine = {
       const resp = await timedFetch(url);
       if (!resp.ok) return { success: false, engine: "self", costUsd: 0, status: "failed", error: `HTTP ${resp.status}` };
       const html = await resp.text();
-      const { document } = parseHTML(html);
-      const article = new Readability(document as any).parse();
+      let doc: Document;
+      try {
+        const linkedom = await import("linkedom");
+        doc = linkedom.parseHTML(html).document as unknown as Document;
+      } catch {
+        const pkg = "jsdom";
+        const { JSDOM, VirtualConsole } = await import(/* @vite-ignore */ pkg);
+        const vc = new VirtualConsole();
+        doc = new JSDOM(html, { url, virtualConsole: vc }).window.document;
+      }
+      const article = new Readability(doc).parse();
       const text = (article?.textContent || "").replace(/\s+/g, " ").trim();
       if (text.length < MIN_FULL_CHARS) {
         return { success: false, engine: "self", costUsd: 0, status: "failed", error: "content too short" };

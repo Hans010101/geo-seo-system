@@ -47,11 +47,12 @@ export async function getCookieStatus(): Promise<{ present: boolean; expireAt: n
 // a Chromium executable (env BINANCE_CHROMIUM_PATH or a system channel); in Cloud Run (none) returns
 // ok:false — caller falls back to an externally-refreshed cookie. Never throws.
 const DROP_HEADERS = new Set(["cookie", "host", "content-length", "accept-encoding", "x-trace-id", "x-ui-request-trace", "bnc-uuid"]);
+
 export async function refreshCookieViaBrowser(): Promise<{ ok: boolean; error?: string }> {
   let browser: any;
   try {
     const pkg = "playwright-core";
-    const pw: any = await import(pkg);
+    const pw: any = await import(/* @vite-ignore */ pkg);
     // Use an explicit executable if given (local dev), else let playwright-core resolve the browser it
     // installed via `playwright-core install chromium` (CI). No `channel` — that wouldn't find it.
     const executablePath = process.env.BINANCE_CHROMIUM_PATH || undefined;

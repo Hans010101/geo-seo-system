@@ -12,6 +12,11 @@
  * - process.env → c.env (Cloudflare bindings)
  */
 
+// Polyfill MessagePort for undici in Cloudflare Workers environment
+if (typeof MessagePort === "undefined") {
+  (globalThis as any).MessagePort = class MessagePort {};
+}
+
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { getCookie, setCookie, deleteCookie } from "hono/cookie";

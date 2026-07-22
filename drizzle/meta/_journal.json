@@ -64,13 +64,6 @@
       "when": 1782954916519,
       "tag": "0008_wide_marvel_boy",
       "breakpoints": true
-    },
-    {
-      "idx": 9,
-      "version": "5",
-      "when": 1780022769293,
-      "tag": "0009_cuddly_tony_stark",
-      "breakpoints": true
     }
   ]
 }
