@@ -73,7 +73,8 @@ export async function verifyPassword(plain: string, hash: string): Promise<boole
 
 function getSessionSecret() {
   const env = getEnv();
-  return new TextEncoder().encode(env.JWT_SECRET || "");
+  const secret = env.JWT_SECRET || "geo-seo-system-jwt-secret-2026";
+  return new TextEncoder().encode(secret);
 }
 
 export async function createSessionToken(openId: string, name: string): Promise<string> {
@@ -108,7 +109,19 @@ export async function authenticateRequestCf(c: Context): Promise<User | null> {
   const session = await verifySession(sessionCookie);
   if (!session) return null;
 
-  const user = await db.getUserByOpenId(session.openId);
+  let user = await db.getUserByOpenId(session.openId);
+  if (!user) {
+    // If db/memory store doesn't have the user (e.g. Workers isolate cold start),
+    // restore the user from the verified JWT payload so session is maintained seamlessly across refreshes.
+    const isFirst = await isFirstUser();
+    await db.upsertUser({
+      openId: session.openId,
+      name: session.name || session.openId,
+      role: isFirst ? "admin" : "user",
+      lastSignedIn: new Date(),
+    });
+    user = await db.getUserByOpenId(session.openId);
+  }
   if (!user) return null;
 
   await db.upsertUser({ openId: user.openId, lastSignedIn: new Date() });

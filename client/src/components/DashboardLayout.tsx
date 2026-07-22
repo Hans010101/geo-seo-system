@@ -49,25 +49,28 @@ import { Input } from "./ui/input";
 import { trpc } from "@/lib/trpc";
 import { Separator } from "./ui/separator";
 
-const menuItems = [
-  { icon: LayoutDashboard, label: "总览仪表盘", path: "/" },
-  { icon: FileQuestion, label: "问题详情", path: "/questions" },
-  { icon: Link2, label: "引用源分析", path: "/citations" },
-  { icon: FileBarChart, label: "周报", path: "/reports" },
-  { icon: Bell, label: "预警中心", path: "/alerts" },
-  { icon: Radar, label: "舆情监控", path: "/sentiment-monitor" },
+const sentimentMenuItems = [
+  { icon: Radar, label: "舆情概览", path: "/sentiment-monitor" },
   { icon: Network, label: "信源穿透", path: "/sentiment-monitor/penetration" },
   { icon: ClipboardList, label: "舆情报告", path: "/sentiment-monitor/reports" },
+];
+
+const geoMenuItems = [
+  { icon: LayoutDashboard, label: "GEO 总览", path: "/" },
+  { icon: FileQuestion, label: "问题详情", path: "/questions" },
+  { icon: Link2, label: "引用源分析", path: "/citations" },
+  { icon: FileBarChart, label: "GEO 周报", path: "/reports" },
+  { icon: Bell, label: "预警中心", path: "/alerts" },
 ];
 
 const configMenuItems = [
   { icon: Database, label: "问题库管理", path: "/config/questions" },
   { icon: Target, label: "目标事实", path: "/config/target-facts" },
   { icon: ListChecks, label: "己方URL库", path: "/config/our-content" },
+  { icon: ScanSearch, label: "监控关键词", path: "/config/monitor-keywords" },
   { icon: Globe, label: "平台配置", path: "/config/platforms" },
   { icon: Activity, label: "采集管理", path: "/config/collection" },
   { icon: Clock, label: "定时采集", path: "/config/scheduler" },
-  { icon: ScanSearch, label: "监控关键词", path: "/config/monitor-keywords" },
 ];
 
 const SIDEBAR_WIDTH_KEY = "sidebar-width";
@@ -252,7 +255,7 @@ function DashboardLayoutContent({
   const isCollapsed = state === "collapsed";
   const [isResizing, setIsResizing] = useState(false);
   const sidebarRef = useRef<HTMLDivElement>(null);
-  const allItems = [...menuItems, ...configMenuItems];
+  const allItems = [...sentimentMenuItems, ...geoMenuItems, ...configMenuItems];
   const activeMenuItem = allItems.find((item) => item.path === location);
   const isMobile = useIsMobile();
 
@@ -309,15 +312,15 @@ function DashboardLayoutContent({
           </SidebarHeader>
 
           <SidebarContent className="gap-0">
-            {/* Main navigation */}
+            {/* 舆情监控 */}
             <div className="px-3 py-2">
               {!isCollapsed && (
                 <p className="text-[10px] font-medium text-sidebar-foreground/40 uppercase tracking-wider mb-1 px-2">
-                  监测
+                  舆情监控
                 </p>
               )}
               <SidebarMenu>
-                {menuItems.map((item) => {
+                {sentimentMenuItems.map((item) => {
                   const isActive = location === item.path;
                   return (
                     <SidebarMenuItem key={item.path}>
@@ -336,11 +339,38 @@ function DashboardLayoutContent({
               </SidebarMenu>
             </div>
 
-            {/* Config navigation */}
+            {/* GEO 监测 */}
             <div className="px-3 py-2">
               {!isCollapsed && (
                 <p className="text-[10px] font-medium text-sidebar-foreground/40 uppercase tracking-wider mb-1 px-2">
-                  配置
+                  GEO 监测
+                </p>
+              )}
+              <SidebarMenu>
+                {geoMenuItems.map((item) => {
+                  const isActive = location === item.path;
+                  return (
+                    <SidebarMenuItem key={item.path}>
+                      <SidebarMenuButton
+                        isActive={isActive}
+                        onClick={() => setLocation(item.path)}
+                        tooltip={item.label}
+                        className="h-9 transition-all font-normal text-sm"
+                      >
+                        <item.icon className={`h-4 w-4 ${isActive ? "text-sidebar-primary" : ""}`} />
+                        <span>{item.label}</span>
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  );
+                })}
+              </SidebarMenu>
+            </div>
+
+            {/* 配置管理 */}
+            <div className="px-3 py-2">
+              {!isCollapsed && (
+                <p className="text-[10px] font-medium text-sidebar-foreground/40 uppercase tracking-wider mb-1 px-2">
+                  配置管理
                 </p>
               )}
               <SidebarMenu>
