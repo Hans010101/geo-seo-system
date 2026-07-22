@@ -87,12 +87,8 @@ function isValidEmail(email: string): boolean {
 }
 
 async function isFirstUser(): Promise<boolean> {
-  const database = await db.getDb();
-  if (!database) return false;
-  const { count } = await import("drizzle-orm");
-  const { users } = await import("../drizzle/schema");
-  const result = await database.select({ count: count() }).from(users);
-  return (result[0]?.count ?? 0) === 0;
+  const users = await db.listUsers();
+  return users.length === 0;
 }
 
 // ==================== Auth Routes (Express) ====================

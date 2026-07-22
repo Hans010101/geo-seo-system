@@ -2,6 +2,7 @@ import { eq, desc, asc, and, gte, lte, sql, inArray, like, count, avg } from "dr
 import { drizzle } from "drizzle-orm/mysql2";
 import {
   InsertUser,
+  User,
   users,
   questions,
   collections,
@@ -74,11 +75,47 @@ export async function getDb() {
   return _db;
 }
 
+// In-memory fallback user store when database is not connected
+const memoryUsersMap = new Map<string, User>();
+let memoryUserIdCounter = 1;
+
 // ==================== User Helpers ====================
 export async function upsertUser(user: InsertUser): Promise<void> {
   if (!user.openId) throw new Error("User openId is required for upsert");
   const db = await getDb();
-  if (!db) return;
+  if (!db) {
+    const existing = memoryUsersMap.get(user.openId);
+    const now = new Date();
+    if (existing) {
+      const updated: User = {
+        ...existing,
+        name: user.name !== undefined ? (user.name ?? null) : existing.name,
+        email: user.email !== undefined ? (user.email ?? null) : existing.email,
+        passwordHash: user.passwordHash !== undefined ? (user.passwordHash ?? null) : existing.passwordHash,
+        loginMethod: user.loginMethod !== undefined ? (user.loginMethod ?? null) : existing.loginMethod,
+        role: user.role !== undefined ? user.role : existing.role,
+        lastSignedIn: user.lastSignedIn !== undefined ? user.lastSignedIn : now,
+        updatedAt: now,
+      };
+      memoryUsersMap.set(user.openId, updated);
+    } else {
+      const newUser: User = {
+        id: memoryUserIdCounter++,
+        openId: user.openId,
+        name: user.name ?? null,
+        email: user.email ?? null,
+        passwordHash: user.passwordHash ?? null,
+        loginMethod: user.loginMethod ?? null,
+        role: user.role ?? "user",
+        isBanned: false,
+        createdAt: now,
+        updatedAt: now,
+        lastSignedIn: user.lastSignedIn ?? now,
+      };
+      memoryUsersMap.set(user.openId, newUser);
+    }
+    return;
+  }
   try {
     const values: InsertUser = { openId: user.openId };
     const updateSet: Record<string, unknown> = {};
@@ -111,39 +148,65 @@ export async function upsertUser(user: InsertUser): Promise<void> {
 
 export async function getUserByOpenId(openId: string) {
   const db = await getDb();
-  if (!db) return undefined;
+  if (!db) return memoryUsersMap.get(openId);
   const result = await db.select().from(users).where(eq(users.openId, openId)).limit(1);
   return result.length > 0 ? result[0] : undefined;
 }
 
 export async function getUserByEmail(email: string) {
   const db = await getDb();
-  if (!db) return undefined;
+  if (!db) {
+    for (const u of memoryUsersMap.values()) {
+      if (u.email === email) return u;
+    }
+    return undefined;
+  }
   const result = await db.select().from(users).where(eq(users.email, email)).limit(1);
   return result.length > 0 ? result[0] : undefined;
 }
 
 export async function listUsers() {
   const db = await getDb();
-  if (!db) return [];
+  if (!db) return Array.from(memoryUsersMap.values());
   return db.select().from(users).orderBy(asc(users.id));
 }
 
 export async function updateUserRole(id: number, role: "user" | "admin" | "developer") {
   const db = await getDb();
-  if (!db) return;
+  if (!db) {
+    for (const u of memoryUsersMap.values()) {
+      if (u.id === id) {
+        u.role = role;
+        u.updatedAt = new Date();
+      }
+    }
+    return;
+  }
   await db.update(users).set({ role }).where(eq(users.id, id));
 }
 
 export async function deleteUser(id: number) {
   const db = await getDb();
-  if (!db) return;
+  if (!db) {
+    for (const [openId, u] of memoryUsersMap.entries()) {
+      if (u.id === id) {
+        memoryUsersMap.delete(openId);
+        break;
+      }
+    }
+    return;
+  }
   await db.delete(users).where(eq(users.id, id));
 }
 
 export async function getUserById(id: number) {
   const db = await getDb();
-  if (!db) return undefined;
+  if (!db) {
+    for (const u of memoryUsersMap.values()) {
+      if (u.id === id) return u;
+    }
+    return undefined;
+  }
   const result = await db.select().from(users).where(eq(users.id, id)).limit(1);
   return result[0];
 }
