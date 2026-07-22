@@ -495,8 +495,8 @@ export async function getDashboardSummary(startTime?: number, endTime?: number) 
       targetFactsCoverage: 0,
       ourContentRate: 0,
       totalCollections: 0,
-      platformBreakdown: {},
-      citationPlatformBreakdown: {},
+      platformBreakdown: [],
+      citationPlatformBreakdown: [],
       isArchivedMode: false,
     };
   }
