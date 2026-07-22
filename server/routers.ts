@@ -7,37 +7,9 @@ import * as db from "./db";
 import { invokeLLM } from "./_core/llm";
 import { nanoid } from "nanoid";
 import { PLATFORMS, PLATFORM_OPENROUTER_MODELS, PLATFORM_BAILIAN_MODELS, PLATFORM_BAI_MODELS, BAI_SUPPORTED_PLATFORMS, BAI_BASE_URL, OPENROUTER_BASE_URL, PLATFORM_RECOMMENDED_PROVIDER, PLATFORM_LABELS, type Platform, type LLMProvider } from "@shared/geo-types";
-import { calcCostUsd, detectProviderFromBaseUrl } from "@shared/llm-pricing";
 import { ENV } from "./_core/env";
 import { dispatchNotification } from "./_core/notification";
-import { getEmailAlertConfig, setEmailAlertConfig, sendEmailAlert, buildAlertEmailHtml } from "./monitor/email-alert";
 import { formatAlertMessage, formatBatchSummary } from "./_core/senders/templates";
-import { runMonitorCycle, reanalyzeArticle, type MonitorCycleResult } from "./monitor/pipeline";
-import * as monitorBudget from "./monitor/budget";
-import { getCookieStatus } from "./monitor/sources/binance-cookie";
-import { getPushConfig, setPushConfig } from "./monitor/notify";
-import {
-  getSourcePenetration,
-  getArticlePenetration,
-  getCitationSourceActivity,
-} from "./monitor/penetration";
-import { cleanupOldArticles, CLEANUP_DAYS } from "./monitor/cleanup";
-import { initGuard } from "./_core/boot";
-import {
-  generateMonitorReport,
-  weeklyPeriodOf,
-  monthlyPeriodOf,
-  getReportPushEnabled,
-  setReportPushEnabled,
-} from "./monitor/report";
-import {
-  setBotToken as tgSetBotToken,
-  setupWebhook as tgSetupWebhook,
-  createBindCode as tgCreateBindCode,
-  getTelegramStatus,
-  sendTelegramTest,
-  unbindTelegram,
-} from "./monitor/telegram-connect";
 
 // ==================== Structured Logger ====================
 function createLogger(module: string) {
@@ -68,10 +40,103 @@ const cancelledIds = new Set<number>();
 function cancelCollection(id: number) {
   cancelledIds.add(id);
   setTimeout(() => cancelledIds.delete(id), 5 * 60 * 1000);
+  // Persist the cancel so other instances / a restart honor it (the in-memory Set is
+  // process-local). Only flip records still "pending" so we never clobber a finished one.
+  void (async () => {
+    try {
+      const c = await db.getCollectionById(id);
+      if (c && c.status === "pending") {
+        await db.updateCollection(id, { status: "cancelled", errorMessage: "cancelled by user" });
+      }
+    } catch { /* best-effort */ }
+  })();
 }
 
 function isCancelled(id: number): boolean {
   return cancelledIds.has(id);
+}
+
+// Cross-instance cancel check: the local Set OR a persisted "cancelled" status. Used at the
+// few decision points where a stale write would otherwise resurrect a cancelled collection.
+async function isCancelledNow(id: number): Promise<boolean> {
+  if (cancelledIds.has(id)) return true;
+  try {
+    const c = await db.getCollectionById(id);
+    return c?.status === "cancelled";
+  } catch {
+    return false;
+  }
+}
+
+// ==================== Graceful Shutdown ====================
+// When the process is asked to terminate, stop *starting* new collection work so in-flight
+// requests can drain instead of leaving half-written records. Wired from the server entry.
+let shuttingDown = false;
+export function beginShutdown() { shuttingDown = true; }
+export function isShuttingDown() { return shuttingDown; }
+
+// ==================== Global Outbound LLM Rate Limiter ====================
+// Caps concurrent outbound LLM requests and enforces a minimum spacing between launches, so
+// overlapping batches (plus analysis/citation calls) can't stampede a provider into 429s.
+const LLM_MAX_CONCURRENCY = Number(process.env.LLM_MAX_CONCURRENCY || 8);
+const LLM_MIN_INTERVAL_MS = Number(process.env.LLM_MIN_INTERVAL_MS || 0);
+let llmActive = 0;
+let llmLastStart = 0;
+const llmWaiters: (() => void)[] = [];
+async function acquireLlmSlot(): Promise<void> {
+  if (llmActive >= LLM_MAX_CONCURRENCY) {
+    await new Promise<void>((resolve) => llmWaiters.push(resolve));
+  }
+  llmActive++;
+  const wait = llmLastStart + LLM_MIN_INTERVAL_MS - Date.now();
+  if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+  llmLastStart = Date.now();
+}
+function releaseLlmSlot(): void {
+  llmActive = Math.max(0, llmActive - 1);
+  const next = llmWaiters.shift();
+  if (next) next();
+}
+export async function withLlmRateLimit<T>(fn: () => Promise<T>): Promise<T> {
+  await acquireLlmSlot();
+  try {
+    return await fn();
+  } finally {
+    releaseLlmSlot();
+  }
+}
+
+// ==================== Stale Collection Cleanup ====================
+// Collections that stay "pending" far longer than any collection should take were almost
+// certainly abandoned by a crashed/restarted process. Mark them failed so they surface in
+// health stats and can be retried, instead of lingering forever. Safe to call on an interval.
+// Failure-rate alerting thresholds for a completed batch.
+const FAILURE_ALERT_RATE = Number(process.env.FAILURE_ALERT_RATE || 0.3);
+const FAILURE_ALERT_MIN_SETTLED = Number(process.env.FAILURE_ALERT_MIN_SETTLED || 5);
+
+const STALE_PENDING_MINUTES = Number(process.env.STALE_PENDING_MINUTES || 15);
+export async function cleanupStaleCollections(): Promise<number> {
+  try {
+    const database = await db.getDb();
+    if (!database) return 0;
+    const { collections } = await import("../drizzle/schema");
+    const { sql, eq, and } = await import("drizzle-orm");
+    const stale = await database
+      .select({ id: collections.id })
+      .from(collections)
+      .where(and(
+        eq(collections.status, "pending"),
+        sql`${collections.createdAt} < DATE_SUB(NOW(), INTERVAL ${sql.raw(String(STALE_PENDING_MINUTES))} MINUTE)`,
+      ));
+    for (const s of stale) {
+      await db.updateCollection(s.id, { status: "failed", errorMessage: "stale-timeout: abandoned in pending state" });
+    }
+    if (stale.length > 0) log.warn(`Cleaned up ${stale.length} stale pending collection(s)`);
+    return stale.length;
+  } catch (error: any) {
+    log.warn(`Stale cleanup failed: ${error.message}`);
+    return 0;
+  }
 }
 
 // ==================== Model Name Resolution ====================
@@ -101,8 +166,17 @@ function detectProvider(baseUrl: string | null | undefined): LLMProvider | "othe
   return "other";
 }
 
+// Kill-switch: BAI is temporarily disabled because its baseUrl/model ids were never
+// verified, which spiked the collection error rate. While this is false, all routing
+// runs through OpenRouter and BAI keys are ignored everywhere (primary + fallback).
+// Flip back to true (and re-verify PLATFORM_BAI_MODELS via /models) to re-enable.
+const BAI_ENABLED = false;
+
 // Resolve the active globalApiKey for a given provider, or null if none configured.
 async function getActiveKeyForProvider(provider: LLMProvider): Promise<{ apiKey: string; baseUrl: string } | null> {
+  // While BAI is disabled, treat it as if no key were configured so it never gets
+  // picked as primary, fallback, or analysis provider.
+  if (provider === "bai" && !BAI_ENABLED) return null;
   const keys = await db.listGlobalApiKeys();
   for (const k of keys) {
     if (!k.isActive || !k.apiKey || !k.baseUrl) continue;
@@ -113,8 +187,11 @@ async function getActiveKeyForProvider(provider: LLMProvider): Promise<{ apiKey:
   return null;
 }
 
-// Read the configured primary provider (sysConfig key=llm_primary_provider), defaulting to 'bai'.
+// Read the configured primary provider (sysConfig key=llm_primary_provider).
+// Default is OpenRouter; while BAI is disabled we force OpenRouter regardless of the
+// stored value so a lingering "bai" setting can't route traffic to the dead provider.
 async function getPrimaryProvider(): Promise<LLMProvider> {
+  if (!BAI_ENABLED) return "openrouter";
   const v = await db.getSysConfig("llm_primary_provider");
   return v === "openrouter" ? "openrouter" : "bai";
 }
@@ -124,7 +201,7 @@ async function getPrimaryProvider(): Promise<LLMProvider> {
 // Rules:
 //   1. BAI-uncovered platform → always OpenRouter (regardless of switch).
 //   2. BAI-covered platform → primary provider if it has an active key; otherwise fall back to the other provider.
-//   3. If neither provider has a key → caller decides (falls through to platform key / env in resolveApiConfig).
+//   3. If neither provider has a key → caller decides (falls through to platform key / env in resolveApiConfigChain).
 async function resolveProviderForPlatform(platform: string): Promise<{
   provider: LLMProvider | null;
   apiKey: string | null;
@@ -176,72 +253,98 @@ async function resolveProviderForPlatform(platform: string): Promise<{
 }
 
 // ==================== Global API Key Resolution ====================
-// Priority: platform own key > global key (coveredPlatforms) > env OpenRouter > error
-async function resolveApiConfig(platform: string): Promise<{
-  apiKey: string | null;
-  baseUrl: string | null;
+// Build an *ordered list* of API configs to try for a platform, so callExternalLLM can
+// fail over to the next provider when a call actually fails (not just when a key is missing).
+// Priority: platform own key > primary provider > fallback provider > legacy coveredPlatforms key > env OpenRouter.
+type ApiCandidate = {
+  apiKey: string;
+  baseUrl: string;
   model: string;
-  source: "platform" | "global" | "env" | "none";
-}> {
-  const platformConfig = await db.getPlatformConfig(platform);
+  source: "platform" | "global" | "env";
+  label: string;
+};
+
+async function resolveApiConfigChain(platform: string): Promise<ApiCandidate[]> {
+  const candidates: ApiCandidate[] = [];
+  const seen = new Set<string>();
+  const push = (c: ApiCandidate) => {
+    // Dedupe identical baseUrl+model+key so we don't burn retries on the same endpoint twice.
+    const k = `${c.baseUrl}|${c.model}|${c.apiKey.slice(0, 8)}`;
+    if (seen.has(k)) return;
+    seen.add(k);
+    candidates.push(c);
+  };
+
+  const p = platform as Platform;
 
   // 1. Platform's own API key
+  const platformConfig = await db.getPlatformConfig(platform);
   if (platformConfig?.apiKeyEncrypted && platformConfig?.apiBaseUrl) {
-    const model = platformConfig.modelVersion ||
-      resolveModelForBaseUrl(platform, platformConfig.apiBaseUrl);
-    return {
+    push({
       apiKey: platformConfig.apiKeyEncrypted,
       baseUrl: platformConfig.apiBaseUrl,
-      model,
+      model: platformConfig.modelVersion || resolveModelForBaseUrl(platform, platformConfig.apiBaseUrl),
       source: "platform",
-    };
+      label: "platform",
+    });
   }
 
-  // 2. Provider router: BAI (primary) ⇄ OpenRouter (hot standby)
-  //    See resolveProviderForPlatform: BAI-uncovered platforms always go through OpenRouter;
-  //    BAI-covered platforms use the configured primary, falling back to the other if the
-  //    primary has no active key.
-  const routed = await resolveProviderForPlatform(platform);
-  if (routed.apiKey && routed.baseUrl) {
-    log.info(`resolveApiConfig: ${platform} routed to provider=${routed.provider} (${routed.reason}), model=${routed.model}, baseUrl=${routed.baseUrl}`);
-    return {
-      apiKey: routed.apiKey,
-      baseUrl: routed.baseUrl,
-      model: routed.model,
-      source: "global",
-    };
+  // 2. Provider chain: primary then the other provider (real hot-standby failover).
+  //    BAI-uncovered platforms only ever use OpenRouter. getActiveKeyForProvider returns
+  //    null for disabled/unconfigured providers, so BAI is skipped while BAI_ENABLED=false.
+  let providerOrder: LLMProvider[];
+  if (!BAI_SUPPORTED_PLATFORMS.includes(p)) {
+    providerOrder = ["openrouter"];
+  } else {
+    const primary = await getPrimaryProvider();
+    const other: LLMProvider = primary === "bai" ? "openrouter" : "bai";
+    providerOrder = [primary, other];
+  }
+  for (const prov of providerOrder) {
+    const key = await getActiveKeyForProvider(prov);
+    if (key) {
+      push({
+        apiKey: key.apiKey,
+        baseUrl: key.baseUrl,
+        model: resolveModelForBaseUrl(platform, key.baseUrl),
+        source: "global",
+        label: prov,
+      });
+    }
   }
 
-  // 2b. Legacy fallback: any globalApiKey that explicitly lists this platform in coveredPlatforms
-  // (e.g. 阿里百炼 still covers Chinese platforms). Keeps existing 百炼 config working.
+  // 2b. Legacy: any globalApiKey that explicitly lists this platform in coveredPlatforms
+  // (e.g. 阿里百炼). BAI / OpenRouter records are already handled above.
   const globalKeys = await db.listGlobalApiKeys();
   for (const gk of globalKeys) {
     if (!gk.isActive || !gk.apiKey || !gk.baseUrl) continue;
-    // Skip BAI / OpenRouter records here — already handled above.
     const prov = detectProvider(gk.baseUrl);
     if (prov === "bai" || prov === "openrouter") continue;
     const covered = (gk.coveredPlatforms as string[]) || [];
     if (covered.includes(platform)) {
-      const model = resolveModelForBaseUrl(platform, gk.baseUrl);
-      log.info(`resolveApiConfig: ${platform} matched legacy global key "${gk.name}", model=${model}, baseUrl=${gk.baseUrl}`);
-      return { apiKey: gk.apiKey, baseUrl: gk.baseUrl, model, source: "global" };
+      push({
+        apiKey: gk.apiKey,
+        baseUrl: gk.baseUrl,
+        model: resolveModelForBaseUrl(platform, gk.baseUrl),
+        source: "global",
+        label: gk.name || "legacy",
+      });
     }
   }
 
   // 3. Environment variable fallback (OpenRouter)
   if (ENV.openrouterApiKey) {
-    const model = PLATFORM_OPENROUTER_MODELS[platform as Platform] || "openai/gpt-4o";
-    log.info(`resolveApiConfig: ${platform} using env OpenRouter fallback, model=${model}`);
-    return {
+    push({
       apiKey: ENV.openrouterApiKey,
       baseUrl: ENV.openrouterBaseUrl || "https://openrouter.ai/api/v1",
-      model,
+      model: PLATFORM_OPENROUTER_MODELS[p] || "openai/gpt-4o",
       source: "env",
-    };
+      label: "env-openrouter",
+    });
   }
 
-  log.info(`resolveApiConfig: no key found for ${platform}, globalKeys=${globalKeys.length}`);
-  return { apiKey: null, baseUrl: null, model: "openai/gpt-4o", source: "none" };
+  log.info(`resolveApiConfigChain: ${platform} → ${candidates.length} candidate(s): [${candidates.map(c => `${c.label}:${c.model}`).join(", ")}]`);
+  return candidates;
 }
 
 // Get any active API key (for analysis/citation extraction)
@@ -249,9 +352,8 @@ async function resolveApiConfig(platform: string): Promise<{
 function resolveAnalysisModel(baseUrl: string): string {
   if (baseUrl.includes("b.ai")) return "gemini-3-flash";
   if (baseUrl.includes("dashscope") || baseUrl.includes("aliyun")) return "qwen-turbo";
-  // gemini-2.0-flash-001 was retired from OpenRouter; use gemini-2.5-flash for analysis
-  if (baseUrl.includes("openrouter")) return "google/gemini-2.5-flash";
-  return "google/gemini-2.5-flash";
+  if (baseUrl.includes("openrouter")) return "google/gemini-2.0-flash-001";
+  return "google/gemini-2.0-flash-001";
 }
 
 // For analysis/citation extraction we also respect the primary-provider switch.
@@ -267,12 +369,12 @@ async function getAnyActiveApiKey(): Promise<{ apiKey: string; baseUrl: string; 
   if (fallbackKey) {
     return { apiKey: fallbackKey.apiKey, baseUrl: fallbackKey.baseUrl, model: resolveAnalysisModel(fallbackKey.baseUrl) };
   }
-  // Legacy: try any other active global key (e.g. 阿里百炼)
+  // Legacy: try any other active global key (e.g. 阿里百炼). Skip BAI while disabled.
   const globalKeys = await db.listGlobalApiKeys();
   for (const gk of globalKeys) {
-    if (gk.isActive && gk.apiKey && gk.baseUrl) {
-      return { apiKey: gk.apiKey, baseUrl: gk.baseUrl, model: resolveAnalysisModel(gk.baseUrl) };
-    }
+    if (!gk.isActive || !gk.apiKey || !gk.baseUrl) continue;
+    if (detectProvider(gk.baseUrl) === "bai" && !BAI_ENABLED) continue;
+    return { apiKey: gk.apiKey, baseUrl: gk.baseUrl, model: resolveAnalysisModel(gk.baseUrl) };
   }
   // Fallback to env
   if (ENV.openrouterApiKey) {
@@ -283,141 +385,159 @@ async function getAnyActiveApiKey(): Promise<{ apiKey: string; baseUrl: string; 
 }
 
 // ==================== External LLM Call ====================
-// H1 (2026-06): now returns full telemetry (model, realModel, latency, usage, cost, rawResponse, provider).
-// Callers (executeCollection) persist these to collections.* for downstream cost/perf analysis.
-export type LLMCallTelemetry = {
-  content: string;
-  /** Model we asked for (config.model — resolved from PLATFORM_OPENROUTER_MODELS constants) */
-  model: string;
-  /** Model the API actually used (data.model — may rewrite to a routed variant on OpenRouter) */
-  realModel: string;
-  /** 'platform' | 'global' | 'env' — where the apiKey came from */
-  source: string;
-  /** 'openrouter' | 'bai' | 'bailian' | 'other' */
-  provider: "openrouter" | "bai" | "bailian" | "other";
-  promptTokens: number | null;
-  completionTokens: number | null;
-  totalTokens: number | null;
-  latencyMs: number;
-  costUsd: number | null;
-  rawResponse: any;
-};
+// Decide whether an error is worth retrying *against the same provider*.
+// - HTTP errors carry an explicit `retryable` flag (5xx / 429 → yes; 4xx / model-not-found → no).
+// - Timeouts (AbortError) and network errors have no flag → retry.
+function isRetryableError(error: any): boolean {
+  if (error && typeof error.retryable === "boolean") return error.retryable;
+  return true;
+}
 
 async function callExternalLLM(
   platform: string,
   messages: { role: string; content: string }[],
   traceId: string
-): Promise<LLMCallTelemetry> {
-  const config = await resolveApiConfig(platform);
+): Promise<{ content: string; model: string; source: string }> {
+  const candidates = await resolveApiConfigChain(platform);
 
-  if (!config.apiKey || !config.baseUrl || config.source === "none") {
+  if (candidates.length === 0) {
     throw new Error(`该平台 (${platform}) 未配置 API Key，请在「平台配置」或「全局 API 配置」中设置`);
   }
 
-  const maxRetries = 3;
-  // Bumped from 60s → 200s so it covers slow-generating long-tail platforms (zhipu max 185s observed).
-  // Previously the AbortController was canceled right after `fetch()` resolved headers, so body
-  // streaming was effectively unbounded — masking the real per-call duration. Now timer is cleared
-  // only after the full body is consumed, so the deadline covers the entire request.
-  const timeoutMs = 200000;
+  const maxRetriesPerCandidate = Number(process.env.LLM_MAX_RETRIES || 3);
+  const timeoutMs = Number(process.env.LLM_TIMEOUT_MS || 45000);
+  let lastError: any;
 
-  const provider = detectProviderFromBaseUrl(config.baseUrl);
+  for (let ci = 0; ci < candidates.length; ci++) {
+    const config = candidates[ci];
 
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    const t0 = Date.now();
-    try {
-      log.info(`Calling external API for ${platform} (attempt ${attempt}/${maxRetries})`, {
-        traceId, source: config.source, model: config.model,
-      });
+    for (let attempt = 1; attempt <= maxRetriesPerCandidate; attempt++) {
+      try {
+        log.info(`Calling external API for ${platform} (provider=${config.label}, attempt ${attempt}/${maxRetriesPerCandidate})`, {
+          traceId, source: config.source, model: config.model,
+        });
 
-      // OpenRouter likes HTTP-Referer + X-Title for attribution; BAI / 百炼 don't.
-      const isOpenRouter = config.baseUrl.includes("openrouter.ai");
-      const headers: Record<string, string> = {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${config.apiKey}`,
-      };
-      if (isOpenRouter) {
-        headers["HTTP-Referer"] = "https://geo-system.app";
-        headers["X-Title"] = "GEO System";
-      }
-      const response = await fetch(`${config.baseUrl.replace(/\/$/, "")}/chat/completions`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          model: config.model,
-          messages,
-          max_tokens: 4096,
-        }),
-        signal: controller.signal,
-      });
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-      if (!response.ok) {
-        const errText = await response.text();
-        clearTimeout(timer);
-        // Detect model-not-found errors and give a helpful message
-        if (errText.includes("not a valid model") || errText.includes("model_not_found") || errText.includes("does not exist")) {
-          const rec = PLATFORM_RECOMMENDED_PROVIDER[platform as Platform];
-          const hint = rec ? `，推荐使用「${rec}」提供商` : "";
-          throw new Error(`该平台 (${PLATFORM_LABELS[platform as Platform] || platform}) 的模型 ${config.model} 在当前 API 提供商中不可用${hint}`);
+        // OpenRouter likes HTTP-Referer + X-Title for attribution; BAI / 百炼 don't.
+        const isOpenRouter = config.baseUrl.includes("openrouter.ai");
+        const headers: Record<string, string> = {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${config.apiKey}`,
+        };
+        if (isOpenRouter) {
+          headers["HTTP-Referer"] = "https://geo-system.app";
+          headers["X-Title"] = "GEO System";
         }
-        throw new Error(`API ${response.status}: ${errText.slice(0, 200)}`);
+
+        let response: Response;
+        try {
+          response = await withLlmRateLimit(() =>
+            fetch(`${config.baseUrl.replace(/\/$/, "")}/chat/completions`, {
+              method: "POST",
+              headers,
+              body: JSON.stringify({
+                model: config.model,
+                messages,
+                max_tokens: 4096,
+              }),
+              signal: controller.signal,
+            })
+          );
+        } finally {
+          clearTimeout(timer);
+        }
+
+        if (!response.ok) {
+          const errText = await response.text();
+          // Model-not-found: not retryable on this provider, but failing over to the next
+          // candidate may succeed, so keep the helpful message and let the loop advance.
+          if (errText.includes("not a valid model") || errText.includes("model_not_found") || errText.includes("does not exist")) {
+            const rec = PLATFORM_RECOMMENDED_PROVIDER[platform as Platform];
+            const hint = rec ? `，推荐使用「${rec}」提供商` : "";
+            const err: any = new Error(`该平台 (${PLATFORM_LABELS[platform as Platform] || platform}) 的模型 ${config.model} 在当前 API 提供商中不可用${hint}`);
+            err.retryable = false;
+            throw err;
+          }
+          const err: any = new Error(`API ${response.status}: ${errText.slice(0, 200)}`);
+          // Retry only transient server-side / rate-limit errors; 4xx (auth, bad request) are not retryable.
+          err.retryable = response.status >= 500 || response.status === 429;
+          throw err;
+        }
+
+        const data = await response.json();
+        const content = data.choices?.[0]?.message?.content || "";
+
+        log.info(`External API success for ${platform}`, {
+          traceId, provider: config.label, model: data.model || config.model, contentLength: content.length,
+        });
+
+        return {
+          content,
+          model: data.model || config.model,
+          source: config.source,
+        };
+      } catch (error: any) {
+        lastError = error;
+        const retryable = isRetryableError(error);
+        log.warn(`External API attempt ${attempt} failed for ${platform} (provider=${config.label}, retryable=${retryable}): ${error.message}`, { traceId });
+        if (retryable && attempt < maxRetriesPerCandidate) {
+          await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempt - 1)));
+          continue;
+        }
+        // Non-retryable, or retries exhausted → stop hammering this provider.
+        break;
       }
+    }
 
-      const data = await response.json();
-      // Clear timer only after body fully consumed — guarantees timeoutMs covers the entire request
-      clearTimeout(timer);
-      const latencyMs = Date.now() - t0;
-      const content = data.choices?.[0]?.message?.content || "";
-
-      const promptTokens = data.usage?.prompt_tokens ?? null;
-      const completionTokens = data.usage?.completion_tokens ?? null;
-      const totalTokens = data.usage?.total_tokens ?? (promptTokens != null && completionTokens != null ? promptTokens + completionTokens : null);
-      // Cost on OpenRouter is computed from the price table (input/output per-token). We charge on `config.model`
-      // (what we requested) so the math matches OPENROUTER_PRICING; data.model may rewrite to a routed variant.
-      const costUsd = provider === "openrouter" ? calcCostUsd(config.model, promptTokens, completionTokens) : null;
-
-      log.info(`External API success for ${platform}`, {
-        traceId, model: data.model || config.model, contentLength: content.length, latencyMs,
-        promptTokens, completionTokens, costUsd,
-      });
-
-      return {
-        content,
-        model: config.model,
-        realModel: data.model || config.model,
-        source: config.source,
-        provider,
-        promptTokens,
-        completionTokens,
-        totalTokens,
-        latencyMs,
-        costUsd,
-        rawResponse: data,
-      };
-    } catch (error: any) {
-      clearTimeout(timer);
-      log.warn(`External API attempt ${attempt} failed for ${platform}: ${error.message}`, { traceId });
-      if (attempt === maxRetries) {
-        throw error;
-      }
-      await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempt - 1)));
+    if (ci < candidates.length - 1) {
+      log.warn(`Provider ${config.label} failed for ${platform}, failing over to next candidate`, { traceId });
     }
   }
 
-  throw new Error(`All retry attempts failed for ${platform}`);
+  throw lastError ?? new Error(`All providers failed for ${platform}`);
 }
 
 // ==================== Collection Execution (P0-1: No more simulation) ====================
+// Secondary pipeline (citations + analysis + alerts). Independent of "did we get an answer",
+// so the batch path can run it off the critical path. Swallows its own errors.
+async function runPostProcessing(
+  collectionId: number,
+  question: { questionId: string; text: string; language: string },
+  responseText: string,
+  platform: string,
+  traceId: string
+): Promise<void> {
+  try {
+    if (await isCancelledNow(collectionId)) return;
+    // Citation extraction + AI analysis write different tables → run concurrently.
+    await Promise.all([
+      extractCitations(collectionId, responseText, traceId),
+      analyzeCollection(collectionId, question.text, responseText, traceId),
+    ]);
+    if (!isCancelled(collectionId)) {
+      await checkAlerts(collectionId, question, platform, traceId);
+    }
+  } catch (e: any) {
+    log.warn(`Post-processing failed for collection ${collectionId}: ${e.message}`, { traceId });
+  }
+}
+
 async function executeCollection(
   collectionId: number,
   question: { questionId: string; text: string; language: string },
-  platform: string
+  platform: string,
+  opts?: { deferPostProcessing?: boolean }
 ): Promise<{ success: boolean; error?: string }> {
   const traceId = `col-${collectionId}-${nanoid(6)}`;
 
-  if (isCancelled(collectionId)) {
+  if (isShuttingDown()) {
+    log.info(`Collection ${collectionId} not started: server shutting down`, { traceId });
+    return { success: false, error: "shutting-down" };
+  }
+
+  if (await isCancelledNow(collectionId)) {
     log.info(`Collection ${collectionId} cancelled before execution`, { traceId });
     return { success: false, error: "cancelled" };
   }
@@ -434,7 +554,7 @@ async function executeCollection(
 
     log.info(`Starting collection for Q:${question.questionId} on ${platform}`, { traceId });
 
-    const telemetry = await callExternalLLM(
+    const { content: responseText, model: rawModel, source: apiSource } = await callExternalLLM(
       platform,
       [
         { role: "system", content: systemPrompt },
@@ -442,19 +562,14 @@ async function executeCollection(
       ],
       traceId
     );
-    const responseText = telemetry.content;
-    const apiSource = telemetry.source;
 
-    if (isCancelled(collectionId)) {
+    if (await isCancelledNow(collectionId)) {
       log.info(`Collection ${collectionId} cancelled after LLM call`, { traceId });
       return { success: false, error: "cancelled" };
     }
 
-    // H1-b (2026-06): modelVersion is the model we ACTUALLY requested (telemetry.model = config.model
-    // resolved from constants). Ignore the platformConfigs.modelVersion override which was full of
-    // stale/incorrect values from past UI edits. The override would only re-enter the picture for
-    // platforms with their own dedicated API key (resolveApiConfig path 1, already handled there).
-    const modelVersion = telemetry.model;
+    const platformConfig = await db.getPlatformConfig(platform);
+    const modelVersion = platformConfig?.modelVersion || PLATFORM_OPENROUTER_MODELS[platform as Platform] || rawModel;
 
     await db.updateCollection(collectionId, {
       responseText,
@@ -462,33 +577,19 @@ async function executeCollection(
       hasSearch: true,
       modelVersion,
       status: "success",
-      // H1 telemetry (provider/realModel/tokens/latency/cost/rawResponse)
-      provider: telemetry.provider,
-      realModel: telemetry.realModel,
-      promptTokens: telemetry.promptTokens,
-      completionTokens: telemetry.completionTokens,
-      totalTokens: telemetry.totalTokens,
-      latencyMs: telemetry.latencyMs,
-      costUsd: telemetry.costUsd != null ? String(telemetry.costUsd) : null,
-      rawResponse: telemetry.rawResponse,
     });
 
-    // Citation extraction (enhanced)
-    if (!isCancelled(collectionId)) {
-      await extractCitations(collectionId, responseText, traceId);
+    // The answer is in and the record is marked success. In batch mode we run the secondary
+    // pipeline (citations/analysis/alerts) off the critical path so the batch round returns as
+    // soon as answers are collected (~3x faster rounds); it's still bounded by withLlmRateLimit.
+    // Manual single-collection keeps it inline so the caller gets a fully-processed result.
+    if (opts?.deferPostProcessing) {
+      void runPostProcessing(collectionId, question, responseText, platform, traceId);
+    } else {
+      await runPostProcessing(collectionId, question, responseText, platform, traceId);
     }
 
-    // AI analysis
-    if (!isCancelled(collectionId)) {
-      await analyzeCollection(collectionId, question.text, responseText, traceId);
-    }
-
-    // Alert checking
-    if (!isCancelled(collectionId)) {
-      await checkAlerts(collectionId, question, platform, traceId);
-    }
-
-    log.info(`Collection ${collectionId} completed successfully`, {
+    log.info(`Collection ${collectionId} answer collected${opts?.deferPostProcessing ? " (analysis deferred)" : ""}`, {
       traceId, platform, apiSource, modelVersion, responseLength: responseText.length,
     });
 
@@ -554,7 +655,7 @@ async function extractCitations(collectionId: number, responseText: string, trac
     const citationApiKey = await getAnyActiveApiKey();
     if (responseText.length > 200 && citationApiKey) {
       try {
-        const extractionResult = await invokeLLM({
+        const extractionResult = await withLlmRateLimit(() => invokeLLM({
           apiKey: citationApiKey.apiKey,
           baseUrl: citationApiKey.baseUrl,
           model: citationApiKey.model,
@@ -570,7 +671,7 @@ async function extractCitations(collectionId: number, responseText: string, trac
             { role: "user", content: responseText.slice(0, 3000) },
           ],
           response_format: { type: "json_object" },
-        });
+        }));
 
         const llmContent = typeof extractionResult.choices[0]?.message?.content === "string"
           ? extractionResult.choices[0].message.content
@@ -624,14 +725,6 @@ async function extractCitations(collectionId: number, responseText: string, trac
 }
 
 // ==================== Alert Checking ====================
-// Window during which a same (qid×platform×alertType) won't re-fire (H3 dedup).
-const ALERT_DEDUP_HOURS = 7 * 24;
-
-// H3 (2026-06) — sentiment_drop is now a RELATIVE trigger:
-//   - First-time collection of (qid, platform) has no prior baseline → never fires.
-//   - Subsequent collections fire only when current score < prior score AND current ≤ 2.
-//     (a 4→3 drop or a 3→3 stationary doesn't fire; absolute negative + actual deterioration does.)
-// Combined with the 7-day dedup window this eliminated 77% of historical noise per the May audit.
 async function checkAlerts(
   collectionId: number,
   question: { questionId: string; text: string },
@@ -642,72 +735,49 @@ async function checkAlerts(
     const analysis = await db.getAnalysisByCollectionId(collectionId);
     if (!analysis) return;
 
-    // ===== sentiment_drop (H3 relative trigger) =====
-    if (analysis.sentimentScore != null && analysis.sentimentScore <= 2) {
-      const dedupKey = `${question.questionId}:${platform}:sentiment_drop`;
-      const recent = await db.findRecentAlertByDedupKey(dedupKey, ALERT_DEDUP_HOURS);
-      if (recent) {
-        log.info(`Alert skipped (dedup): sentiment_drop for ${platform}:${question.questionId} — last ${recent.createdAt?.toISOString()}`, { traceId });
-      } else {
-        const priorScore = await db.getPriorSentimentScore(question.questionId, platform, collectionId);
-        // First time for this (qid, platform) → no baseline, don't fire (avoids new-question-bank burst)
-        if (priorScore == null) {
-          log.info(`Alert skipped (no prior score): sentiment_drop for ${platform}:${question.questionId} — first-time pair`, { traceId });
-        } else if (analysis.sentimentScore >= priorScore) {
-          log.info(`Alert skipped (no deterioration): sentiment_drop for ${platform}:${question.questionId} — prior=${priorScore} now=${analysis.sentimentScore}`, { traceId });
-        } else {
-          const severity = analysis.sentimentScore === 1 ? "critical" : "high";
-          const alertData = {
-            alertType: "sentiment_drop" as const,
-            severity: severity as "critical" | "high",
-            title: `${platform} 对问题 ${question.questionId} 给出负面回答`,
-            description: `情感评分 ${priorScore} → ${analysis.sentimentScore}：${analysis.sentimentReasoning || ""}`.slice(0, 1000),
-            relatedCollectionId: collectionId,
-            relatedQuestionId: question.questionId,
-            relatedPlatform: platform,
-            dedupKey,
-          };
-          const alertId = await db.createAlert(alertData);
-          log.info(`Alert created: sentiment_drop for ${platform} (prior=${priorScore} now=${analysis.sentimentScore})`, { traceId });
+    if (analysis.sentimentScore && analysis.sentimentScore <= 2) {
+      const severity = analysis.sentimentScore === 1 ? "critical" : "high";
+      const alertData = {
+        alertType: "sentiment_drop" as const,
+        severity: severity as "critical" | "high",
+        title: `${platform} 对问题 ${question.questionId} 给出负面回答`,
+        description: analysis.sentimentReasoning || `情感评分: ${analysis.sentimentScore}/5`,
+        relatedCollectionId: collectionId,
+        relatedQuestionId: question.questionId,
+        relatedPlatform: platform,
+      };
+      const alertId = await db.createAlert(alertData);
+      log.info(`Alert created: sentiment_drop for ${platform}`, { traceId });
 
-          const msg = formatAlertMessage({ ...alertData, severity });
-          dispatchNotification({
-            messageType: "alert", alertId, severity,
-            title: msg.title, content: msg.content,
-            dedupKey,
-          }).catch(err => log.warn(`Notification dispatch failed: ${err.message}`, { traceId }));
-        }
-      }
+      // Push notification
+      const msg = formatAlertMessage({ ...alertData, severity });
+      dispatchNotification({
+        messageType: "alert", alertId, severity,
+        title: msg.title, content: msg.content,
+        dedupKey: `${question.questionId}:${platform}:sentiment_drop`,
+      }).catch(err => log.warn(`Notification dispatch failed: ${err.message}`, { traceId }));
     }
 
-    // ===== fact_missing (still absolute, with 7d dedup) =====
     if (analysis.factualAccuracy === "inaccurate") {
-      const dedupKey = `${question.questionId}:${platform}:fact_missing`;
-      const recent = await db.findRecentAlertByDedupKey(dedupKey, ALERT_DEDUP_HOURS);
-      if (recent) {
-        log.info(`Alert skipped (dedup): fact_missing for ${platform}:${question.questionId} — last ${recent.createdAt?.toISOString()}`, { traceId });
-      } else {
-        const claims = (analysis.inaccurateClaims as string[]) || [];
-        const alertData = {
-          alertType: "fact_missing" as const,
-          severity: "medium" as const,
-          title: `${platform} 对问题 ${question.questionId} 存在事实错误`,
-          description: claims.length > 0 ? `不准确声明: ${claims.join("; ")}` : "检测到事实性错误",
-          relatedCollectionId: collectionId,
-          relatedQuestionId: question.questionId,
-          relatedPlatform: platform,
-          dedupKey,
-        };
-        const alertId = await db.createAlert(alertData);
-        log.info(`Alert created: fact_missing for ${platform}`, { traceId });
+      const claims = (analysis.inaccurateClaims as string[]) || [];
+      const alertData = {
+        alertType: "fact_missing" as const,
+        severity: "medium" as const,
+        title: `${platform} 对问题 ${question.questionId} 存在事实错误`,
+        description: claims.length > 0 ? `不准确声明: ${claims.join("; ")}` : "检测到事实性错误",
+        relatedCollectionId: collectionId,
+        relatedQuestionId: question.questionId,
+        relatedPlatform: platform,
+      };
+      const alertId = await db.createAlert(alertData);
+      log.info(`Alert created: fact_missing for ${platform}`, { traceId });
 
-        const msg = formatAlertMessage({ ...alertData, severity: "medium" });
-        dispatchNotification({
-          messageType: "alert", alertId, severity: "medium",
-          title: msg.title, content: msg.content,
-          dedupKey,
-        }).catch(err => log.warn(`Notification dispatch failed: ${err.message}`, { traceId }));
-      }
+      const msg = formatAlertMessage({ ...alertData, severity: "medium" });
+      dispatchNotification({
+        messageType: "alert", alertId, severity: "medium",
+        title: msg.title, content: msg.content,
+        dedupKey: `${question.questionId}:${platform}:fact_missing`,
+      }).catch(err => log.warn(`Notification dispatch failed: ${err.message}`, { traceId }));
     }
   } catch (error: any) {
     log.error(`Alert check failed: ${error.message}`, { traceId });
@@ -750,7 +820,7 @@ ${targetFactKeys.map((k) => `    "${k}": <true|false>`).join(",\n")}
   }
 }`;
 
-    const result = await invokeLLM({
+    const result = await withLlmRateLimit(() => invokeLLM({
       apiKey: analysisApiKey.apiKey,
       baseUrl: analysisApiKey.baseUrl,
       model: analysisApiKey.model,
@@ -759,7 +829,7 @@ ${targetFactKeys.map((k) => `    "${k}": <true|false>`).join(",\n")}
         { role: "user", content: prompt },
       ],
       response_format: { type: "json_object" },
-    });
+    }));
 
     const content = typeof result.choices[0]?.message?.content === "string"
       ? result.choices[0].message.content
@@ -803,46 +873,41 @@ ${targetFactKeys.map((k) => `    "${k}": <true|false>`).join(",\n")}
 }
 
 // ==================== Concurrent Batch Engine (P0-2) ====================
-// Streaming concurrent execution: keeps `concurrency` slots full, a slow cell never blocks others.
-// Used by both runBatchConcurrently (scheduler) and executeNextBatch (frontend poll).
-async function runCollectionsConcurrently(
-  tasks: { collectionId: number; question: { questionId: string; text: string; language: string }; platform: string }[],
-  concurrency: number
-): Promise<{ completed: number; failed: number }> {
-  const pLimit = (await import("p-limit")).default;
-  const limit = pLimit(concurrency);
-
-  const results = await Promise.allSettled(
-    tasks.map((task) =>
-      limit(async () => executeCollection(task.collectionId, task.question, task.platform))
-    )
-  );
-
-  let completed = 0;
-  let failed = 0;
-  for (const r of results) {
-    if (r.status === "fulfilled" && r.value.success) completed++;
-    else failed++;
-  }
-  return { completed, failed };
-}
-
 async function runBatchConcurrently(
   tasks: { collectionId: number; question: any; platform: string }[],
   batchId: string,
   concurrency: number = 5
 ) {
+  // Dynamic import p-limit (ESM module)
+  const pLimit = (await import("p-limit")).default;
+  const limit = pLimit(concurrency);
+
   log.info(`Starting batch ${batchId}: ${tasks.length} tasks, concurrency=${concurrency}`);
-  const normalized = tasks.map((t) => ({
-    collectionId: t.collectionId,
-    question: {
-      questionId: t.question.questionId,
-      text: t.question.text,
-      language: t.question.language,
-    },
-    platform: t.platform,
-  }));
-  const { completed, failed } = await runCollectionsConcurrently(normalized, concurrency);
+
+  const results = await Promise.allSettled(
+    tasks.map((task) =>
+      limit(async () => {
+        return executeCollection(
+          task.collectionId,
+          {
+            questionId: task.question.questionId,
+            text: task.question.text,
+            language: task.question.language,
+          },
+          task.platform,
+          { deferPostProcessing: true }
+        );
+      })
+    )
+  );
+
+  let completed = 0;
+  let failed = 0;
+  results.forEach((r) => {
+    if (r.status === "fulfilled" && r.value.success) completed++;
+    else failed++;
+  });
+
   log.info(`Batch ${batchId} finished: ${completed} success, ${failed} failed out of ${tasks.length}`);
 }
 
@@ -943,7 +1008,9 @@ const collectionsRouter = router({
       }).optional()
     )
     .query(async ({ input }) => {
-      return db.listCollections(input || {});
+      // List view never renders the full answer; skip the large responseText/rawResponse
+      // blobs. The detail sheet fetches the full row via collections.get.
+      return db.listCollections({ ...(input || {}), includeResponseText: false });
     }),
 
   get: protectedProcedure
@@ -1085,27 +1152,20 @@ const collectionsRouter = router({
     }),
 
   // Execute next batch of pending items — called by frontend polling
-  // Streaming concurrent execution: prefetch up to concurrency*3 pending rows (capped at 15) and
-  // process via p-limit pool so a slow cell never blocks faster ones in the same round.
-  // Per-round duration is bounded by Cloud Run 5min timeout; un-finished rows stay 'pending' and
-  // get retried by the next poll round, so increasing the prefetch is safe.
   executeNextBatch: adminProcedure
     .input(z.object({
       batchId: z.string(),
-      concurrency: z.number().min(1).max(10).optional(),
+      concurrency: z.number().min(1).max(20).optional(),
     }))
     .mutation(async ({ input }) => {
       const concurrency = input.concurrency || 5;
-      // Prefetch more than concurrency so the p-limit pool stays full as cells complete.
-      // Capped at 15 to stay well under Cloud Run 5min limit even if many cells hit the 200s timeout.
-      const prefetch = Math.min(concurrency * 3, 15);
       const progress = await db.getBatchProgress(input.batchId);
 
       // Get pending collections for this batch
       const pendingResult = await db.listCollections({
         batchId: input.batchId,
         status: "pending",
-        limit: prefetch,
+        limit: concurrency,
         offset: 0,
       });
       const pending = pendingResult.data;
@@ -1114,27 +1174,29 @@ const collectionsRouter = router({
         return { completed: 0, failed: 0, remaining: 0, total: progress.total };
       }
 
-      // Resolve questions for each pending row up front; mark as failed any with missing question
-      const tasks: { collectionId: number; question: { questionId: string; text: string; language: string }; platform: string }[] = [];
+      // Execute synchronously (await) — not fire-and-forget
+      let completed = 0;
       let failed = 0;
-      for (const col of pending) {
-        const question = await db.getQuestionById(col.questionId);
-        if (!question) {
-          await db.updateCollection(col.id, { status: "failed", errorMessage: "Question not found" });
-          failed++;
-          continue;
-        }
-        tasks.push({
-          collectionId: col.id,
-          question: { questionId: question.questionId, text: question.text, language: question.language },
-          platform: col.platform,
-        });
-      }
+      const results = await Promise.allSettled(
+        pending.map(async (col) => {
+          const question = await db.getQuestionById(col.questionId);
+          if (!question) {
+            await db.updateCollection(col.id, { status: "failed", errorMessage: "Question not found" });
+            return { success: false };
+          }
+          return executeCollection(
+            col.id,
+            { questionId: question.questionId, text: question.text, language: question.language },
+            col.platform,
+            { deferPostProcessing: true }
+          );
+        })
+      );
 
-      // Streaming concurrent execution (shared helper)
-      const result = await runCollectionsConcurrently(tasks, concurrency);
-      const completed = result.completed;
-      failed += result.failed;
+      results.forEach((r) => {
+        if (r.status === "fulfilled" && r.value.success) completed++;
+        else failed++;
+      });
 
       // Recount remaining
       const updatedProgress = await db.getBatchProgress(input.batchId);
@@ -1157,6 +1219,24 @@ const collectionsRouter = router({
               title: msg.title, content: msg.content,
               severity: batchAlerts.some(a => a.severity === "critical") ? "critical" : "high",
             }).catch(() => {});
+          }
+        } catch {}
+
+        // Failure-rate alert: if a meaningful share of this batch failed, push a system
+        // notification so a provider/config regression is caught within minutes.
+        try {
+          const settled = updatedProgress.completed + updatedProgress.failed;
+          const failRate = settled > 0 ? updatedProgress.failed / settled : 0;
+          if (settled >= FAILURE_ALERT_MIN_SETTLED && failRate >= FAILURE_ALERT_RATE) {
+            const pct = Math.round(failRate * 100);
+            dispatchNotification({
+              messageType: "alert",
+              title: `采集失败率偏高：${pct}%（批次 ${input.batchId}）`,
+              content: `本批次共 ${updatedProgress.total} 项，失败 ${updatedProgress.failed} / 已完成 ${settled}（失败率 ${pct}%）。请检查 API 提供商配置与额度。`,
+              severity: failRate >= 0.6 ? "critical" : "high",
+              dedupKey: `batch_failrate:${input.batchId}`,
+            }).catch(() => {});
+            log.warn(`High failure rate for batch ${input.batchId}: ${pct}% (${updatedProgress.failed}/${settled})`);
           }
         } catch {}
       }
@@ -1193,7 +1273,9 @@ const collectionsRouter = router({
       }
       const stale = await database.select({ id: collections.id }).from(collections).where(and(...conditions));
       for (const s of stale) {
-        await db.updateCollection(s.id, { status: "pending" });
+        // Mark failed (not pending→pending, which was a no-op) so the records surface in
+        // health stats and can be retried via batchRetry.
+        await db.updateCollection(s.id, { status: "failed", errorMessage: "stale-timeout: reset by admin" });
       }
       return { reset: stale.length };
     }),
@@ -1273,9 +1355,6 @@ const collectionsRouter = router({
 
       await analyzeCollection(input.id, collection.questionText, collection.responseText, traceId);
       await extractCitations(input.id, collection.responseText, traceId);
-      // H4 (2026-06): match executeCollection behavior — fire checkAlerts after analysis.
-      // The H3 dedup + relative-trigger logic prevents reanalysis bursts from creating noise.
-      await checkAlerts(input.id, { questionId: collection.questionId, text: collection.questionText }, collection.platform, traceId);
 
       return { success: true };
     }),
@@ -1290,15 +1369,9 @@ const collectionsRouter = router({
       const { collections, analyses } = await import("../drizzle/schema");
       const { eq, sql, isNull } = await import("drizzle-orm");
 
-      // Find success collections without analysis (incl. fields needed to fire checkAlerts after)
+      // Find success collections without analysis
       const missing = await database
-        .select({
-          id: collections.id,
-          questionId: collections.questionId,
-          platform: collections.platform,
-          questionText: collections.questionText,
-          responseText: collections.responseText,
-        })
+        .select({ id: collections.id, questionText: collections.questionText, responseText: collections.responseText })
         .from(collections)
         .leftJoin(analyses, eq(analyses.collectionId, collections.id))
         .where(sql`${collections.status} = 'success' AND ${collections.responseText} IS NOT NULL AND ${analyses.id} IS NULL`)
@@ -1316,9 +1389,6 @@ const collectionsRouter = router({
         const traceId = `bulk-analyze-${col.id}-${nanoid(4)}`;
         try {
           await analyzeCollection(col.id, col.questionText, col.responseText!, traceId);
-          // H4 (2026-06): also fire checkAlerts so reanalysis backfill produces the same alerts
-          // executeCollection would have. H3 dedup keeps the burst from creating noise.
-          await checkAlerts(col.id, { questionId: col.questionId, text: col.questionText }, col.platform, traceId);
           analyzed++;
         } catch (err: any) {
           log.error(`Bulk analyze failed for ${col.id}: ${err.message}`, { traceId });
@@ -1331,6 +1401,17 @@ const collectionsRouter = router({
 
 // ==================== Dashboard Router ====================
 const dashboardRouter = router({
+  // Collection health / error-rate overview for the dashboard. Surfaces per-platform
+  // success rate, top error messages, and successful-but-unanalyzed records.
+  collectionHealth: protectedProcedure
+    .input(z.object({ hours: z.number().min(1).max(720).optional() }).optional())
+    .query(async ({ input }) => {
+      const hours = input?.hours ?? 24;
+      const sinceMs = Date.now() - hours * 60 * 60 * 1000;
+      const stats = await db.getCollectionHealthStats(sinceMs);
+      return { hours, ...stats };
+    }),
+
   summary: protectedProcedure
     .input(
       z.object({
@@ -1534,8 +1615,6 @@ const alertsRouter = router({
       z.object({
         severity: z.string().optional(),
         isRead: z.boolean().optional(),
-        // H2 (2026-06): status filter; defaults to 'active' in db.listAlerts
-        status: z.enum(["active", "resolved", "dismissed"]).optional(),
         limit: z.number().optional(),
         offset: z.number().optional(),
       }).optional()
@@ -1555,21 +1634,6 @@ const alertsRouter = router({
     await db.markAllAlertsRead();
     return { success: true };
   }),
-
-  // H2 (2026-06): explicit workflow transitions
-  resolve: protectedProcedure
-    .input(z.object({ id: z.number() }))
-    .mutation(async ({ input }) => {
-      await db.setAlertStatus(input.id, "resolved");
-      return { success: true };
-    }),
-
-  dismiss: protectedProcedure
-    .input(z.object({ id: z.number() }))
-    .mutation(async ({ input }) => {
-      await db.setAlertStatus(input.id, "dismissed");
-      return { success: true };
-    }),
 });
 
 // ==================== Platform Configs Router ====================
@@ -1731,6 +1795,9 @@ const sysConfigsRouter = router({
   setPrimaryProvider: adminProcedure
     .input(z.object({ provider: z.enum(["bai", "openrouter"]) }))
     .mutation(async ({ input }) => {
+      if (input.provider === "bai" && !BAI_ENABLED) {
+        throw new Error("B.AI 已暂时停用，当前仅支持 OpenRouter 作为主用 Provider");
+      }
       await db.setSysConfig("llm_primary_provider", input.provider);
       log.info(`Primary LLM provider switched to: ${input.provider}`);
       return { success: true, provider: input.provider };
@@ -1773,7 +1840,7 @@ const weeklyReportsRouter = router({
       const summary = await db.getDashboardSummary(startTime, endTime);
       const heatmap = await db.getHeatmapData(startTime, endTime);
       const topCited = await db.getTopCitedUrls(20, startTime, endTime);
-      const alertsList = await db.listAlerts({ limit: 50 });
+      const alertsList = await db.listAlerts({ startTime, endTime, limit: 50 });
 
       const reportPeriod = `${startDate.toISOString().split("T")[0]} ~ ${endDate.toISOString().split("T")[0]}`;
 
@@ -1866,13 +1933,10 @@ const schedulerState = {
   nextRunAt: null as number | null,
   concurrency: 5,
   job: null as any,
+  running: false,
 };
 
 async function initScheduler() {
-  if (typeof WebSocketPair !== "undefined") {
-    log.info("Running in Cloudflare Workers; skipping scheduler");
-    return;
-  }
   // Stop existing job if any
   if (schedulerState.job) {
     schedulerState.job.stop();
@@ -1886,9 +1950,17 @@ async function initScheduler() {
   }
 
   try {
-    const cronPkg = "node-cron";
-    const cron = await import(cronPkg);
+    const cron = await import("node-cron");
     const task = cron.schedule(schedulerState.cronExpression, async () => {
+      if (schedulerState.running) {
+        log.warn("Scheduled collection skipped: previous run still in progress");
+        return;
+      }
+      if (isShuttingDown()) {
+        log.warn("Scheduled collection skipped: server shutting down");
+        return;
+      }
+      schedulerState.running = true;
       log.info("Scheduled collection triggered");
       schedulerState.lastRunAt = Date.now();
       db.upsertSchedulerConfig({ lastRunAt: schedulerState.lastRunAt }).catch(() => {});
@@ -1926,6 +1998,8 @@ async function initScheduler() {
         await runBatchConcurrently(tasks, batchId, schedulerState.concurrency);
       } catch (error: any) {
         log.error(`Scheduled collection failed: ${error.message}`);
+      } finally {
+        schedulerState.running = false;
       }
     }, {
       timezone: "Asia/Shanghai",
@@ -1942,21 +2016,20 @@ async function initScheduler() {
 }
 
 // ==================== Load Scheduler Config from DB ====================
-// initGuard: init failure degrades (feature off + ERROR log + visible on /api/health), never crashes boot.
-initGuard("geo-scheduler-boot", async () => {
-  if (typeof process !== "undefined" && process.env?.CF_PAGES === "1") {
-    log.info("Running in Cloudflare Workers; skipping geo scheduler boot");
-    return;
+(async () => {
+  try {
+    const saved = await db.getSchedulerConfig();
+    if (saved) {
+      schedulerState.enabled = saved.enabled;
+      schedulerState.cronExpression = saved.cronExpression;
+      schedulerState.concurrency = saved.concurrency;
+      schedulerState.lastRunAt = saved.lastRunAt;
+      await initScheduler();
+    }
+  } catch (error: any) {
+    log.warn(`Failed to load scheduler config from DB: ${error.message}`);
   }
-  const saved = await db.getSchedulerConfig();
-  if (saved) {
-    schedulerState.enabled = saved.enabled;
-    schedulerState.cronExpression = saved.cronExpression;
-    schedulerState.concurrency = saved.concurrency;
-    schedulerState.lastRunAt = saved.lastRunAt;
-    await initScheduler();
-  }
-});
+})();
 
 // ==================== Users Router (developer only) ====================
 // ==================== Notifications Router (developer only) ====================
@@ -1987,40 +2060,27 @@ const notificationsRouter = router({
       return { success: true };
     }),
 
-  // Email alert config (Resend): key + From + the single LOCKED recipient. getter never returns the key.
-  getEmailAlertConfig: developerProcedure.query(async () => {
-    const c = await getEmailAlertConfig();
-    return { configured: !!c.apiKey, from: c.from, recipient: c.recipient };
-  }),
-  setEmailAlertConfig: developerProcedure
-    .input(z.object({ apiKey: z.string().optional(), from: z.string().optional(), recipient: z.string().email().optional() }))
-    .mutation(async ({ input }) => {
-      await setEmailAlertConfig(input);
-      return { success: true };
-    }),
-  testEmailAlert: developerProcedure.mutation(async () => {
-    const html = buildAlertEmailHtml({
-      title: "测试预警 — 若收到此邮件即代表邮件通道正常", domain: "example.com", threat: "中", sentiment: 2,
-      stance: "hostile", summary: "这是一条来自波场舆情监控的测试预警邮件。", url: "https://geo-system-kwm3xu534q-an.a.run.app/sentiment-monitor",
-    });
-    const r = await sendEmailAlert("【测试】波场舆情预警邮件", html);
-    return { success: r.sent, error: r.error };
-  }),
-
-  // Telegram test still goes through the shared sender (reads target internally).
   testChannel: developerProcedure
-    .input(z.object({ channel: z.enum(["telegram", "email"]) }))
+    .input(z.object({ channel: z.enum(["feishu", "telegram", "email"]) }))
     .mutation(async ({ input }) => {
-      if (input.channel === "email") {
-        const html = buildAlertEmailHtml({ title: "测试预警邮件", domain: "example.com", threat: "中", sentiment: 2, summary: "测试", url: "https://geo-system-kwm3xu534q-an.a.run.app" });
-        const r = await sendEmailAlert("【测试】波场舆情预警邮件", html);
-        return { success: r.sent, error: r.error };
+      const config = (await db.listNotificationConfigs()).find(c => c.channel === input.channel);
+      if (!config) return { success: false, error: "Channel not configured" };
+
+      const { sendFeishu, sendTelegram, sendEmail } = await import("./_core/senders");
+      const testMsg = { title: "TRON GEO 系统 - 测试通知", content: "这是一条测试消息，确认推送渠道配置正确。\n时间: " + new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" }) };
+
+      if (input.channel === "feishu" && config.webhookUrl) {
+        return sendFeishu(config.webhookUrl, testMsg);
+      } else if (input.channel === "telegram" && config.botToken && config.chatId) {
+        return sendTelegram(config.botToken, config.chatId, testMsg);
+      } else if (input.channel === "email" && config.smtpHost && config.smtpUser && config.emailFrom) {
+        return sendEmail({
+          smtpHost: config.smtpHost, smtpPort: config.smtpPort || 465,
+          smtpUser: config.smtpUser, smtpPass: config.smtpPass || "",
+          from: config.emailFrom, to: (config.emailTo as string[]) || [],
+        }, testMsg);
       }
-      const config = (await db.listNotificationConfigs()).find((c) => c.channel === "telegram");
-      const { sendTelegram } = await import("./_core/senders");
-      const testMsg = { title: "波场舆情监控 - 测试通知", content: "这是一条测试消息。\n时间: " + new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" }) };
-      if (config?.botToken && config?.chatId) return sendTelegram(config.botToken, config.chatId, testMsg);
-      return { success: false, error: "Telegram 未连接" };
+      return { success: false, error: "Channel not fully configured" };
     }),
 
   listLogs: developerProcedure
@@ -2085,323 +2145,6 @@ const usersRouter = router({
     }),
 });
 
-// ==================== Sentiment Monitor (舆情监控 Phase 1) ====================
-const monitorSchedulerState = {
-  enabled: false,
-  cronExpression: "0 9,21 * * *", // 09:00 & 21:00 daily (Asia/Shanghai)
-  lastRunAt: null as number | null,
-  job: null as any,
-};
-let monitorCycleRunning = false;
-
-// Single-flight guard so manual triggers and cron never overlap.
-async function runMonitorCycleGuarded(tbs?: string): Promise<MonitorCycleResult | null> {
-  if (monitorCycleRunning) {
-    log.warn("Monitor cycle already running; skipping this trigger");
-    return null;
-  }
-  monitorCycleRunning = true;
-  try {
-    const res = await runMonitorCycle(tbs ? { tbs } : undefined);
-    monitorSchedulerState.lastRunAt = Date.now();
-    await db.upsertSchedulerConfig({ monitorLastRunAt: monitorSchedulerState.lastRunAt }).catch(() => {});
-    return res;
-  } finally {
-    monitorCycleRunning = false;
-  }
-}
-
-async function initMonitorScheduler() {
-  if (typeof WebSocketPair !== "undefined") {
-    log.info("Running in Cloudflare Workers; skipping monitor scheduler");
-    return;
-  }
-  if (monitorSchedulerState.job) {
-    monitorSchedulerState.job.stop();
-    monitorSchedulerState.job = null;
-  }
-  if (!monitorSchedulerState.enabled) {
-    log.info("Monitor scheduler disabled");
-    return;
-  }
-  try {
-    const cronPkg = "node-cron";
-    const cron = await import(cronPkg);
-    monitorSchedulerState.job = cron.schedule(
-      monitorSchedulerState.cronExpression,
-      () => {
-        log.info("Scheduled monitor cycle triggered");
-        runMonitorCycleGuarded().catch((e) => log.error(`Scheduled monitor cycle failed: ${e.message}`));
-      },
-      { timezone: "Asia/Shanghai" }
-    );
-    log.info(`Monitor scheduler initialized: ${monitorSchedulerState.cronExpression}`);
-  } catch (error: any) {
-    log.error(`Failed to initialize monitor scheduler: ${error.message}`);
-  }
-}
-
-// Load monitor scheduler config from DB at boot (default OFF until the user enables it).
-initGuard("monitor-scheduler-boot", async () => {
-  if (typeof process !== "undefined" && process.env?.CF_PAGES === "1") {
-    log.info("Running in Cloudflare Workers; skipping monitor scheduler boot");
-    return;
-  }
-  const saved = await db.getSchedulerConfig();
-  if (saved) {
-    monitorSchedulerState.enabled = (saved as any).monitorEnabled ?? false;
-    monitorSchedulerState.cronExpression = (saved as any).monitorCron ?? "0 9,21 * * *";
-    monitorSchedulerState.lastRunAt = (saved as any).monitorLastRunAt ?? null;
-    await initMonitorScheduler();
-  }
-});
-
-// Monitor maintenance crons (always-on infrastructure, independent of the monitorEnabled toggle):
-//  · 04:30 daily — 35天数据保鲜: clear contentMd of over-retention articles (cleanup.ts, idempotent)
-//  · 08:30 Monday — 舆情周报 for LAST week;  08:40 on the 1st — 舆情月报 for LAST month.
-// Report push (飞书/TG) is separately gated by sysConfigs monitor_report_push_enabled (default OFF).
-initGuard("monitor-maintenance-crons", async () => {
-  if (typeof WebSocketPair !== "undefined") {
-    log.info("Running in Cloudflare Workers; skipping monitor maintenance crons");
-    return;
-  }
-  const cronPkg = "node-cron";
-  const cron = await import(cronPkg);
-  const tz = { timezone: "Asia/Shanghai" } as any;
-  cron.schedule("30 4 * * *", () => {
-    cleanupOldArticles().catch((e) => log.error(`Scheduled cleanup failed: ${e.message}`));
-  }, tz);
-  cron.schedule("30 8 * * 1", () => {
-    const lastWeek = weeklyPeriodOf(weeklyPeriodOf(Date.now()).startMs - 1);
-    generateMonitorReport("weekly", lastWeek.reportPeriod).catch((e) =>
-      log.error(`Scheduled weekly monitor report failed: ${e.message}`)
-    );
-  }, tz);
-  cron.schedule("40 8 1 * *", () => {
-    const lastMonth = monthlyPeriodOf(monthlyPeriodOf(Date.now()).startMs - 1);
-    generateMonitorReport("monthly", lastMonth.reportPeriod).catch((e) =>
-      log.error(`Scheduled monthly monitor report failed: ${e.message}`)
-    );
-  }, tz);
-  log.info("Monitor maintenance crons registered (cleanup 04:30, weekly 08:30 Mon, monthly 08:40 1st)");
-});
-
-const monitorRouter = router({
-  // All authenticated users can view monitor data.
-  listArticles: protectedProcedure
-    .input(
-      z
-        .object({
-          page: z.number().min(0).optional(),
-          pageSize: z.number().min(1).max(100).optional(),
-          threatLevel: z.enum(["high", "medium", "low", "none"]).optional(),
-          stance: z.enum(["hostile", "neutral", "friendly"]).optional(),
-          relevance: z.enum(["high", "medium", "low", "irrelevant"]).optional(),
-          sourcePlatform: z.string().optional(),
-          focus: z.boolean().optional(), // default view: high+medium only
-          startTime: z.number().optional(),
-          endTime: z.number().optional(),
-          sort: z.enum(["time", "threat", "sentiment"]).optional(), // default time = firstSeenAt DESC
-        })
-        .optional()
-    )
-    .query(async ({ input }) => {
-      const pageSize = input?.pageSize ?? 50;
-      const page = input?.page ?? 0;
-      return db.listMonitorArticles({
-        threatLevel: input?.threatLevel,
-        stance: input?.stance,
-        relevance: input?.relevance,
-        sourcePlatform: input?.sourcePlatform,
-        focus: input?.focus,
-        startTime: input?.startTime,
-        endTime: input?.endTime,
-        sort: input?.sort,
-        limit: pageSize,
-        offset: page * pageSize,
-      });
-    }),
-
-  getArticle: protectedProcedure.input(z.object({ id: z.number() })).query(async ({ input }) => {
-    return db.getMonitorArticleById(input.id);
-  }),
-
-  stats: protectedProcedure.query(async () => {
-    return db.getMonitorStats();
-  }),
-
-  getBudgetStatus: protectedProcedure.query(async () => {
-    return monitorBudget.readBudget();
-  }),
-
-  listSourceRules: protectedProcedure.query(async () => {
-    return db.listMonitorSourceRules();
-  }),
-
-  // admin+ operations
-  triggerCycle: adminProcedure.mutation(async () => {
-    const res = await runMonitorCycleGuarded();
-    if (!res) return { success: false, running: true, message: "已有一轮监控正在运行" };
-    return { success: true, running: false, result: res };
-  }),
-
-  reanalyzeArticle: adminProcedure.input(z.object({ id: z.number() })).mutation(async ({ input }) => {
-    const ok = await reanalyzeArticle(input.id);
-    return { success: ok };
-  }),
-
-  // 币安广场 AWS WAF cookie status (read-only). Refresh is fully external: the GitHub Actions cron runs
-  // refresh-binance-cookie.ts every 2h (Chromium runner) → writes into sysConfigs. No in-app refresh
-  // endpoint (Cloud Run has no Chromium; the old button only ever errored).
-  binanceCookieStatus: protectedProcedure.query(async () => getCookieStatus()),
-
-  // Phase 2 push config: briefing/realtime toggles + briefing mode (channels + silent hours live in
-  // notificationConfigs, managed at /config/notifications).
-  getPushConfig: protectedProcedure.query(async () => getPushConfig()),
-  setPushConfig: adminProcedure
-    .input(
-      z.object({
-        briefingEnabled: z.boolean().optional(),
-        briefingMode: z.enum(["every", "negative_only"]).optional(),
-        realtimeEnabled: z.boolean().optional(),
-        alertMinThreat: z.enum(["high", "medium", "low"]).optional(),
-      })
-    )
-    .mutation(async ({ input }) => {
-      await setPushConfig(input);
-      return { success: true, ...(await getPushConfig()) };
-    }),
-
-  getSchedule: protectedProcedure.query(async () => ({
-    enabled: monitorSchedulerState.enabled,
-    cronExpression: monitorSchedulerState.cronExpression,
-    lastRunAt: monitorSchedulerState.lastRunAt,
-    running: monitorCycleRunning,
-  })),
-
-  setSchedule: adminProcedure
-    .input(z.object({ enabled: z.boolean(), cronExpression: z.string().optional() }))
-    .mutation(async ({ input }) => {
-      monitorSchedulerState.enabled = input.enabled;
-      if (input.cronExpression) monitorSchedulerState.cronExpression = input.cronExpression;
-      await db.upsertSchedulerConfig({
-        monitorEnabled: monitorSchedulerState.enabled,
-        monitorCron: monitorSchedulerState.cronExpression,
-      });
-      await initMonitorScheduler();
-      return {
-        success: true,
-        enabled: monitorSchedulerState.enabled,
-        cronExpression: monitorSchedulerState.cronExpression,
-      };
-    }),
-
-  listKeywords: adminProcedure.query(async () => {
-    return db.listMonitorKeywords(false);
-  }),
-
-  upsertKeyword: adminProcedure
-    .input(
-      z.object({
-        id: z.number().optional(),
-        keyword: z.string().min(1),
-        keywordGroup: z.string().optional().nullable(),
-        searchFreq: z.enum(["hourly", "daily"]).optional(),
-        isActive: z.boolean().optional(),
-        priority: z.number().min(0).max(10).optional(),
-      })
-    )
-    .mutation(async ({ input }) => {
-      await db.upsertMonitorKeyword({
-        id: input.id,
-        keyword: input.keyword.trim(),
-        keywordGroup: input.keywordGroup ?? null,
-        searchFreq: input.searchFreq ?? "daily",
-        isActive: input.isActive ?? true,
-        priority: input.priority ?? 5,
-      });
-      return { success: true };
-    }),
-
-  toggleKeyword: adminProcedure
-    .input(z.object({ id: z.number(), isActive: z.boolean() }))
-    .mutation(async ({ input }) => {
-      await db.toggleMonitorKeyword(input.id, input.isActive);
-      return { success: true };
-    }),
-
-  deleteKeyword: adminProcedure.input(z.object({ id: z.number() })).mutation(async ({ input }) => {
-    await db.deleteMonitorKeyword(input.id);
-    return { success: true };
-  }),
-
-  // ===== Phase 3 GEO 穿透联动: 舆情 domain × AI 引用 domain 双向关联 =====
-  // 信源级穿透矩阵: 每个被监控信源的舆情活跃度 × AI 引用覆盖 × 风险分级。
-  sourcePenetration: protectedProcedure
-    .input(z.object({ days: z.number().min(1).max(365).optional() }).optional())
-    .query(async ({ input }) => getSourcePenetration({ days: input?.days })),
-
-  // 文章级穿透: 某篇文章的信源是否已被 AI 引用、被哪些平台/问题引用、AI 传播风险。
-  articlePenetration: protectedProcedure
-    .input(z.object({ id: z.number() }))
-    .query(async ({ input }) => getArticlePenetration(input.id)),
-
-  // 反向视角: AI 正在引用的信源,舆情侧最近在发什么(尤其负面)。
-  citationSourceActivity: protectedProcedure
-    .input(z.object({ limit: z.number().min(1).max(200).optional() }).optional())
-    .query(async ({ input }) => getCitationSourceActivity({ limit: input?.limit })),
-
-  // ===== 数据保鲜: 35天清正文(保守分层, 不物理删) =====
-  runCleanup: adminProcedure.mutation(async () => {
-    const res = await cleanupOldArticles();
-    return { success: true, retentionDays: CLEANUP_DAYS, ...res };
-  }),
-
-  // ===== 舆情周报/月报 (independent from GEO weeklyReports) =====
-  listReports: protectedProcedure
-    .input(z.object({ limit: z.number().min(1).max(200).optional() }).optional())
-    .query(async ({ input }) => db.listMonitorReports(input?.limit ?? 50)),
-
-  getReport: protectedProcedure.input(z.object({ id: z.number() })).query(async ({ input }) => {
-    return db.getMonitorReportById(input.id);
-  }),
-
-  generateReport: adminProcedure
-    .input(
-      z.object({
-        reportType: z.enum(["weekly", "monthly"]),
-        period: z.string().max(32).optional(), // '2026-W27' / '2026-07'; omitted = current period
-      })
-    )
-    .mutation(async ({ input }) => {
-      const res = await generateMonitorReport(input.reportType, input.period);
-      return { success: true, ...res };
-    }),
-
-  // ===== Telegram 一键连接(共享bot + /start 绑定码 + webhook) =====
-  telegramStatus: protectedProcedure.query(async () => getTelegramStatus()),
-  telegramCreateBindCode: protectedProcedure
-    .input(z.object({ label: z.string().max(64).optional() }).optional())
-    .mutation(async ({ input, ctx }) => tgCreateBindCode(input?.label || (ctx.user as any)?.email || undefined)),
-  // dev-only setup: configure the shared bot token + register the webhook
-  telegramSetBotToken: adminProcedure
-    .input(z.object({ token: z.string().min(20) }))
-    .mutation(async ({ input }) => tgSetBotToken(input.token)),
-  telegramSetupWebhook: adminProcedure
-    .input(z.object({ baseUrl: z.string().url().optional() }).optional())
-    .mutation(async ({ input }) => tgSetupWebhook(input?.baseUrl)),
-  telegramSendTest: adminProcedure.mutation(async () => sendTelegramTest()),
-  telegramUnbind: adminProcedure.mutation(async () => unbindTelegram()),
-
-  getReportPushConfig: protectedProcedure.query(async () => ({ enabled: await getReportPushEnabled() })),
-  setReportPushConfig: adminProcedure
-    .input(z.object({ enabled: z.boolean() }))
-    .mutation(async ({ input }) => {
-      await setReportPushEnabled(input.enabled);
-      return { success: true, enabled: input.enabled };
-    }),
-});
-
 // ==================== App Router ====================
 export const appRouter = router({
   system: systemRouter,
@@ -2428,7 +2171,14 @@ export const appRouter = router({
   scheduler: schedulerRouter,
   users: usersRouter,
   notifications: notificationsRouter,
-  monitor: monitorRouter,
 });
 
 export type AppRouter = typeof appRouter;
+
+// Internal helpers exposed for unit testing only — not part of the tRPC surface.
+export const __testing = {
+  resolveApiConfigChain,
+  callExternalLLM,
+  isRetryableError,
+  BAI_ENABLED,
+};

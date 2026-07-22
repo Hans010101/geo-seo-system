@@ -69,7 +69,7 @@ export const PLATFORM_OPENROUTER_MODELS: Record<Platform, string> = {
   doubao: "bytedance-seed/seed-1.6-flash",
   kimi: "moonshotai/kimi-k2",
   deepseek: "deepseek/deepseek-chat-v3-0324",
-  minimax: "minimax/minimax-m2.5",
+  minimax: "minimax/minimax-01",
   tongyi: "qwen/qwen-plus",
   zhipu: "z-ai/glm-4.7",
   // Grok 3 deprecated per xAI notice; Grok 4.20 is the current stable non-multi-agent revision
