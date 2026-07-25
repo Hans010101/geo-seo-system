@@ -42,6 +42,24 @@ function createAuthContext(): { ctx: TrpcContext; clearedCookies: CookieCall[] }
 }
 
 describe("auth.logout", () => {
+  it("never exposes the password hash from auth.me", async () => {
+    const { ctx } = createAuthContext();
+    ctx.user = {
+      ...ctx.user!,
+      passwordHash: "sensitive-password-hash",
+    };
+    const caller = appRouter.createCaller(ctx);
+
+    const result = await caller.auth.me();
+
+    expect(result).not.toHaveProperty("passwordHash");
+    expect(result).toMatchObject({
+      id: 1,
+      openId: "sample-user",
+      email: "sample@example.com",
+    });
+  });
+
   it("clears the session cookie and reports success", async () => {
     const { ctx, clearedCookies } = createAuthContext();
     const caller = appRouter.createCaller(ctx);
