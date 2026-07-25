@@ -29,6 +29,7 @@ Cloudflare Secret（只记录名称，不记录值）：
 - `JWT_SECRET`
 - `GOOGLE_CLIENT_ID`
 - `GOOGLE_CLIENT_SECRET`
+- `RESEND_API_KEY`
 
 Pages 和 Cron Worker 均需能够读取业务所需 Secret。数据库连接信息由 Hyperdrive 保存，不应另设明文 `DATABASE_URL`。
 

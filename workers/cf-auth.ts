@@ -11,7 +11,7 @@ import type { Context } from "hono";
 import type { Hono } from "hono";
 import { getCookie, setCookie } from "hono/cookie";
 import { SignJWT, jwtVerify } from "jose";
-import { randomBytes, scrypt, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, randomInt, scrypt, timingSafeEqual } from "node:crypto";
 import { promisify } from "node:util";
 import * as db from "../server/db";
 import { COOKIE_NAME, ONE_YEAR_MS } from "@shared/const";
@@ -27,6 +27,8 @@ function getEnv() {
 // scrypt format as Cloud Run so existing password accounts work on both hosts.
 
 const scryptAsync = promisify(scrypt);
+const EMAIL_LOGIN_COOKIE = "geo_email_login";
+const EMAIL_LOGIN_TTL_SECONDS = 10 * 60;
 
 export async function hashPassword(plain: string): Promise<string> {
   const salt = randomBytes(16).toString("hex");
@@ -127,6 +129,68 @@ function isValidEmail(email: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
+function normalizeEmail(email: string): string {
+  return email.trim().toLowerCase();
+}
+
+function emailCodeDigest(secret: string, nonce: string, email: string, code: string): string {
+  return createHmac("sha256", secret)
+    .update(`${nonce}:${email}:${code}`)
+    .digest("hex");
+}
+
+async function createEmailChallenge(email: string, code: string) {
+  const env = getEnv();
+  const nonce = randomBytes(16).toString("hex");
+  const digest = emailCodeDigest(env.JWT_SECRET, nonce, email, code);
+  const token = await new SignJWT({
+    kind: "email-login",
+    email,
+    nonce,
+    digest,
+  })
+    .setProtectedHeader({ alg: "HS256", typ: "JWT" })
+    .setIssuedAt()
+    .setExpirationTime(`${EMAIL_LOGIN_TTL_SECONDS}s`)
+    .sign(getSessionSecret());
+  return token;
+}
+
+async function verifyEmailChallenge(
+  token: string | undefined,
+  email: string,
+  code: string,
+): Promise<boolean> {
+  if (!token) return false;
+  try {
+    const { payload } = await jwtVerify(token, getSessionSecret(), {
+      algorithms: ["HS256"],
+    });
+    if (
+      payload.kind !== "email-login" ||
+      payload.email !== email ||
+      typeof payload.nonce !== "string" ||
+      typeof payload.digest !== "string"
+    ) {
+      return false;
+    }
+    const expected = emailCodeDigest(
+      getEnv().JWT_SECRET,
+      payload.nonce,
+      email,
+      code,
+    );
+    const actualBuffer = Buffer.from(payload.digest, "hex");
+    const expectedBuffer = Buffer.from(expected, "hex");
+    return (
+      actualBuffer.length === expectedBuffer.length &&
+      timingSafeEqual(actualBuffer, expectedBuffer)
+    );
+  } catch {
+    return false;
+  }
+}
+
 async function isFirstUser(): Promise<boolean> {
   const users = await db.listUsers();
   return users.length === 0;
@@ -206,6 +270,121 @@ export function registerAuthRoutesCf(app: Hono<any>) {
     } catch (error: any) {
       console.error("[Auth] Login failed:", error);
       return c.json({ error: "登录失败，请稍后再试" }, 500);
+    }
+  });
+
+  // Passwordless email login via Resend. In production AUTH_ALLOWED_EMAIL keeps
+  // the onboarding sender locked to the Resend account owner's mailbox.
+  app.get("/api/auth/email/enabled", (c) => {
+    const env = getEnv();
+    return c.json({
+      enabled: Boolean(env.RESEND_API_KEY && env.AUTH_ALLOWED_EMAIL),
+    });
+  });
+
+  app.post("/api/auth/email/send-code", async (c) => {
+    try {
+      const env = getEnv();
+      if (!env.RESEND_API_KEY || !env.AUTH_ALLOWED_EMAIL) {
+        return c.json({ error: "邮箱验证码登录尚未配置" }, 503);
+      }
+      const input = await c.req.json();
+      const email = normalizeEmail(String(input?.email || ""));
+      const allowedEmail = normalizeEmail(env.AUTH_ALLOWED_EMAIL);
+      if (!isValidEmail(email)) return c.json({ error: "请输入有效的邮箱地址" }, 400);
+      if (email !== allowedEmail) return c.json({ error: "该邮箱暂未获准登录" }, 403);
+
+      const code = String(randomInt(100000, 1000000));
+      const challenge = await createEmailChallenge(email, code);
+      const from = env.RESEND_FROM || "GEO+SEO 系统 <onboarding@resend.dev>";
+      const sendResponse = await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${env.RESEND_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          from,
+          to: [email],
+          subject: "GEO+SEO 系统登录验证码",
+          html: `<div style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;max-width:520px;margin:0 auto;padding:24px">
+            <h2 style="margin:0 0 16px">GEO+SEO 系统登录</h2>
+            <p style="color:#4b5563">你的登录验证码是：</p>
+            <div style="font-size:32px;font-weight:700;letter-spacing:8px;padding:18px 0">${code}</div>
+            <p style="color:#6b7280;font-size:13px">验证码 10 分钟内有效。如果不是你本人操作，请忽略本邮件。</p>
+          </div>`,
+        }),
+      });
+      if (!sendResponse.ok) {
+        console.error("[Email Auth] Resend failed:", await sendResponse.text());
+        return c.json({ error: "验证码发送失败，请稍后再试" }, 502);
+      }
+
+      setCookie(c, EMAIL_LOGIN_COOKIE, challenge, {
+        httpOnly: true,
+        path: "/",
+        sameSite: "Strict",
+        secure: isSecureRequest(c),
+        maxAge: EMAIL_LOGIN_TTL_SECONDS,
+      });
+      return c.json({ success: true, expiresIn: EMAIL_LOGIN_TTL_SECONDS });
+    } catch (error) {
+      console.error("[Email Auth] Send code failed:", error);
+      return c.json({ error: "验证码发送失败，请稍后再试" }, 500);
+    }
+  });
+
+  app.post("/api/auth/email/verify", async (c) => {
+    try {
+      const env = getEnv();
+      const input = await c.req.json();
+      const email = normalizeEmail(String(input?.email || ""));
+      const code = String(input?.code || "").trim();
+      if (!/^\d{6}$/.test(code)) return c.json({ error: "请输入 6 位验证码" }, 400);
+      if (email !== normalizeEmail(env.AUTH_ALLOWED_EMAIL || "")) {
+        return c.json({ error: "该邮箱暂未获准登录" }, 403);
+      }
+      const valid = await verifyEmailChallenge(
+        getCookie(c, EMAIL_LOGIN_COOKIE),
+        email,
+        code,
+      );
+      if (!valid) return c.json({ error: "验证码无效或已过期" }, 401);
+
+      let user = await db.getUserByEmail(email);
+      if (!user) user = await db.getUserByOpenId(`email:${email}`);
+      if (user?.isBanned) return c.json({ error: "该账号已被禁用，请联系管理员" }, 403);
+      if (!user) {
+        const firstUser = await isFirstUser();
+        await db.upsertUser({
+          openId: `email:${email}`,
+          name: email,
+          email,
+          loginMethod: "email",
+          role: firstUser ? "admin" : "user",
+          lastSignedIn: new Date(),
+        });
+        user = await db.getUserByOpenId(`email:${email}`);
+      } else {
+        await db.upsertUser({
+          openId: user.openId,
+          email,
+          lastSignedIn: new Date(),
+        });
+        user = await db.getUserByOpenId(user.openId);
+      }
+      if (!user) return c.json({ error: "登录账号创建失败" }, 500);
+
+      setSessionCookie(c, await createSessionToken(user.openId, user.name || email));
+      deleteCookie(c, EMAIL_LOGIN_COOKIE, {
+        path: "/",
+        sameSite: "Strict",
+        secure: isSecureRequest(c),
+      });
+      return c.json({ success: true });
+    } catch (error) {
+      console.error("[Email Auth] Verify failed:", error);
+      return c.json({ error: "邮箱登录失败，请稍后再试" }, 500);
     }
   });
 

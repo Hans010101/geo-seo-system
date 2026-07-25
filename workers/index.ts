@@ -47,6 +47,9 @@ export interface Env {
   OPENROUTER_BASE_URL?: string;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
+  RESEND_API_KEY?: string;
+  RESEND_FROM?: string;
+  AUTH_ALLOWED_EMAIL?: string;
   ENABLE_CLOUDFLARE_CRON?: string;
   HYPERDRIVE?: HyperdriveBinding;
 }

@@ -6,7 +6,9 @@
   "pages_build_output_dir": "dist/public",
   "vars": {
     "NODE_ENV": "production",
-    "OPENROUTER_BASE_URL": "https://openrouter.ai/api/v1"
+    "OPENROUTER_BASE_URL": "https://openrouter.ai/api/v1",
+    "RESEND_FROM": "GEO+SEO 系统 <onboarding@resend.dev>",
+    "AUTH_ALLOWED_EMAIL": "hans.pan007@gmail.com"
   },
   "hyperdrive": [
     {

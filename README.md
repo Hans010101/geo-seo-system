@@ -21,7 +21,7 @@ Cloudflare Cron 每分钟收到一次触发，再按数据库中的动态表达�
 - API：tRPC；Cloud Run 使用 Express，Cloudflare 使用 Hono/Fetch
 - 数据库：MySQL、Drizzle ORM
 - Cloudflare 数据链路：Pages Functions / Cron Worker → Hyperdrive → Cloud SQL
-- 登录：邮箱密码、Google OAuth、JWT Cookie
+- 登录：邮箱密码、Resend 邮箱验证码、Google OAuth、JWT Cookie
 - 运行时：Node.js 22、Cloudflare Workers `nodejs_compat`
 
 ## 本地开发
@@ -59,7 +59,7 @@ bash scripts/deploy-cloudflare.sh
 
 - `wrangler.jsonc`：Pages 项目及 Hyperdrive 绑定。
 - `wrangler.cron.jsonc`：独立 Cron Worker、触发频率和待命开关。
-- `JWT_SECRET`、`GOOGLE_CLIENT_ID`、`GOOGLE_CLIENT_SECRET` 只保存在 Cloudflare Secret 中，不进入 Git。
+- `JWT_SECRET`、`GOOGLE_CLIENT_ID`、`GOOGLE_CLIENT_SECRET`、`RESEND_API_KEY` 只保存在 Cloudflare Secret 中，不进入 Git。
 - OpenRouter 等模型提供商 Key 由系统管理页面写入数据库，不写入仓库。
 - 不要在 Cloud Run 仍运行后台任务时开启 Cloudflare Cron。
 

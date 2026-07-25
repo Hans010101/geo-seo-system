@@ -40,6 +40,7 @@ import {
   ScanSearch,
   Network,
   ClipboardList,
+  Mail,
 } from "lucide-react";
 import { CSSProperties, FormEvent, useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
@@ -127,12 +128,20 @@ function LoginForm() {
   const [isRegistering, setIsRegistering] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [googleEnabled, setGoogleEnabled] = useState(false);
+  const [emailEnabled, setEmailEnabled] = useState(false);
+  const [loginMode, setLoginMode] = useState<"password" | "email">("password");
+  const [emailCode, setEmailCode] = useState("");
+  const [emailCodeSent, setEmailCodeSent] = useState(false);
   const utils = trpc.useUtils();
 
   useEffect(() => {
     fetch("/api/auth/google/enabled")
       .then((r) => r.json())
       .then((d) => setGoogleEnabled(d.enabled))
+      .catch(() => {});
+    fetch("/api/auth/email/enabled")
+      .then((r) => r.json())
+      .then((d) => setEmailEnabled(d.enabled))
       .catch(() => {});
   }, []);
 
@@ -161,6 +170,40 @@ function LoginForm() {
     }
   };
 
+  const handleEmailLogin = async (e: FormEvent) => {
+    e.preventDefault();
+    setError("");
+    setSubmitting(true);
+    try {
+      const endpoint = emailCodeSent
+        ? "/api/auth/email/verify"
+        : "/api/auth/email/send-code";
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: username,
+          ...(emailCodeSent ? { code: emailCode } : {}),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error || "操作失败");
+        return;
+      }
+      if (!emailCodeSent) {
+        setEmailCodeSent(true);
+        return;
+      }
+      await utils.auth.me.invalidate();
+      window.location.reload();
+    } catch {
+      setError("网络错误");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   return (
     <div className="flex items-center justify-center min-h-screen bg-background">
       <div className="flex flex-col items-center gap-8 p-8 max-w-md w-full">
@@ -172,25 +215,50 @@ function LoginForm() {
             <h1 className="text-2xl font-bold tracking-tight">TRON GEO 系统</h1>
           </div>
           <p className="text-sm text-muted-foreground text-center max-w-sm">
-            生成式引擎优化监测平台 — {isRegistering ? "注册新账号" : "请登录以访问仪表盘"}
+            生成式引擎优化监测平台 — {loginMode === "email"
+              ? "使用邮箱验证码登录"
+              : isRegistering ? "注册新账号" : "请登录以访问仪表盘"}
           </p>
         </div>
-        <form onSubmit={handleSubmit} className="w-full space-y-4">
+        <form
+          onSubmit={loginMode === "email" ? handleEmailLogin : handleSubmit}
+          className="w-full space-y-4"
+        >
           <Input
-            placeholder="用户名或邮箱"
+            type={loginMode === "email" ? "email" : "text"}
+            placeholder={loginMode === "email" ? "邮箱地址" : "用户名或邮箱"}
             value={username}
-            onChange={(e) => setUsername(e.target.value)}
+            onChange={(e) => {
+              setUsername(e.target.value);
+              if (loginMode === "email") {
+                setEmailCodeSent(false);
+                setEmailCode("");
+              }
+            }}
             required
             autoFocus
           />
-          <Input
-            type="password"
-            placeholder="密码"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-            minLength={6}
-          />
+          {loginMode === "password" ? (
+            <Input
+              type="password"
+              placeholder="密码"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+              minLength={6}
+            />
+          ) : emailCodeSent ? (
+            <Input
+              inputMode="numeric"
+              pattern="[0-9]{6}"
+              maxLength={6}
+              placeholder="6 位邮箱验证码"
+              value={emailCode}
+              onChange={(e) => setEmailCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+              required
+              autoFocus
+            />
+          ) : null}
           {error && <p className="text-sm text-destructive">{error}</p>}
           <Button
             type="submit"
@@ -198,26 +266,64 @@ function LoginForm() {
             className="w-full shadow-lg hover:shadow-xl transition-all"
             disabled={submitting}
           >
-            {submitting ? "..." : isRegistering ? "注册" : "登录"}
+            {submitting
+              ? "..."
+              : loginMode === "email"
+                ? emailCodeSent ? "验证并登录" : "发送验证码"
+                : isRegistering ? "注册" : "登录"}
           </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="w-full"
-            onClick={() => { setIsRegistering(!isRegistering); setError(""); }}
-          >
-            {isRegistering ? "已有账号？去登录" : "没有账号？注册"}
-          </Button>
+          {loginMode === "password" ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="w-full"
+              onClick={() => { setIsRegistering(!isRegistering); setError(""); }}
+            >
+              {isRegistering ? "已有账号？去登录" : "没有账号？注册"}
+            </Button>
+          ) : (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="w-full"
+              onClick={() => {
+                setLoginMode("password");
+                setEmailCodeSent(false);
+                setEmailCode("");
+                setError("");
+              }}
+            >
+              使用密码登录
+            </Button>
+          )}
         </form>
 
-        {googleEnabled && (
+        {(emailEnabled || googleEnabled) && (
           <>
             <div className="w-full flex items-center gap-3">
               <Separator className="flex-1" />
               <span className="text-xs text-muted-foreground">或</span>
               <Separator className="flex-1" />
             </div>
+            {emailEnabled && loginMode === "password" && (
+              <Button
+                type="button"
+                variant="outline"
+                size="lg"
+                className="w-full gap-2"
+                onClick={() => {
+                  setLoginMode("email");
+                  setIsRegistering(false);
+                  setError("");
+                }}
+              >
+                <Mail className="h-5 w-5" />
+                使用邮箱验证码登录
+              </Button>
+            )}
+            {googleEnabled && (
             <Button
               type="button"
               variant="outline"
@@ -233,6 +339,7 @@ function LoginForm() {
               </svg>
               使用 Google 账号登录
             </Button>
+            )}
           </>
         )}
       </div>
