@@ -9,7 +9,7 @@
 
 import type { Context } from "hono";
 import type { Hono } from "hono";
-import { getCookie, setCookie } from "hono/cookie";
+import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { SignJWT, jwtVerify } from "jose";
 import { createHmac, randomBytes, randomInt, scrypt, timingSafeEqual } from "node:crypto";
 import { promisify } from "node:util";
