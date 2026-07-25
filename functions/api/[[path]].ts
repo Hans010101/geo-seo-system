@@ -4,7 +4,7 @@ if (typeof (globalThis as any).MessagePort === "undefined") {
 }
 
 import { handle } from "hono/cloudflare-pages";
-import app from "../../workers/index";
+import { app } from "../../workers/index";
 
 export const onRequest = handle(app);
 export const onRequestGet = handle(app);

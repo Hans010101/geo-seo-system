@@ -38,6 +38,7 @@ import {
   sendTelegramTest,
   unbindTelegram,
 } from "./monitor/telegram-connect";
+import { isCloudflareRuntime } from "./runtime";
 
 // ==================== Structured Logger ====================
 function createLogger(module: string) {
@@ -1822,6 +1823,15 @@ const urlMatchRulesRouter = router({
 // ==================== Scheduler Router (P1-2: Cron scheduling) ====================
 const schedulerRouter = router({
   getConfig: protectedProcedure.query(async () => {
+    if (isCloudflareRuntime()) {
+      const saved = await db.getSchedulerConfig();
+      if (saved) {
+        schedulerState.enabled = saved.enabled;
+        schedulerState.cronExpression = saved.cronExpression;
+        schedulerState.lastRunAt = saved.lastRunAt;
+        schedulerState.concurrency = saved.concurrency;
+      }
+    }
     return {
       enabled: schedulerState.enabled,
       cronExpression: schedulerState.cronExpression,
@@ -1881,48 +1891,18 @@ async function initScheduler() {
     return;
   }
 
+  if (isCloudflareRuntime()) {
+    log.info("Scheduler configuration saved; execution is managed by Cloudflare Cron");
+    return;
+  }
+
   try {
     const cronPkg = "node-cron";
     const cron = await import(/* @vite-ignore */ cronPkg);
-    const task = cron.schedule(schedulerState.cronExpression, async () => {
-      log.info("Scheduled collection triggered");
-      schedulerState.lastRunAt = Date.now();
-      db.upsertSchedulerConfig({ lastRunAt: schedulerState.lastRunAt }).catch(() => {});
-
-      try {
-        const questionsList = await db.listQuestions({ status: "active" });
-        const platformConfigsList = await db.listPlatformConfigs();
-        const enabledPlatforms = platformConfigsList.filter((p: any) => p.isEnabled).map((p: any) => p.platform);
-
-        if (enabledPlatforms.length === 0 || questionsList.length === 0) {
-          log.warn("Scheduled collection skipped: no enabled platforms or active questions");
-          return;
-        }
-
-        const batchId = `scheduled-${nanoid(8)}`;
-        const tasks: { collectionId: number; question: any; platform: string }[] = [];
-
-        for (const question of questionsList) {
-          for (const platform of enabledPlatforms) {
-            const collectionId = await db.createCollection({
-              questionId: question.questionId,
-              questionText: question.text,
-              platform,
-              language: question.language,
-              timestamp: Date.now(),
-              status: "pending",
-              batchId,
-            });
-            if (collectionId) {
-              tasks.push({ collectionId, question, platform });
-            }
-          }
-        }
-
-        await runBatchConcurrently(tasks, batchId, schedulerState.concurrency);
-      } catch (error: any) {
+    const task = cron.schedule(schedulerState.cronExpression, () => {
+      runScheduledCollection().catch((error: any) => {
         log.error(`Scheduled collection failed: ${error.message}`);
-      }
+      });
     }, {
       timezone: "Asia/Shanghai",
     });
@@ -1937,9 +1917,47 @@ async function initScheduler() {
   }
 }
 
+export async function runScheduledCollection(concurrency = schedulerState.concurrency) {
+  log.info("Scheduled collection triggered");
+  schedulerState.lastRunAt = Date.now();
+  await db.upsertSchedulerConfig({ lastRunAt: schedulerState.lastRunAt }).catch(() => {});
+
+  const questionsList = await db.listQuestions({ status: "active" });
+  const platformConfigsList = await db.listPlatformConfigs();
+  const enabledPlatforms = platformConfigsList
+    .filter((p: any) => p.isEnabled)
+    .map((p: any) => p.platform);
+
+  if (enabledPlatforms.length === 0 || questionsList.length === 0) {
+    log.warn("Scheduled collection skipped: no enabled platforms or active questions");
+    return;
+  }
+
+  const batchId = `scheduled-${nanoid(8)}`;
+  const tasks: { collectionId: number; question: any; platform: string }[] = [];
+
+  for (const question of questionsList) {
+    for (const platform of enabledPlatforms) {
+      const collectionId = await db.createCollection({
+        questionId: question.questionId,
+        questionText: question.text,
+        platform,
+        language: question.language,
+        timestamp: Date.now(),
+        status: "pending",
+        batchId,
+      });
+      if (collectionId) tasks.push({ collectionId, question, platform });
+    }
+  }
+
+  await runBatchConcurrently(tasks, batchId, concurrency);
+}
+
 // ==================== Load Scheduler Config from DB ====================
 // initGuard: init failure degrades (feature off + ERROR log + visible on /api/health), never crashes boot.
 initGuard("geo-scheduler-boot", async () => {
+  if (isCloudflareRuntime()) return;
   const saved = await db.getSchedulerConfig();
   if (saved) {
     schedulerState.enabled = saved.enabled;
@@ -2087,7 +2105,7 @@ const monitorSchedulerState = {
 let monitorCycleRunning = false;
 
 // Single-flight guard so manual triggers and cron never overlap.
-async function runMonitorCycleGuarded(tbs?: string): Promise<MonitorCycleResult | null> {
+export async function runScheduledMonitorCycle(tbs?: string): Promise<MonitorCycleResult | null> {
   if (monitorCycleRunning) {
     log.warn("Monitor cycle already running; skipping this trigger");
     return null;
@@ -2112,6 +2130,10 @@ async function initMonitorScheduler() {
     log.info("Monitor scheduler disabled");
     return;
   }
+  if (isCloudflareRuntime()) {
+    log.info("Monitor schedule saved; execution is managed by Cloudflare Cron");
+    return;
+  }
   try {
     const cronPkg = "node-cron";
     const cron = await import(/* @vite-ignore */ cronPkg);
@@ -2119,7 +2141,7 @@ async function initMonitorScheduler() {
       monitorSchedulerState.cronExpression,
       () => {
         log.info("Scheduled monitor cycle triggered");
-        runMonitorCycleGuarded().catch((e) => log.error(`Scheduled monitor cycle failed: ${e.message}`));
+        runScheduledMonitorCycle().catch((e) => log.error(`Scheduled monitor cycle failed: ${e.message}`));
       },
       { timezone: "Asia/Shanghai" }
     );
@@ -2131,6 +2153,7 @@ async function initMonitorScheduler() {
 
 // Load monitor scheduler config from DB at boot (default OFF until the user enables it).
 initGuard("monitor-scheduler-boot", async () => {
+  if (isCloudflareRuntime()) return;
   const saved = await db.getSchedulerConfig();
   if (saved) {
     monitorSchedulerState.enabled = (saved as any).monitorEnabled ?? false;
@@ -2145,6 +2168,10 @@ initGuard("monitor-scheduler-boot", async () => {
 //  · 08:30 Monday — 舆情周报 for LAST week;  08:40 on the 1st — 舆情月报 for LAST month.
 // Report push (飞书/TG) is separately gated by sysConfigs monitor_report_push_enabled (default OFF).
 initGuard("monitor-maintenance-crons", async () => {
+  if (isCloudflareRuntime()) {
+    log.info("Monitor maintenance schedules are managed by Cloudflare Cron");
+    return;
+  }
   const cronPkg = "node-cron";
   const cron = await import(/* @vite-ignore */ cronPkg);
   const tz = { timezone: "Asia/Shanghai" } as any;
@@ -2220,7 +2247,7 @@ const monitorRouter = router({
 
   // admin+ operations
   triggerCycle: adminProcedure.mutation(async () => {
-    const res = await runMonitorCycleGuarded();
+    const res = await runScheduledMonitorCycle();
     if (!res) return { success: false, running: true, message: "已有一轮监控正在运行" };
     return { success: true, running: false, result: res };
   }),
@@ -2252,12 +2279,22 @@ const monitorRouter = router({
       return { success: true, ...(await getPushConfig()) };
     }),
 
-  getSchedule: protectedProcedure.query(async () => ({
-    enabled: monitorSchedulerState.enabled,
-    cronExpression: monitorSchedulerState.cronExpression,
-    lastRunAt: monitorSchedulerState.lastRunAt,
-    running: monitorCycleRunning,
-  })),
+  getSchedule: protectedProcedure.query(async () => {
+    if (isCloudflareRuntime()) {
+      const saved = await db.getSchedulerConfig();
+      if (saved) {
+        monitorSchedulerState.enabled = saved.monitorEnabled;
+        monitorSchedulerState.cronExpression = saved.monitorCron;
+        monitorSchedulerState.lastRunAt = saved.monitorLastRunAt;
+      }
+    }
+    return {
+      enabled: monitorSchedulerState.enabled,
+      cronExpression: monitorSchedulerState.cronExpression,
+      lastRunAt: monitorSchedulerState.lastRunAt,
+      running: monitorCycleRunning,
+    };
+  }),
 
   setSchedule: adminProcedure
     .input(z.object({ enabled: z.boolean(), cronExpression: z.string().optional() }))
@@ -2388,8 +2425,12 @@ export const appRouter = router({
   auth: router({
     me: publicProcedure.query((opts) => opts.ctx.user),
     logout: publicProcedure.mutation(({ ctx }) => {
-      const cookieOptions = getSessionCookieOptions(ctx.req);
-      ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
+      if (ctx.clearSessionCookie) {
+        ctx.clearSessionCookie();
+      } else if (ctx.res) {
+        const cookieOptions = getSessionCookieOptions(ctx.req);
+        ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
+      }
       return { success: true } as const;
     }),
   }),

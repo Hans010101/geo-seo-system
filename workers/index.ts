@@ -18,13 +18,22 @@ if (typeof MessagePort === "undefined") {
 }
 
 import { Hono } from "hono";
-import { cors } from "hono/cors";
-import { getCookie, setCookie, deleteCookie } from "hono/cookie";
+import { deleteCookie } from "hono/cookie";
 import { fetchRequestHandler } from "@trpc/server/adapters/fetch";
 import { sql } from "drizzle-orm";
-import { appRouter } from "../server/routers";
+import { COOKIE_NAME } from "../shared/const";
+import {
+  appRouter,
+  runScheduledCollection,
+  runScheduledMonitorCycle,
+} from "../server/routers";
 import { getBootErrors, getBootInfo } from "../server/_core/boot";
-import { getDb, setDatabaseUrl } from "./cf-db";
+import {
+  getDb,
+  getSchedulerConfig,
+  withHyperdriveDatabase,
+  type HyperdriveBinding,
+} from "../server/db";
 import {
   authenticateRequestCf,
   registerAuthRoutesCf,
@@ -38,30 +47,25 @@ export interface Env {
   OPENROUTER_BASE_URL?: string;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
-  // Hyperdrive binding (optional, for connection pooling)
-  HYPERDRIVE?: { connectionString: string };
+  ENABLE_CLOUDFLARE_CRON?: string;
+  HYPERDRIVE?: HyperdriveBinding;
 }
 
 // ─── App ───
-const app = new Hono<{ Bindings: Env }>();
+export const app = new Hono<{ Bindings: Env }>();
 
-// Inject env into global-like state so existing server modules can read it
+// Scope one Hyperdrive-backed mysql2 connection to each API request. Static
+// assets bypass this Worker at the Cloudflare routing layer.
 app.use("*", async (c, next) => {
-  // Make DATABASE_URL available to the db module
-  const dbUrl = c.env.HYPERDRIVE?.connectionString ?? c.env.DATABASE_URL;
-  setDatabaseUrl(dbUrl);
-
-  // Populate process.env shims for modules that read them directly
   (globalThis as any).__CF_ENV__ = c.env;
-
-  await next();
+  if (!c.env.HYPERDRIVE) {
+    await next();
+    return;
+  }
+  await withHyperdriveDatabase(c.env.HYPERDRIVE, async () => {
+    await next();
+  });
 });
-
-// CORS
-app.use("/api/*", cors({
-  origin: (origin) => origin || "*",
-  credentials: true,
-}));
 
 // ─── Health ───
 app.get("/api/health", async (c) => {
@@ -111,62 +115,128 @@ app.all("/api/trpc/*", async (c) => {
       const user = await authenticateRequestCf(c);
       return {
         req: c.req.raw,
-        res: null, // Workers don't have Express res; cookie setting handled differently
+        res: null,
         user,
-        // Hono context for setting cookies in mutations that need it
-        honoCtx: c,
+        clearSessionCookie: () => {
+          deleteCookie(c, COOKIE_NAME, {
+            path: "/",
+            sameSite: "None",
+            secure: true,
+          });
+        },
       };
     },
   });
 });
 
 // ─── Cloudflare Cron Triggers ───
-// These replace node-cron schedules from the Express version.
-// Configure in wrangler.toml:
-//   [triggers]
-//   crons = ["30 20 * * *", "30 0 * * 1", "40 0 1 * *"]
-//   # 04:30 CST = 20:30 UTC (data cleanup)
-//   # 08:30 CST Mon = 00:30 UTC Mon (weekly report)
-//   # 08:40 CST 1st = 00:40 UTC 1st (monthly report)
+// A once-per-minute dispatcher preserves the user-configurable cron expressions
+// stored in MySQL. ENABLE_CLOUDFLARE_CRON remains false while Cloud Run is the
+// active scheduler, preventing duplicate collection/report jobs during migration.
+
+function matchesCronField(field: string, value: number, min: number, max: number): boolean {
+  return field.split(",").some((entry) => {
+    const [rangePart, stepPart] = entry.trim().split("/");
+    const step = stepPart ? Number(stepPart) : 1;
+    if (!Number.isInteger(step) || step < 1) return false;
+
+    let start = min;
+    let end = max;
+    if (rangePart !== "*") {
+      if (rangePart.includes("-")) {
+        const [rawStart, rawEnd] = rangePart.split("-");
+        start = Number(rawStart);
+        end = Number(rawEnd);
+      } else {
+        start = Number(rangePart);
+        end = start;
+      }
+    }
+    if (!Number.isInteger(start) || !Number.isInteger(end)) return false;
+    if (value < start || value > end) return false;
+    return (value - start) % step === 0;
+  });
+}
+
+function shanghaiParts(timestamp: number) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Shanghai",
+    minute: "2-digit",
+    hour: "2-digit",
+    hourCycle: "h23",
+    day: "2-digit",
+    month: "2-digit",
+    weekday: "short",
+  }).formatToParts(new Date(timestamp));
+  const get = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((part) => part.type === type)?.value ?? "";
+  const weekdays: Record<string, number> = {
+    Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6,
+  };
+  return {
+    minute: Number(get("minute")),
+    hour: Number(get("hour")),
+    day: Number(get("day")),
+    month: Number(get("month")),
+    weekday: weekdays[get("weekday")] ?? 0,
+  };
+}
+
+export function cronMatches(expression: string, timestamp: number): boolean {
+  const fields = expression.trim().split(/\s+/);
+  if (fields.length !== 5) return false;
+  const time = shanghaiParts(timestamp);
+  return (
+    matchesCronField(fields[0], time.minute, 0, 59) &&
+    matchesCronField(fields[1], time.hour, 0, 23) &&
+    matchesCronField(fields[2], time.day, 1, 31) &&
+    matchesCronField(fields[3], time.month, 1, 12) &&
+    matchesCronField(fields[4].replace(/^7$/, "0"), time.weekday, 0, 6)
+  );
+}
+
+export async function runCloudflareScheduledTasks(event: ScheduledEvent, env: Env) {
+  if (!env.HYPERDRIVE) throw new Error("HYPERDRIVE binding is required for scheduled work");
+
+  await withHyperdriveDatabase(env.HYPERDRIVE, async () => {
+    const time = shanghaiParts(event.scheduledTime);
+    const saved = await getSchedulerConfig();
+
+    if (saved?.enabled && cronMatches(saved.cronExpression, event.scheduledTime)) {
+      await runScheduledCollection(saved.concurrency);
+    }
+    if (saved?.monitorEnabled && cronMatches(saved.monitorCron, event.scheduledTime)) {
+      await runScheduledMonitorCycle();
+    }
+
+    if (time.hour === 4 && time.minute === 30) {
+      const { cleanupOldArticles } = await import("../server/monitor/cleanup");
+      await cleanupOldArticles();
+    }
+    if (time.hour === 8 && time.minute === 30 && time.weekday === 1) {
+      const { generateMonitorReport, weeklyPeriodOf } = await import("../server/monitor/report");
+      const lastWeek = weeklyPeriodOf(weeklyPeriodOf(Date.now()).startMs - 1);
+      await generateMonitorReport("weekly", lastWeek.reportPeriod);
+    }
+    if (time.hour === 8 && time.minute === 40 && time.day === 1) {
+      const { generateMonitorReport, monthlyPeriodOf } = await import("../server/monitor/report");
+      const lastMonth = monthlyPeriodOf(monthlyPeriodOf(Date.now()).startMs - 1);
+      await generateMonitorReport("monthly", lastMonth.reportPeriod);
+    }
+  });
+}
 
 export default {
   fetch: app.fetch,
 
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
-    setDatabaseUrl(env.HYPERDRIVE?.connectionString ?? env.DATABASE_URL);
     (globalThis as any).__CF_ENV__ = env;
-
-    const hour = new Date(event.scheduledTime).getUTCHours();
-    const minute = new Date(event.scheduledTime).getUTCMinutes();
-    const dayOfWeek = new Date(event.scheduledTime).getUTCDay();
-    const dayOfMonth = new Date(event.scheduledTime).getUTCDate();
-
-    // 04:30 CST daily = 20:30 UTC previous day → data cleanup
-    if (hour === 20 && minute === 30) {
-      const { cleanupOldArticles } = await import("../server/monitor/cleanup");
-      ctx.waitUntil(cleanupOldArticles().catch(e => console.error(`Cleanup failed: ${e.message}`)));
-    }
-
-    // 08:30 CST Monday = 00:30 UTC Monday → weekly report
-    if (hour === 0 && minute === 30 && dayOfWeek === 1) {
-      const { generateMonitorReport, weeklyPeriodOf } = await import("../server/monitor/report");
-      const lastWeek = weeklyPeriodOf(weeklyPeriodOf(Date.now()).startMs - 1);
-      ctx.waitUntil(
-        generateMonitorReport("weekly", lastWeek.reportPeriod).catch(e =>
-          console.error(`Weekly report failed: ${e.message}`)
-        )
-      );
-    }
-
-    // 08:40 CST 1st = 00:40 UTC 1st → monthly report
-    if (hour === 0 && minute === 40 && dayOfMonth === 1) {
-      const { generateMonitorReport, monthlyPeriodOf } = await import("../server/monitor/report");
-      const lastMonth = monthlyPeriodOf(monthlyPeriodOf(Date.now()).startMs - 1);
-      ctx.waitUntil(
-        generateMonitorReport("monthly", lastMonth.reportPeriod).catch(e =>
-          console.error(`Monthly report failed: ${e.message}`)
-        )
-      );
-    }
+    if (env.ENABLE_CLOUDFLARE_CRON !== "true") return;
+    ctx.waitUntil(
+      runCloudflareScheduledTasks(event, env).catch((error) => {
+        console.error(`[Cloudflare Cron] ${error instanceof Error ? error.message : String(error)}`);
+        throw error;
+      }),
+    );
   },
 };

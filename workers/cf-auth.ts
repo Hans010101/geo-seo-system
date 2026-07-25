@@ -11,6 +11,8 @@ import type { Context } from "hono";
 import type { Hono } from "hono";
 import { getCookie, setCookie } from "hono/cookie";
 import { SignJWT, jwtVerify } from "jose";
+import { randomBytes, scrypt, timingSafeEqual } from "node:crypto";
+import { promisify } from "node:util";
 import * as db from "../server/db";
 import { COOKIE_NAME, ONE_YEAR_MS } from "@shared/const";
 import type { User } from "../drizzle/schema";
@@ -20,53 +22,25 @@ function getEnv() {
   return (globalThis as any).__CF_ENV__ || {};
 }
 
-// ─── Password Hashing (Web Crypto PBKDF2 instead of node:crypto scrypt) ───
+// ─── Password Hashing ───
+// Workers supports the full node:crypto API with nodejs_compat. Keep the same
+// scrypt format as Cloud Run so existing password accounts work on both hosts.
+
+const scryptAsync = promisify(scrypt);
 
 export async function hashPassword(plain: string): Promise<string> {
-  const salt = crypto.getRandomValues(new Uint8Array(16));
-  const saltHex = Array.from(salt).map(b => b.toString(16).padStart(2, "0")).join("");
-
-  const encoder = new TextEncoder();
-  const keyMaterial = await crypto.subtle.importKey(
-    "raw", encoder.encode(plain), "PBKDF2", false, ["deriveBits"]
-  );
-  const derived = await crypto.subtle.deriveBits(
-    { name: "PBKDF2", salt, iterations: 100000, hash: "SHA-256" },
-    keyMaterial, 512 // 64 bytes
-  );
-  const derivedHex = Array.from(new Uint8Array(derived))
-    .map(b => b.toString(16).padStart(2, "0")).join("");
-
-  return `${saltHex}:${derivedHex}`;
+  const salt = randomBytes(16).toString("hex");
+  const derived = (await scryptAsync(plain, salt, 64)) as Buffer;
+  return `${salt}:${derived.toString("hex")}`;
 }
 
 export async function verifyPassword(plain: string, hash: string): Promise<boolean> {
-  const [saltHex, keyHex] = hash.split(":");
-  if (!saltHex || !keyHex) return false;
-
-  // Check if this is a legacy node:crypto scrypt hash (salt is 32 hex chars = 16 bytes)
-  // Both scrypt and PBKDF2 outputs are stored as salt:key, but they're not cross-compatible.
-  // For the new system, all new passwords use PBKDF2.
-
-  const salt = new Uint8Array(saltHex.match(/.{2}/g)!.map(h => parseInt(h, 16)));
-  const encoder = new TextEncoder();
-  const keyMaterial = await crypto.subtle.importKey(
-    "raw", encoder.encode(plain), "PBKDF2", false, ["deriveBits"]
-  );
-  const derived = await crypto.subtle.deriveBits(
-    { name: "PBKDF2", salt, iterations: 100000, hash: "SHA-256" },
-    keyMaterial, 512
-  );
-  const derivedHex = Array.from(new Uint8Array(derived))
-    .map(b => b.toString(16).padStart(2, "0")).join("");
-
-  // Constant-time comparison
-  if (derivedHex.length !== keyHex.length) return false;
-  let diff = 0;
-  for (let i = 0; i < derivedHex.length; i++) {
-    diff |= derivedHex.charCodeAt(i) ^ keyHex.charCodeAt(i);
-  }
-  return diff === 0;
+  const [salt, key] = hash.split(":");
+  if (!salt || !key) return false;
+  const derived = (await scryptAsync(plain, salt, 64)) as Buffer;
+  const keyBuffer = Buffer.from(key, "hex");
+  if (derived.length !== keyBuffer.length) return false;
+  return timingSafeEqual(derived, keyBuffer);
 }
 
 // ─── JWT Session ───

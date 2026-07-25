@@ -12,14 +12,19 @@ export interface BootError {
 }
 
 const bootErrors: BootError[] = [];
-const BOOT_TS = Date.now();
+let bootTs: number | null = null;
 
 export function getBootErrors(): BootError[] {
   return bootErrors;
 }
 
 export function getBootInfo() {
-  return { startedAt: new Date(BOOT_TS).toISOString(), uptimeSec: Math.round((Date.now() - BOOT_TS) / 1000) };
+  const now = Date.now();
+  if (bootTs === null || bootTs <= 0) bootTs = now;
+  return {
+    startedAt: new Date(bootTs).toISOString(),
+    uptimeSec: Math.max(0, Math.round((now - bootTs) / 1000)),
+  };
 }
 
 function record(module: string, err: unknown) {

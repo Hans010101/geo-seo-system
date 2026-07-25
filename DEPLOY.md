@@ -1,58 +1,115 @@
-# 部署流程(标准,2026-07-02 起)
+# 部署与迁移手册
 
-> 背景:类型检查(`pnpm run check`)只能挡编译期问题,"部署成功但运行时出问题"需要运行时验证兜底。
-> 核心原则:**smoke test 通过才算部署完成;非核心功能初始化失败应降级、不应崩溃。**
+## 当前策略
 
-## 一键部署(推荐)
+Cloudflare 已部署完整版本，Cloud Run 暂时保持不动：
 
-```bash
-bash scripts/deploy.sh
+```text
+用户 ──→ Cloudflare Pages + Functions ──→ Hyperdrive ──→ Cloud SQL MySQL
+
+Cloudflare Cron Worker（已部署、待命）
+Cloud Run（继续运行，并继续执行原有后台任务）
 ```
 
-自动执行: 类型检查 → 记录回滚目标 → Cloud Build → Cloud Run 部署 → 等 30s → smoke test → **失败自动回滚**到上一个健康 revision。
+在正式切流前，必须保持 `wrangler.cron.jsonc` 中的
+`ENABLE_CLOUDFLARE_CRON` 为 `"false"`，避免采集、监控和报告任务重复执行。
 
-> 提交代码(`git add / commit / push`)仍手动做,在跑 deploy.sh 之前。
+## Cloudflare 资源
 
-## 手动分步(等价流程)
+- Pages 项目：`geo-seo-system`
+- Pages 地址：`https://geo-seo-system.pages.dev`
+- Cron Worker：`geo-seo-system-cron`
+- Cron 地址：`https://geo-seo-system-cron.hans-pan007.workers.dev`
+- Hyperdrive：`geo-seo-system-mysql`
+- Hyperdrive ID：`cd45e0e89ac544eebd5eb7eb0ab3b8de`
+- 数据库账号：独立的 `geo_cloudflare` 最小权限账号，强制 TLS
+
+Cloudflare Secret（只记录名称，不记录值）：
+
+- `JWT_SECRET`
+- `GOOGLE_CLIENT_ID`
+- `GOOGLE_CLIENT_SECRET`
+
+Pages 和 Cron Worker 均需能够读取业务所需 Secret。数据库连接信息由 Hyperdrive 保存，不应另设明文 `DATABASE_URL`。
+
+## 标准 Cloudflare 部署
+
+前置条件：
+
+1. Node.js 22、pnpm 10；
+2. `pnpm install --frozen-lockfile` 已完成；
+3. Wrangler 已登录到正确的 Cloudflare 账号；
+4. Hyperdrive、数据库网络规则和 Secrets 已配置。
+
+一键部署：
+
+```bash
+bash scripts/deploy-cloudflare.sh
+```
+
+等价的手动流程：
 
 ```bash
 pnpm run check
-git add <files> && git commit -m "..." && git push
-
-gcloud builds submit --tag gcr.io/gen-lang-client-0869327408/geo-system --project gen-lang-client-0869327408
-gcloud run deploy geo-system --region asia-northeast1 \
-  --image gcr.io/gen-lang-client-0869327408/geo-system --timeout=300 --project gen-lang-client-0869327408
-
-sleep 30
-bash scripts/post-deploy-smoke.sh    # 通过才算部署完成
+pnpm test
+pnpm run cf:deploy:pages
+pnpm run cf:deploy:cron
+bash scripts/post-deploy-cloudflare-smoke.sh
 ```
 
-### smoke 失败时回滚
+部署只有在 smoke test 全部通过后才算完成。它会验证首页、数据库健康、启动错误、公开 tRPC、受保护路由，以及 Cron Worker 的待命状态。
+
+## 日常验证
 
 ```bash
-gcloud run revisions list --service=geo-system --region=asia-northeast1 --project gen-lang-client-0869327408 --limit=5
-gcloud run services update-traffic geo-system --region=asia-northeast1 \
-  --project gen-lang-client-0869327408 --to-revisions=<上一健康revision>=100
-curl -I https://geo-system-kwm3xu534q-an.a.run.app   # 必须回到 200
+curl -fsS https://geo-seo-system.pages.dev/api/health
+curl -fsS https://geo-seo-system-cron.hans-pan007.workers.dev
+bash scripts/post-deploy-cloudflare-smoke.sh
 ```
 
-## smoke test 检查什么(scripts/post-deploy-smoke.sh)
+健康结果必须包含：
 
-| 层 | 挡什么 | 检查 |
-|---|---|---|
-| a. 健康 | 服务崩了 | `GET /` 200;`GET /api/health` 200 且 `ok:true`、`db:true`、`bootErrors:[]` |
-| b. API | 活着但接口坏了 | `auth.me`(公开,须200) + listArticles/stats/dashboard.summary/sourcePenetration(受保护,401=预期;5xx/404=失败) |
-| c. 启动异常 | cron/初始化启动崩 | gcloud 扫近 5 分钟 ERROR 日志(is not defined / Cannot read / BOOT-GUARD / Fatal / Uncaught) |
+```json
+{"ok":true,"db":true,"bootErrors":[]}
+```
 
-## 运行时防御(应用内建,server/_core/boot.ts)
+只验证 Cloud Run 原环境：
 
-- **initGuard(name, fn)**:所有模块顶层初始化(GEO 调度、监控调度、维护 cron)都经它执行 —— 初始化失败 = 该功能降级 + ERROR 日志 + 记入 bootErrors,**不崩溃**。
-- **GET /api/health**:暴露 `{ok, db, bootErrors, uptimeSec}`,"部署了但降级"机器可检测(降级时返回 503)。
-- **进程级兜底**(preload.ts,先于业务模块加载):unhandledRejection / uncaughtException → 记日志+bootErrors,不退出。
-- **fail-fast**:startServer 本身失败 → `exit(1)`(让 Cloud Run 杀掉重试,不留不监听的僵尸进程)。
-- 诚实边界:initGuard 保护的是**初始化执行**;模块语法/导入期错误仍会崩 —— 这类靠 `pnpm run check` + smoke test 的 a/c 层兜住。
+```bash
+bash scripts/post-deploy-smoke.sh \
+  https://geo-system-kwm3xu534q-an.a.run.app
+```
 
-## 基础设施现状(2026-07-02 定型)
+## 将来正式迁移顺序
 
-- Cloud Run `geo-system` @ asia-northeast1:**1 vCPU / 1Gi / min-instances=1 / CPU always-allocated**(后台 cron 依赖常驻实例;≈$50-55/月)。
-- 回退 min-instances:`gcloud run services update geo-system --region asia-northeast1 --min-instances=0`(代价:偶发冷启动 503 + cron 不保底)。
+正式切换应安排维护窗口并按顺序执行：
+
+1. 先冻结会创建后台任务的管理操作，并确认 Cloud Run 当前任务已结束。
+2. 停止 Cloud Run 的后台调度能力或将 Cloud Run 停止接收工作；不要先开 Cloudflare Cron。
+3. 将 `wrangler.cron.jsonc` 的 `ENABLE_CLOUDFLARE_CRON` 改为 `"true"` 并部署 Cron Worker。
+4. 观察至少一个完整采集/监控周期，确认没有重复任务、失败积压或异常写入。
+5. 将正式域名和全部用户流量切到 Cloudflare Pages。
+6. 保留 Cloud Run 作为只读回退一段观察期。
+7. 经确认后再删除 Cloud Run；删除前另行备份数据库与配置。
+
+Cloud Run 的停止、流量切换和删除不属于当前部署，当前不要执行。
+
+## 回滚
+
+Pages 回滚：
+
+1. 在 Cloudflare Dashboard 的 Pages 部署历史中选择上一健康部署并回滚；或
+2. 检出已知健康 Git commit，再执行 `pnpm run cf:deploy:pages`。
+
+Cron Worker 回滚：
+
+```bash
+pnpm exec wrangler versions list --config wrangler.cron.jsonc
+pnpm exec wrangler rollback <VERSION_ID> --config wrangler.cron.jsonc
+```
+
+紧急停止 Cloudflare 后台任务时，把 `ENABLE_CLOUDFLARE_CRON` 设回 `"false"` 并重新部署 Cron Worker。不要删除 Hyperdrive 或数据库用户作为停机手段。
+
+## Cloud Run 原部署
+
+原 Cloud Run 自动部署仍由 `scripts/deploy.sh` 管理。除非明确要修改或回滚 Cloud Run，否则 Cloudflare 部署流程不会调用它，也不会更改 Cloud Run 服务、revision、流量或环境变量。

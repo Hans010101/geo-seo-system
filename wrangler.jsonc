@@ -1,0 +1,17 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "geo-seo-system",
+  "compatibility_date": "2026-07-25",
+  "compatibility_flags": ["nodejs_compat"],
+  "pages_build_output_dir": "dist/public",
+  "vars": {
+    "NODE_ENV": "production",
+    "OPENROUTER_BASE_URL": "https://openrouter.ai/api/v1"
+  },
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE",
+      "id": "cd45e0e89ac544eebd5eb7eb0ab3b8de"
+    }
+  ]
+}

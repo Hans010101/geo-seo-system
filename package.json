@@ -11,7 +11,10 @@
     "format": "prettier --write .",
     "test": "vitest run",
     "db:push": "drizzle-kit generate && drizzle-kit migrate",
-    "cf:deploy": "vite build && wrangler pages deploy dist/public --project-name geo-seo-system"
+    "cf:build": "vite build && wrangler pages functions build functions --project-directory . --build-output-directory dist/public --compatibility-date 2026-07-25 --compatibility-flag nodejs_compat",
+    "cf:deploy:pages": "vite build && wrangler pages deploy dist/public --project-name geo-seo-system --branch main",
+    "cf:deploy:cron": "wrangler deploy --config wrangler.cron.jsonc",
+    "cf:deploy": "pnpm run cf:deploy:pages && pnpm run cf:deploy:cron"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.693.0",
@@ -64,6 +67,7 @@
     "input-otp": "^1.4.2",
     "jose": "6.1.0",
     "jsdom": "^29.1.1",
+    "linkedom": "^0.18.13",
     "lucide-react": "^0.453.0",
     "mysql2": "^3.15.0",
     "nanoid": "^5.1.5",

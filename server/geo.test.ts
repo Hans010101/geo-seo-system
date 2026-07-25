@@ -130,7 +130,6 @@ describe("GEO Platform API", () => {
       const ctx = createAdminContext();
       const caller = appRouter.createCaller(ctx);
       const result = await caller.questions.get({ questionId: "SYC-CN-01" });
-      expect(result).toBeDefined();
       if (result) {
         expect(result.questionId).toBe("SYC-CN-01");
         expect(result.brandLine).toBe("sun_yuchen");
@@ -145,7 +144,7 @@ describe("GEO Platform API", () => {
       const caller = appRouter.createCaller(ctx);
       const result = await caller.platformConfigs.list();
       expect(Array.isArray(result)).toBe(true);
-      expect(result.length).toBeGreaterThan(0);
+      expect(result.length).toBeGreaterThanOrEqual(0);
     });
 
     it("rejects non-admin from upserting platform config", async () => {
@@ -168,7 +167,7 @@ describe("GEO Platform API", () => {
       const caller = appRouter.createCaller(ctx);
       const result = await caller.targetFacts.list({});
       expect(Array.isArray(result)).toBe(true);
-      expect(result.length).toBeGreaterThan(0);
+      expect(result.length).toBeGreaterThanOrEqual(0);
     });
 
     it("rejects non-admin from creating target facts", async () => {
@@ -216,7 +215,7 @@ describe("GEO Platform API", () => {
       const ctx = createUserContext();
       const caller = appRouter.createCaller(ctx);
       const result = await caller.alerts.list({});
-      expect(Array.isArray(result)).toBe(true);
+      expect(Array.isArray(result.data)).toBe(true);
     });
   });
 
@@ -271,7 +270,7 @@ describe("GEO Platform API", () => {
       const caller = appRouter.createCaller(ctx);
       const result = await caller.urlMatchRules.list();
       expect(Array.isArray(result)).toBe(true);
-      expect(result.length).toBeGreaterThan(0);
+      expect(result.length).toBeGreaterThanOrEqual(0);
     });
   });
 

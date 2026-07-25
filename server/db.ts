@@ -1,5 +1,7 @@
 import { eq, desc, asc, and, gte, lte, sql, inArray, like, count, avg } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/mysql2";
+import { drizzle, type MySql2Database } from "drizzle-orm/mysql2";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { createConnection } from "mysql2/promise";
 import {
   InsertUser,
   User,
@@ -43,9 +45,54 @@ import {
 } from "../drizzle/schema";
 
 
-let _db: ReturnType<typeof drizzle> | null = null;
+type Database = MySql2Database<any>;
+
+export type HyperdriveBinding = {
+  host: string;
+  user: string;
+  password: string;
+  database: string;
+  port: number;
+};
+
+const requestDatabase = new AsyncLocalStorage<Database>();
+let _db: Database | null = null;
+
+/**
+ * Run one Cloudflare request/job with its own mysql2 connection.
+ *
+ * Hyperdrive maintains the origin pool. Cloudflare recommends creating a
+ * mysql2 connection for each invocation and enabling disableEval.
+ * AsyncLocalStorage prevents concurrent Worker requests from sharing mutable
+ * global database state.
+ */
+export async function withHyperdriveDatabase<T>(
+  binding: HyperdriveBinding,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const connection = await createConnection({
+    host: binding.host,
+    user: binding.user,
+    password: binding.password,
+    database: binding.database,
+    port: binding.port,
+    disableEval: true,
+  });
+  const scopedDb = drizzle(connection);
+
+  return requestDatabase.run(scopedDb, async () => {
+    try {
+      return await fn();
+    } finally {
+      await connection.end().catch(() => undefined);
+    }
+  });
+}
 
 export async function getDb() {
+  const scopedDb = requestDatabase.getStore();
+  if (scopedDb) return scopedDb;
+
   if (!_db && process.env.DATABASE_URL) {
     try {
       const rawUrl = process.env.DATABASE_URL;
@@ -448,7 +495,17 @@ export async function getSentimentTrend(questionId: string, platform?: string) {
 // ==================== Dashboard Helpers ====================
 export async function getDashboardSummary(startTime?: number, endTime?: number) {
   const db = await getDb();
-  if (!db) return null;
+  if (!db) {
+    return {
+      overallSentimentAvg: 0,
+      friendlySourceRate: 0,
+      targetFactsCoverage: 0,
+      ourContentRate: 0,
+      alertCount: 0,
+      platformBreakdown: [],
+      totalCollections: 0,
+    };
+  }
 
   const conditions = [eq(collections.status, "success")];
   if (startTime) conditions.push(gte(collections.timestamp, startTime));
