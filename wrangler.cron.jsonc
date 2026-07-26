@@ -7,7 +7,13 @@
   "workers_dev": true,
   "vars": {
     "NODE_ENV": "production",
-    "ENABLE_CLOUDFLARE_CRON": "false",
+    "ENABLE_CLOUDFLARE_CRON": "true",
+    "CLOUDFLARE_CRON_MODE": "canary",
+    "CLOUDFLARE_MONITOR_CRON": "35 11 * * *",
+    "CLOUDFLARE_CANARY_MAX_KEYWORDS": "1",
+    "CLOUDFLARE_CANARY_MAX_ARTICLES": "2",
+    "CLOUDFLARE_CANARY_SOURCES": "serper",
+    "CLOUDFLARE_MAINTENANCE_OFFSET_MINUTES": "15",
     "OPENROUTER_BASE_URL": "https://openrouter.ai/api/v1"
   },
   "hyperdrive": [
@@ -17,7 +23,7 @@
     }
   ],
   "triggers": {
-    "crons": ["* * * * *"]
+    "crons": ["*/5 * * * *"]
   },
   "observability": {
     "enabled": true,

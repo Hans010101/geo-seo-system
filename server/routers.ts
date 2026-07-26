@@ -12,7 +12,12 @@ import { ENV } from "./_core/env";
 import { dispatchNotification } from "./_core/notification";
 import { getEmailAlertConfig, setEmailAlertConfig, sendEmailAlert, buildAlertEmailHtml } from "./monitor/email-alert";
 import { formatAlertMessage, formatBatchSummary } from "./_core/senders/templates";
-import { runMonitorCycle, reanalyzeArticle, type MonitorCycleResult } from "./monitor/pipeline";
+import {
+  runMonitorCycle,
+  reanalyzeArticle,
+  type MonitorCycleOptions,
+  type MonitorCycleResult,
+} from "./monitor/pipeline";
 import * as monitorBudget from "./monitor/budget";
 import { getCookieStatus } from "./monitor/sources/binance-cookie";
 import { getPushConfig, setPushConfig } from "./monitor/notify";
@@ -2105,16 +2110,21 @@ const monitorSchedulerState = {
 let monitorCycleRunning = false;
 
 // Single-flight guard so manual triggers and cron never overlap.
-export async function runScheduledMonitorCycle(tbs?: string): Promise<MonitorCycleResult | null> {
+export async function runScheduledMonitorCycle(
+  tbs?: string,
+  options?: Omit<MonitorCycleOptions, "tbs"> & { recordSchedulerRun?: boolean },
+): Promise<MonitorCycleResult | null> {
   if (monitorCycleRunning) {
     log.warn("Monitor cycle already running; skipping this trigger");
     return null;
   }
   monitorCycleRunning = true;
   try {
-    const res = await runMonitorCycle(tbs ? { tbs } : undefined);
-    monitorSchedulerState.lastRunAt = Date.now();
-    await db.upsertSchedulerConfig({ monitorLastRunAt: monitorSchedulerState.lastRunAt }).catch(() => {});
+    const res = await runMonitorCycle({ ...options, tbs });
+    if (options?.recordSchedulerRun !== false) {
+      monitorSchedulerState.lastRunAt = Date.now();
+      await db.upsertSchedulerConfig({ monitorLastRunAt: monitorSchedulerState.lastRunAt }).catch(() => {});
+    }
     return res;
   } finally {
     monitorCycleRunning = false;

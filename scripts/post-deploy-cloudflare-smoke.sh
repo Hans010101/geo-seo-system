@@ -51,8 +51,9 @@ expect_code "dashboard.summary（未登录）" \
 CRON_BODY="$(curl -sS -m 30 "${CRON_URL}/" || true)"
 CRON_CODE="$(http_code "${CRON_URL}/")"
 if [ "$CRON_CODE" = "200" ] \
-  && printf '%s' "$CRON_BODY" | grep -q '"standby":true'; then
-  ok "Cron Worker 可达且处于待命模式"
+  && printf '%s' "$CRON_BODY" | grep -q '"standby":false' \
+  && printf '%s' "$CRON_BODY" | grep -q '"mode":"canary"'; then
+  ok "Cron Worker 可达且处于免费套餐金丝雀并行模式"
 else
   bad "Cron Worker 状态异常：HTTP ${CRON_CODE} $(printf '%s' "$CRON_BODY" | head -c 300)"
 fi

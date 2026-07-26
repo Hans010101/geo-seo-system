@@ -31,6 +31,8 @@ import { getBootErrors, getBootInfo } from "../server/_core/boot";
 import {
   getDb,
   getSchedulerConfig,
+  getSysConfig,
+  setSysConfig,
   withHyperdriveDatabase,
   type HyperdriveBinding,
 } from "../server/db";
@@ -51,6 +53,12 @@ export interface Env {
   RESEND_FROM?: string;
   AUTH_ALLOWED_EMAIL?: string;
   ENABLE_CLOUDFLARE_CRON?: string;
+  CLOUDFLARE_CRON_MODE?: string;
+  CLOUDFLARE_MONITOR_CRON?: string;
+  CLOUDFLARE_CANARY_MAX_KEYWORDS?: string;
+  CLOUDFLARE_CANARY_MAX_ARTICLES?: string;
+  CLOUDFLARE_CANARY_SOURCES?: string;
+  CLOUDFLARE_MAINTENANCE_OFFSET_MINUTES?: string;
   HYPERDRIVE?: HyperdriveBinding;
 }
 
@@ -198,33 +206,122 @@ export function cronMatches(expression: string, timestamp: number): boolean {
   );
 }
 
+const CF_CRON_STATUS_KEYS = {
+  mode: "cf_cron_mode",
+  task: "cf_cron_last_task",
+  status: "cf_cron_last_status",
+  startedAt: "cf_cron_last_started_at",
+  finishedAt: "cf_cron_last_finished_at",
+  summary: "cf_cron_last_summary",
+  error: "cf_cron_last_error",
+} as const;
+
+function positiveInt(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+async function recordCloudflareCronStatus(
+  values: Partial<Record<keyof typeof CF_CRON_STATUS_KEYS, string>>,
+) {
+  await Promise.all(
+    Object.entries(values).map(([key, value]) =>
+      setSysConfig(CF_CRON_STATUS_KEYS[key as keyof typeof CF_CRON_STATUS_KEYS], value ?? ""),
+    ),
+  );
+}
+
+async function runObservedCloudflareTask<T>(
+  mode: string,
+  task: string,
+  work: () => Promise<T>,
+): Promise<T> {
+  await recordCloudflareCronStatus({
+    mode,
+    task,
+    status: "running",
+    startedAt: String(Date.now()),
+    error: "",
+  });
+  try {
+    const result = await work();
+    await recordCloudflareCronStatus({
+      status: "success",
+      finishedAt: String(Date.now()),
+      summary: JSON.stringify(result ?? null).slice(0, 4000),
+    });
+    return result;
+  } catch (error) {
+    await recordCloudflareCronStatus({
+      status: "failed",
+      finishedAt: String(Date.now()),
+      error: (error instanceof Error ? error.message : String(error)).slice(0, 2000),
+    });
+    throw error;
+  }
+}
+
+export async function getCloudflareCronStatus() {
+  const entries = await Promise.all(
+    Object.entries(CF_CRON_STATUS_KEYS).map(async ([name, key]) => [name, await getSysConfig(key)] as const),
+  );
+  return Object.fromEntries(entries);
+}
+
 export async function runCloudflareScheduledTasks(event: ScheduledEvent, env: Env) {
   if (!env.HYPERDRIVE) throw new Error("HYPERDRIVE binding is required for scheduled work");
 
   await withHyperdriveDatabase(env.HYPERDRIVE, async () => {
-    const time = shanghaiParts(event.scheduledTime);
+    const mode = env.CLOUDFLARE_CRON_MODE === "full" ? "full" : "canary";
+    const maintenanceOffsetMinutes = positiveInt(env.CLOUDFLARE_MAINTENANCE_OFFSET_MINUTES, 15);
+    const maintenanceTime = shanghaiParts(event.scheduledTime - maintenanceOffsetMinutes * 60_000);
     const saved = await getSchedulerConfig();
 
-    if (saved?.enabled && cronMatches(saved.cronExpression, event.scheduledTime)) {
-      await runScheduledCollection(saved.concurrency);
-    }
-    if (saved?.monitorEnabled && cronMatches(saved.monitorCron, event.scheduledTime)) {
-      await runScheduledMonitorCycle();
+    if (mode === "full") {
+      if (saved?.enabled && cronMatches(saved.cronExpression, event.scheduledTime)) {
+        await runObservedCloudflareTask(mode, "collection", () =>
+          runScheduledCollection(saved.concurrency),
+        );
+      }
+      if (saved?.monitorEnabled && cronMatches(saved.monitorCron, event.scheduledTime)) {
+        await runObservedCloudflareTask(mode, "monitor", () => runScheduledMonitorCycle());
+      }
+    } else {
+      const canaryCron = env.CLOUDFLARE_MONITOR_CRON || "35 11 * * *";
+      if (saved?.monitorEnabled && cronMatches(canaryCron, event.scheduledTime)) {
+        const sourceNames = (env.CLOUDFLARE_CANARY_SOURCES || "serper")
+          .split(",")
+          .map((value) => value.trim())
+          .filter(Boolean);
+        await runObservedCloudflareTask(mode, "monitor_canary", () =>
+          runScheduledMonitorCycle("qdr:w", {
+            maxKeywords: positiveInt(env.CLOUDFLARE_CANARY_MAX_KEYWORDS, 1),
+            maxArticles: positiveInt(env.CLOUDFLARE_CANARY_MAX_ARTICLES, 2),
+            sourceNames,
+            suppressNotifications: true,
+            recordSchedulerRun: false,
+          }),
+        );
+      }
     }
 
-    if (time.hour === 4 && time.minute === 30) {
+    if (maintenanceTime.hour === 4 && maintenanceTime.minute === 30) {
       const { cleanupOldArticles } = await import("../server/monitor/cleanup");
-      await cleanupOldArticles();
+      await runObservedCloudflareTask(mode, "cleanup", cleanupOldArticles);
     }
-    if (time.hour === 8 && time.minute === 30 && time.weekday === 1) {
+    if (maintenanceTime.hour === 8 && maintenanceTime.minute === 30 && maintenanceTime.weekday === 1) {
       const { generateMonitorReport, weeklyPeriodOf } = await import("../server/monitor/report");
       const lastWeek = weeklyPeriodOf(weeklyPeriodOf(Date.now()).startMs - 1);
-      await generateMonitorReport("weekly", lastWeek.reportPeriod);
+      await runObservedCloudflareTask(mode, "weekly_report", () =>
+        generateMonitorReport("weekly", lastWeek.reportPeriod),
+      );
     }
-    if (time.hour === 8 && time.minute === 40 && time.day === 1) {
+    if (maintenanceTime.hour === 8 && maintenanceTime.minute === 40 && maintenanceTime.day === 1) {
       const { generateMonitorReport, monthlyPeriodOf } = await import("../server/monitor/report");
       const lastMonth = monthlyPeriodOf(monthlyPeriodOf(Date.now()).startMs - 1);
-      await generateMonitorReport("monthly", lastMonth.reportPeriod);
+      await runObservedCloudflareTask(mode, "monthly_report", () =>
+        generateMonitorReport("monthly", lastMonth.reportPeriod),
+      );
     }
   });
 }

@@ -32,6 +32,14 @@ export type MonitorCycleResult = {
   tbs: string;
 };
 
+export type MonitorCycleOptions = {
+  tbs?: string;
+  maxKeywords?: number;
+  maxArticles?: number;
+  sourceNames?: string[];
+  suppressNotifications?: boolean;
+};
+
 function toFetchMethod(engine: string): "self" | "firecrawl" | "snippet_only" | null {
   if (engine === "snippet") return "snippet_only";
   if (engine === "self" || engine === "firecrawl") return engine;
@@ -40,12 +48,18 @@ function toFetchMethod(engine: string): "self" | "firecrawl" | "snippet_only" | 
 
 type FreshItem = { hash: string; post: DiscoveredPost; normUrl: string; matched: string[] };
 
-export async function runMonitorCycle(opts?: { tbs?: string }): Promise<MonitorCycleResult> {
+export async function runMonitorCycle(opts?: MonitorCycleOptions): Promise<MonitorCycleResult> {
   const tbsOverride = opts?.tbs;
   await budget.beginCycle();
-  const maxPerCycle = budget.maxArticlesPerCycle();
-  const keywords = await db.listMonitorKeywords(true);
-  const srcs = enabledSources();
+  const configuredMaxPerCycle = budget.maxArticlesPerCycle();
+  const maxPerCycle = Math.max(
+    1,
+    Math.min(configuredMaxPerCycle, opts?.maxArticles ?? configuredMaxPerCycle),
+  );
+  const allKeywords = await db.listMonitorKeywords(true);
+  const keywords = allKeywords.slice(0, Math.max(1, opts?.maxKeywords ?? allKeywords.length));
+  const allowedSources = opts?.sourceNames?.length ? new Set(opts.sourceNames) : null;
+  const srcs = enabledSources().filter((source) => !allowedSources || allowedSources.has(source.name));
 
   // 1) Every enabled source × every active keyword → aggregate unique posts (cross-source, by norm-url).
   let serperCalls = 0;
@@ -223,7 +237,7 @@ export async function runMonitorCycle(opts?: { tbs?: string }): Promise<MonitorC
             });
           }
           // Threat ≥ configured threshold (default 'medium') → immediate real-time alert (deduped by urlHash).
-          if (await alertThresholdMet(analysis.threatLevel)) {
+          if (!opts?.suppressNotifications && await alertThresholdMet(analysis.threatLevel)) {
             try {
               const res = await dispatchHighThreatAlert({
                 url: p.url,
@@ -252,11 +266,13 @@ export async function runMonitorCycle(opts?: { tbs?: string }): Promise<MonitorC
   stats.analysisCostUsd = Math.round(stats.analysisCostUsd * 1_000_000) / 1_000_000;
 
   // Briefing after the cycle (gated by sysConfig; default OFF until enabled on a test channel).
-  try {
-    const b = await sendBriefing(briefingItems, { keywords: keywords.length, sourceCount: srcs.length, newArticles: stats.inserted });
-    stats.briefingSent = b.sent;
-  } catch (e: any) {
-    log.error(`Briefing dispatch failed: ${String(e?.message || e).slice(0, 160)}`);
+  if (!opts?.suppressNotifications) {
+    try {
+      const b = await sendBriefing(briefingItems, { keywords: keywords.length, sourceCount: srcs.length, newArticles: stats.inserted });
+      stats.briefingSent = b.sent;
+    } catch (e: any) {
+      log.error(`Briefing dispatch failed: ${String(e?.message || e).slice(0, 160)}`);
+    }
   }
 
   log.info(`Monitor cycle complete: ${JSON.stringify(stats)}`);

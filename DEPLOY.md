@@ -7,12 +7,21 @@ Cloudflare 已部署完整版本，Cloud Run 暂时保持不动：
 ```text
 用户 ──→ Cloudflare Pages + Functions ──→ Hyperdrive ──→ Cloud SQL MySQL
 
-Cloudflare Cron Worker（已部署、待命）
+Cloudflare Cron Worker（免费套餐金丝雀并行模式）
 Cloud Run（继续运行，并继续执行原有后台任务）
 ```
 
-在正式切流前，必须保持 `wrangler.cron.jsonc` 中的
-`ENABLE_CLOUDFLARE_CRON` 为 `"false"`，避免采集、监控和报告任务重复执行。
+Cloudflare Cron 当前开启 `canary` 模式：
+
+- 每天 11:35（Asia/Shanghai）使用最高优先级的 1 个关键词和 Serper 单一来源执行真实监控链路；
+- 每轮最多处理 2 篇新文章，不发送实时提醒或简报，也不覆盖 Cloud Run 的生产调度时间；
+- 清理、周报、月报比 Cloud Run 错峰 15 分钟运行，相关写入均为幂等操作；
+- 只占用 1 个每 5 分钟触发的 Cron，由代码内部按时间分发任务，兼容免费账户的触发器配额；
+- Cloud Run 的完整生产调度保持不变。
+
+这个模式用于在 Workers 免费套餐下获得真实运行数据，同时控制 CPU、子请求和第三方 API
+消耗。要运行完整任务，必须先基于金丝雀指标确认资源上限，再把
+`CLOUDFLARE_CRON_MODE` 切为 `"full"`。
 
 ## Cloudflare 资源
 
@@ -24,14 +33,15 @@ Cloud Run（继续运行，并继续执行原有后台任务）
 - Hyperdrive ID：`cd45e0e89ac544eebd5eb7eb0ab3b8de`
 - 数据库账号：独立的 `geo_cloudflare` 最小权限账号，强制 TLS
 
-Cloudflare Secret（只记录名称，不记录值）：
+Cloudflare Pages Secret（只记录名称，不记录值）：
 
 - `JWT_SECRET`
 - `GOOGLE_CLIENT_ID`
 - `GOOGLE_CLIENT_SECRET`
 - `RESEND_API_KEY`
 
-Pages 和 Cron Worker 均需能够读取业务所需 Secret。数据库连接信息由 Hyperdrive 保存，不应另设明文 `DATABASE_URL`。
+Cron Worker 当前业务密钥均从共享数据库的全局配置读取，不额外复制登录密钥。
+数据库连接信息由 Hyperdrive 保存，不应另设明文 `DATABASE_URL`。
 
 ## 标准 Cloudflare 部署
 
@@ -58,7 +68,7 @@ pnpm run cf:deploy:cron
 bash scripts/post-deploy-cloudflare-smoke.sh
 ```
 
-部署只有在 smoke test 全部通过后才算完成。它会验证首页、数据库健康、启动错误、公开 tRPC、受保护路由，以及 Cron Worker 的待命状态。
+部署只有在 smoke test 全部通过后才算完成。它会验证首页、数据库健康、启动错误、公开 tRPC、受保护路由，以及 Cron Worker 的并行模式。
 
 ## 日常验证
 
@@ -86,8 +96,8 @@ bash scripts/post-deploy-smoke.sh \
 正式切换应安排维护窗口并按顺序执行：
 
 1. 先冻结会创建后台任务的管理操作，并确认 Cloud Run 当前任务已结束。
-2. 停止 Cloud Run 的后台调度能力或将 Cloud Run 停止接收工作；不要先开 Cloudflare Cron。
-3. 将 `wrangler.cron.jsonc` 的 `ENABLE_CLOUDFLARE_CRON` 改为 `"true"` 并部署 Cron Worker。
+2. 确认 Cloudflare 金丝雀任务已有足够的成功运行记录。
+3. 停止 Cloud Run 的后台调度能力后，将 `CLOUDFLARE_CRON_MODE` 从 `"canary"` 改为 `"full"`。
 4. 观察至少一个完整采集/监控周期，确认没有重复任务、失败积压或异常写入。
 5. 将正式域名和全部用户流量切到 Cloudflare Pages。
 6. 保留 Cloud Run 作为只读回退一段观察期。
