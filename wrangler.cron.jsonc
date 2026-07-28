@@ -8,11 +8,17 @@
   "vars": {
     "NODE_ENV": "production",
     "ENABLE_CLOUDFLARE_CRON": "true",
-    "CLOUDFLARE_CRON_MODE": "canary",
+    "CLOUDFLARE_CRON_MODE": "primary",
     "CLOUDFLARE_MONITOR_CRON": "35 11 * * *",
     "CLOUDFLARE_CANARY_MAX_KEYWORDS": "1",
     "CLOUDFLARE_CANARY_MAX_ARTICLES": "2",
     "CLOUDFLARE_CANARY_SOURCES": "serper",
+    "CLOUDFLARE_PRIMARY_MAX_KEYWORDS": "100",
+    "CLOUDFLARE_PRIMARY_CRON": "15,40 1-23/2 * * *",
+    "CLOUDFLARE_PRIMARY_NEWS_MAX_ARTICLES": "12",
+    "CLOUDFLARE_PRIMARY_NEWS_SOURCES": "serper,rss",
+    "CLOUDFLARE_PRIMARY_SOCIAL_MAX_ARTICLES": "14",
+    "CLOUDFLARE_PRIMARY_SOCIAL_SOURCES": "gate_square,telegram,x",
     "CLOUDFLARE_AI_MODEL": "@cf/meta/llama-3.1-8b-instruct-fast",
     "CLOUDFLARE_AI_MAX_TOKENS": "512",
     "CLOUDFLARE_MAINTENANCE_OFFSET_MINUTES": "15",
@@ -28,7 +34,7 @@
     }
   ],
   "triggers": {
-    "crons": ["*/5 * * * *"]
+    "crons": ["15,40 1-23/2 * * *"]
   },
   "observability": {
     "enabled": true,

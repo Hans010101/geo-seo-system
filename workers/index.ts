@@ -58,6 +58,12 @@ export interface Env {
   CLOUDFLARE_CANARY_MAX_KEYWORDS?: string;
   CLOUDFLARE_CANARY_MAX_ARTICLES?: string;
   CLOUDFLARE_CANARY_SOURCES?: string;
+  CLOUDFLARE_PRIMARY_MAX_KEYWORDS?: string;
+  CLOUDFLARE_PRIMARY_CRON?: string;
+  CLOUDFLARE_PRIMARY_NEWS_MAX_ARTICLES?: string;
+  CLOUDFLARE_PRIMARY_NEWS_SOURCES?: string;
+  CLOUDFLARE_PRIMARY_SOCIAL_MAX_ARTICLES?: string;
+  CLOUDFLARE_PRIMARY_SOCIAL_SOURCES?: string;
   CLOUDFLARE_AI_MODEL?: string;
   CLOUDFLARE_AI_MAX_TOKENS?: string;
   CLOUDFLARE_MAINTENANCE_OFFSET_MINUTES?: string;
@@ -286,7 +292,11 @@ export async function runCloudflareScheduledTasks(event: ScheduledEvent, env: En
   if (!env.HYPERDRIVE) throw new Error("HYPERDRIVE binding is required for scheduled work");
 
   await withHyperdriveDatabase(env.HYPERDRIVE, async () => {
-    const mode = env.CLOUDFLARE_CRON_MODE === "full" ? "full" : "canary";
+    const mode = env.CLOUDFLARE_CRON_MODE === "full"
+      ? "full"
+      : env.CLOUDFLARE_CRON_MODE === "primary"
+        ? "primary"
+        : "canary";
     const maintenanceOffsetMinutes = positiveInt(env.CLOUDFLARE_MAINTENANCE_OFFSET_MINUTES, 15);
     const maintenanceTime = shanghaiParts(event.scheduledTime - maintenanceOffsetMinutes * 60_000);
     const saved = await getSchedulerConfig();
@@ -299,6 +309,43 @@ export async function runCloudflareScheduledTasks(event: ScheduledEvent, env: En
       }
       if (saved?.monitorEnabled && cronMatches(saved.monitorCron, event.scheduledTime)) {
         await runObservedCloudflareTask(mode, "monitor", () => runScheduledMonitorCycle());
+      }
+    } else if (mode === "primary") {
+      // Free Workers are limited to 50 external subrequests per invocation.
+      // Split news discovery (Serper/RSS + page fetches) from sources that
+      // already provide full content, and run both ahead of unchanged Cloud Run.
+      const profiles = [
+        {
+          task: "monitor_primary_news",
+          minute: 15,
+          maxArticles: positiveInt(env.CLOUDFLARE_PRIMARY_NEWS_MAX_ARTICLES, 12),
+          sources: env.CLOUDFLARE_PRIMARY_NEWS_SOURCES || "serper,rss",
+        },
+        {
+          task: "monitor_primary_social",
+          minute: 40,
+          maxArticles: positiveInt(env.CLOUDFLARE_PRIMARY_SOCIAL_MAX_ARTICLES, 14),
+          // Binance currently rejects Cloudflare egress with HTTP 403; unchanged
+          // Cloud Run remains its fallback during the parallel-observation period.
+          sources: env.CLOUDFLARE_PRIMARY_SOCIAL_SOURCES || "gate_square,telegram,x",
+        },
+      ];
+      const primaryCron = env.CLOUDFLARE_PRIMARY_CRON || "15,40 1-23/2 * * *";
+      const localTime = shanghaiParts(event.scheduledTime);
+      const profile = event.cron === primaryCron
+        ? profiles.find((candidate) => candidate.minute === localTime.minute)
+        : undefined;
+      if (saved?.monitorEnabled && profile) {
+        const sourceNames = profile.sources.split(",").map((value) => value.trim()).filter(Boolean);
+        await runObservedCloudflareTask(mode, profile.task, () =>
+          runScheduledMonitorCycle(undefined, {
+            maxKeywords: positiveInt(env.CLOUDFLARE_PRIMARY_MAX_KEYWORDS, 100),
+            maxArticles: profile.maxArticles,
+            sourceNames,
+            suppressNotifications: false,
+            recordSchedulerRun: false,
+          }),
+        );
       }
     } else {
       const canaryCron = env.CLOUDFLARE_MONITOR_CRON || "35 11 * * *";
@@ -319,18 +366,30 @@ export async function runCloudflareScheduledTasks(event: ScheduledEvent, env: En
       }
     }
 
-    if (maintenanceTime.hour === 4 && maintenanceTime.minute === 30) {
+    const localTime = shanghaiParts(event.scheduledTime);
+    const primaryDailyMaintenance =
+      mode === "primary" &&
+      event.cron === (env.CLOUDFLARE_PRIMARY_CRON || "15,40 1-23/2 * * *") &&
+      localTime.hour === 3 &&
+      localTime.minute === 40;
+    const maintenanceWindow =
+      (maintenanceTime.hour === 4 && maintenanceTime.minute === 30) ||
+      primaryDailyMaintenance;
+
+    if (maintenanceWindow) {
       const { cleanupOldArticles } = await import("../server/monitor/cleanup");
       await runObservedCloudflareTask(mode, "cleanup", cleanupOldArticles);
     }
-    if (maintenanceTime.hour === 8 && maintenanceTime.minute === 30 && maintenanceTime.weekday === 1) {
+    // The primary social event also carries maintenance once per day, keeping
+    // all of this Worker inside the account's one remaining Free-plan Cron slot.
+    if (maintenanceWindow && localTime.weekday === 1) {
       const { generateMonitorReport, weeklyPeriodOf } = await import("../server/monitor/report");
       const lastWeek = weeklyPeriodOf(weeklyPeriodOf(Date.now()).startMs - 1);
       await runObservedCloudflareTask(mode, "weekly_report", () =>
         generateMonitorReport("weekly", lastWeek.reportPeriod),
       );
     }
-    if (maintenanceTime.hour === 8 && maintenanceTime.minute === 40 && maintenanceTime.day === 1) {
+    if (maintenanceWindow && localTime.day === 1) {
       const { generateMonitorReport, monthlyPeriodOf } = await import("../server/monitor/report");
       const lastMonth = monthlyPeriodOf(monthlyPeriodOf(Date.now()).startMs - 1);
       await runObservedCloudflareTask(mode, "monthly_report", () =>
