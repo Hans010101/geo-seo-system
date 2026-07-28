@@ -2024,6 +2024,8 @@ function shanghaiWeekKey(timestamp: number): string {
 export type CloudflareGeoWeeklyShardResult = {
   week: string;
   batchId: string | null;
+  questions: number;
+  platforms: number;
   totalCells: number;
   cursorBefore: number;
   cursorAfter: number;
@@ -2037,12 +2039,13 @@ export type CloudflareGeoWeeklyShardResult = {
 
 // Cloudflare weekly GEO coverage is advanced in small, idempotent shards. With
 // the production default of 6 cells × 12 social events/day, the current
-// 31-question × 12-platform matrix completes inside one week without exceeding
+// 31-question × 15-platform matrix completes inside one week without exceeding
 // the Free-plan external-subrequest ceiling in any single invocation.
 export async function runCloudflareGeoWeeklyShard(options?: {
   maxCells?: number;
   concurrency?: number;
   timestamp?: number;
+  allPlatforms?: boolean;
 }): Promise<CloudflareGeoWeeklyShardResult> {
   const timestamp = options?.timestamp ?? Date.now();
   const maxCells = Math.min(10, Math.max(1, options?.maxCells ?? 6));
@@ -2058,9 +2061,11 @@ export async function runCloudflareGeoWeeklyShard(options?: {
     db.getSysConfig(weekKey),
     db.getSysConfig(cursorKey),
   ]);
-  const enabledPlatforms = platformConfigsList
-    .filter((platform: any) => platform.isEnabled && PLATFORMS.includes(platform.platform as Platform))
-    .map((platform: any) => platform.platform as Platform);
+  const enabledPlatforms = options?.allPlatforms === true
+    ? [...PLATFORMS]
+    : platformConfigsList
+        .filter((platform: any) => platform.isEnabled && PLATFORMS.includes(platform.platform as Platform))
+        .map((platform: any) => platform.platform as Platform);
   const cells = questionsList.flatMap((question) =>
     enabledPlatforms.map((platform) => ({ question, platform })),
   );
@@ -2076,6 +2081,8 @@ export async function runCloudflareGeoWeeklyShard(options?: {
     return {
       week,
       batchId: null,
+      questions: questionsList.length,
+      platforms: enabledPlatforms.length,
       totalCells: cells.length,
       cursorBefore: cursor,
       cursorAfter: cursor,
@@ -2125,6 +2132,8 @@ export async function runCloudflareGeoWeeklyShard(options?: {
   return {
     week,
     batchId,
+    questions: questionsList.length,
+    platforms: enabledPlatforms.length,
     totalCells: cells.length,
     cursorBefore: cursor,
     cursorAfter,

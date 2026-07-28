@@ -70,6 +70,7 @@ export interface Env {
   CLOUDFLARE_OPENROUTER_FALLBACK_ENABLED?: string;
   CLOUDFLARE_OPENROUTER_FALLBACK_MODEL?: string;
   CLOUDFLARE_GEO_WEEKLY_ENABLED?: string;
+  CLOUDFLARE_GEO_WEEKLY_ALL_PLATFORMS?: string;
   CLOUDFLARE_GEO_WEEKLY_MAX_CELLS?: string;
   CLOUDFLARE_GEO_WEEKLY_CONCURRENCY?: string;
   CLOUDFLARE_MAINTENANCE_OFFSET_MINUTES?: string;
@@ -382,6 +383,7 @@ export async function runCloudflareScheduledTasks(event: ScheduledEvent, env: En
             maxCells: positiveInt(env.CLOUDFLARE_GEO_WEEKLY_MAX_CELLS, 6),
             concurrency: positiveInt(env.CLOUDFLARE_GEO_WEEKLY_CONCURRENCY, 3),
             timestamp: event.scheduledTime,
+            allPlatforms: env.CLOUDFLARE_GEO_WEEKLY_ALL_PLATFORMS === "true",
           }),
           CF_GEO_WEEKLY_STATUS_KEYS,
         );
