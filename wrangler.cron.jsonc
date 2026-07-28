@@ -13,8 +13,13 @@
     "CLOUDFLARE_CANARY_MAX_KEYWORDS": "1",
     "CLOUDFLARE_CANARY_MAX_ARTICLES": "2",
     "CLOUDFLARE_CANARY_SOURCES": "serper",
+    "CLOUDFLARE_AI_MODEL": "@cf/meta/llama-3.1-8b-instruct-fast",
+    "CLOUDFLARE_AI_MAX_TOKENS": "512",
     "CLOUDFLARE_MAINTENANCE_OFFSET_MINUTES": "15",
     "OPENROUTER_BASE_URL": "https://openrouter.ai/api/v1"
+  },
+  "ai": {
+    "binding": "AI"
   },
   "hyperdrive": [
     {

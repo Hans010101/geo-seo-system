@@ -22,6 +22,14 @@ export type MonitorCycleResult = {
   newArticles: number;
   inserted: number;
   analyzed: number;
+  analysisAttempted: number;
+  analysisFailed: number;
+  analysisErrors: string[];
+  analysisProviderDist: Record<string, number>;
+  analysisModelDist: Record<string, number>;
+  analysisPromptTokens: number;
+  analysisCompletionTokens: number;
+  analysisNeurons: number;
   engineDist: Record<string, number>; // fetchEngine → count (self/firecrawl/snippet/source_api)
   sourceDist: Record<string, number>; // sourcePlatform → count (web/binance_square)
   fetchCostUsd: number;
@@ -138,7 +146,11 @@ export async function runMonitorCycle(opts?: MonitorCycleOptions): Promise<Monit
 
   const stats: MonitorCycleResult = {
     keywords: keywords.length, serperCalls, serperBudgetHit, discovered: discovered.size,
-    newArticles: fresh.length, inserted: 0, analyzed: 0, engineDist: {}, sourceDist: {},
+    newArticles: fresh.length, inserted: 0, analyzed: 0,
+    analysisAttempted: 0, analysisFailed: 0, analysisErrors: [],
+    analysisProviderDist: {}, analysisModelDist: {},
+    analysisPromptTokens: 0, analysisCompletionTokens: 0, analysisNeurons: 0,
+    engineDist: {}, sourceDist: {},
     fetchCostUsd: 0, analysisCostUsd: 0, failed: 0, realtimeAlerts: 0, briefingSent: false,
     tbs: tbsOverride ?? "auto(d/w)",
   };
@@ -188,10 +200,14 @@ export async function runMonitorCycle(opts?: MonitorCycleOptions): Promise<Monit
 
         let analysis = null;
         if (contentMd.length > 0) {
+          stats.analysisAttempted++;
           try {
             analysis = await analyzeArticle({ url: p.url, title, contentMd, snippet: p.contentSnippet || "", fetchStatus });
           } catch (e: any) {
-            log.error(`Analyze failed ${p.url}: ${String(e?.message || e).slice(0, 160)}`);
+            stats.analysisFailed++;
+            const message = String(e?.message || e).slice(0, 240);
+            if (stats.analysisErrors.length < 3) stats.analysisErrors.push(message);
+            log.error(`Analyze failed ${p.url}: ${message}`);
           }
         }
 
@@ -224,6 +240,11 @@ export async function runMonitorCycle(opts?: MonitorCycleOptions): Promise<Monit
         if (analysis) {
           stats.analyzed++;
           stats.analysisCostUsd += analysis.costUsd || 0;
+          stats.analysisProviderDist[analysis.provider] = (stats.analysisProviderDist[analysis.provider] || 0) + 1;
+          stats.analysisModelDist[analysis.model] = (stats.analysisModelDist[analysis.model] || 0) + 1;
+          stats.analysisPromptTokens += analysis.promptTokens || 0;
+          stats.analysisCompletionTokens += analysis.completionTokens || 0;
+          stats.analysisNeurons += analysis.neurons || 0;
           // Collect high/medium relevance for the briefing (low/irrelevant excluded → no noise).
           if (analysis.relevance === "high" || analysis.relevance === "medium") {
             briefingItems.push({
@@ -264,6 +285,7 @@ export async function runMonitorCycle(opts?: MonitorCycleOptions): Promise<Monit
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, fresh.length || 1) }, () => worker()));
   stats.fetchCostUsd = Math.round(stats.fetchCostUsd * 1_000_000) / 1_000_000;
   stats.analysisCostUsd = Math.round(stats.analysisCostUsd * 1_000_000) / 1_000_000;
+  stats.analysisNeurons = Math.round(stats.analysisNeurons * 1000) / 1000;
 
   // Briefing after the cycle (gated by sysConfig; default OFF until enabled on a test channel).
   if (!opts?.suppressNotifications) {

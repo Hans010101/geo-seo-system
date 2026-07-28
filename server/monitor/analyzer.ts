@@ -1,12 +1,37 @@
-// DeepSeek (via OpenRouter) analysis for a monitored article. Prompt structure mirrors the production
-// analyzeCollection (server/routers.ts), extended for monitoring: relevance + sentiment + summary + entities.
+// Cloudflare Workers AI is preferred when its binding is present; Node/Cloud Run keeps the OpenRouter path.
+// Prompt structure mirrors the production analyzeCollection, extended for monitoring.
 // threatLevel is computed deterministically from source authority × sentiment intensity × stance × relevance.
-import { invokeLLM } from "../_core/llm";
+import { invokeLLM, type Message } from "../_core/llm";
 import { calcCostUsd } from "@shared/llm-pricing";
 import * as db from "../db";
 import { domainOf } from "./util";
 
 const ANALYSIS_MODEL = "deepseek/deepseek-chat";
+const CLOUDFLARE_ANALYSIS_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast";
+const CLOUDFLARE_MAX_TOKENS = 512;
+
+type WorkersAiBinding = {
+  run(model: string, input: Record<string, unknown>): Promise<unknown>;
+};
+
+type CloudflareRuntimeEnv = {
+  AI?: WorkersAiBinding;
+  CLOUDFLARE_AI_MODEL?: string;
+  CLOUDFLARE_AI_MAX_TOKENS?: string;
+};
+
+const ANALYSIS_JSON_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    relevance: { type: "string", enum: ["high", "medium", "low", "irrelevant"] },
+    relevance_reason: { type: "string" },
+    sentiment_score: { type: "integer", minimum: 1, maximum: 5 },
+    summary: { type: "string" },
+    key_entities: { type: "array", maxItems: 5, items: { type: "string" } },
+  },
+  required: ["relevance", "relevance_reason", "sentiment_score", "summary", "key_entities"],
+} as const;
 
 export type Relevance = "high" | "medium" | "low" | "irrelevant";
 export type ThreatLevel = "high" | "medium" | "low" | "none";
@@ -20,7 +45,118 @@ export type MonitorAnalysis = {
   promptTokens: number | null;
   completionTokens: number | null;
   costUsd: number | null;
+  provider: "cloudflare_workers_ai" | "openrouter";
+  model: string;
+  neurons: number | null;
 };
+
+type ParsedAnalysis = {
+  relevance: Relevance;
+  relevanceReason: string;
+  sentimentScore: number;
+  summary: string;
+  keyEntities: string[];
+};
+
+function runtimeEnv(): CloudflareRuntimeEnv | undefined {
+  return (globalThis as any).__CF_ENV__ as CloudflareRuntimeEnv | undefined;
+}
+
+function boundedMaxTokens(value: string | undefined): number {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed)) return CLOUDFLARE_MAX_TOKENS;
+  return Math.min(1024, Math.max(128, parsed));
+}
+
+function parseJsonText(content: string): unknown {
+  try {
+    return JSON.parse(content);
+  } catch {
+    const match = content.match(/\{[\s\S]*\}/);
+    if (!match) throw new Error("分析响应无法解析为 JSON");
+    return JSON.parse(match[0]);
+  }
+}
+
+export function parseMonitorAnalysisPayload(value: unknown): ParsedAnalysis {
+  const parsed = typeof value === "string" ? parseJsonText(value) : value;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("分析响应不是 JSON 对象");
+  const record = parsed as Record<string, unknown>;
+  const relevance = record.relevance;
+  if (!(relevance === "high" || relevance === "medium" || relevance === "low" || relevance === "irrelevant")) {
+    throw new Error("分析响应 relevance 无效");
+  }
+  const score = Number(record.sentiment_score ?? record.sentimentScore);
+  if (!Number.isInteger(score) || score < 1 || score > 5) throw new Error("分析响应 sentiment_score 无效");
+  const relevanceReason = String(record.relevance_reason ?? record.relevanceReason ?? "").trim();
+  const summary = String(record.summary ?? "").trim();
+  if (!relevanceReason || !summary) throw new Error("分析响应缺少 relevance_reason 或 summary");
+  if (!Array.isArray(record.key_entities) || record.key_entities.some((item) => typeof item !== "string")) {
+    throw new Error("分析响应 key_entities 无效");
+  }
+  return {
+    relevance,
+    relevanceReason: relevanceReason.slice(0, 500),
+    sentimentScore: score,
+    summary: summary.slice(0, 480),
+    keyEntities: record.key_entities.slice(0, 5) as string[],
+  };
+}
+
+function tokenCount(usage: Record<string, unknown>, primary: string, fallback: string): number | null {
+  const value = usage[primary] ?? usage[fallback];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function estimateWorkersAiNeurons(model: string, promptTokens: number | null, completionTokens: number | null): number | null {
+  if (promptTokens == null && completionTokens == null) return null;
+  if (model !== CLOUDFLARE_ANALYSIS_MODEL && model !== "@cf/meta/llama-3.1-8b-instruct-fp8-fast") return null;
+  return ((promptTokens || 0) * 4_119 + (completionTokens || 0) * 34_868) / 1_000_000;
+}
+
+function retryableWorkersAiError(error: unknown): boolean {
+  const message = String(error instanceof Error ? error.message : error).toLowerCase();
+  return !/(quota|daily limit|rate limit|too many requests|429|exceeded.*neuron|authentication|permission)/.test(message);
+}
+
+async function analyzeWithWorkersAi(
+  ai: WorkersAiBinding,
+  env: CloudflareRuntimeEnv,
+  messages: Message[],
+): Promise<{ parsed: ParsedAnalysis; promptTokens: number | null; completionTokens: number | null; model: string; neurons: number | null }> {
+  const model = env.CLOUDFLARE_AI_MODEL?.trim() || CLOUDFLARE_ANALYSIS_MODEL;
+  const maxTokens = boundedMaxTokens(env.CLOUDFLARE_AI_MAX_TOKENS);
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const raw = await ai.run(model, {
+        messages,
+        max_tokens: maxTokens,
+        temperature: 0.1,
+        stream: false,
+        response_format: { type: "json_schema", json_schema: ANALYSIS_JSON_SCHEMA },
+      });
+      const result = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+      const parsed = parseMonitorAnalysisPayload(result.response ?? raw);
+      const usage = result.usage && typeof result.usage === "object" ? result.usage as Record<string, unknown> : {};
+      const promptTokens = tokenCount(usage, "prompt_tokens", "input_tokens");
+      const completionTokens = tokenCount(usage, "completion_tokens", "output_tokens");
+      const reportedNeurons = typeof usage.neurons === "number" && Number.isFinite(usage.neurons) ? usage.neurons : null;
+      return {
+        parsed,
+        promptTokens,
+        completionTokens,
+        model,
+        neurons: reportedNeurons ?? estimateWorkersAiNeurons(model, promptTokens, completionTokens),
+      };
+    } catch (error) {
+      lastError = error;
+      if (attempt === 0 && retryableWorkersAiError(error)) continue;
+      break;
+    }
+  }
+  throw new Error(`Workers AI analysis failed after retry: ${String(lastError instanceof Error ? lastError.message : lastError).slice(0, 300)}`);
+}
 
 // Deterministic threat = negative-sentiment intensity × source authority × relevance weight, shifted by stance.
 function computeThreat(
@@ -80,61 +216,81 @@ export async function analyzeArticle(input: {
   snippet: string;
   fetchStatus: "full" | "partial" | "failed";
 }): Promise<MonitorAnalysis> {
-  const orKey = await db.getGlobalApiKeyByName("OpenRouter");
-  if (!orKey?.apiKey || !orKey.baseUrl) {
-    throw new Error("OpenRouter key 未配置：舆情分析需要「全局 API 配置」中名为 'OpenRouter' 的有效条目");
-  }
   const body = (input.contentMd || input.snippet || "").slice(0, 6000);
   const partial = input.fetchStatus !== "full";
+  const messages: Message[] = [
+    { role: "system", content: "You are a professional brand reputation analyst. Always respond with valid JSON only." },
+    { role: "user", content: buildPrompt(input.title || "", body, partial) },
+  ];
+  const env = runtimeEnv();
+  let parsed: ParsedAnalysis;
+  let promptTokens: number | null;
+  let completionTokens: number | null;
+  let costUsd: number | null;
+  let provider: MonitorAnalysis["provider"];
+  let model: string;
+  let neurons: number | null;
 
-  const result = await invokeLLM({
-    apiKey: orKey.apiKey,
-    baseUrl: orKey.baseUrl,
-    model: ANALYSIS_MODEL,
-    messages: [
-      { role: "system", content: "You are a professional brand reputation analyst. Always respond with valid JSON only." },
-      { role: "user", content: buildPrompt(input.title || "", body, partial) },
-    ],
-    response_format: { type: "json_object" },
-    timeoutMs: 60000, // analysis is a small JSON reply; a hung call must not stall the cycle
-  });
-
-  const content =
-    typeof result.choices?.[0]?.message?.content === "string" ? (result.choices[0].message.content as string) : "";
-  let parsed: any;
-  try {
-    parsed = JSON.parse(content);
-  } catch {
-    const m = content.match(/\{[\s\S]*\}/);
-    if (!m) throw new Error("分析响应无法解析为 JSON");
-    parsed = JSON.parse(m[0]);
+  if (env?.AI) {
+    const result = await analyzeWithWorkersAi(env.AI, env, messages);
+    parsed = result.parsed;
+    promptTokens = result.promptTokens;
+    completionTokens = result.completionTokens;
+    costUsd = null;
+    provider = "cloudflare_workers_ai";
+    model = result.model;
+    neurons = result.neurons;
+  } else {
+    const orKey = await db.getGlobalApiKeyByName("OpenRouter");
+    if (!orKey?.apiKey || !orKey.baseUrl) {
+      throw new Error("OpenRouter key 未配置：舆情分析需要「全局 API 配置」中名为 'OpenRouter' 的有效条目");
+    }
+    const result = await invokeLLM({
+      apiKey: orKey.apiKey,
+      baseUrl: orKey.baseUrl,
+      model: ANALYSIS_MODEL,
+      messages,
+      response_format: { type: "json_object" },
+      timeoutMs: 60000,
+    });
+    const content = typeof result.choices?.[0]?.message?.content === "string"
+      ? result.choices[0].message.content as string
+      : "";
+    parsed = parseMonitorAnalysisPayload(content);
+    const usage: any = result.usage || {};
+    promptTokens = usage.prompt_tokens ?? null;
+    completionTokens = usage.completion_tokens ?? null;
+    costUsd = typeof usage.cost === "number"
+      ? usage.cost
+      : calcCostUsd(ANALYSIS_MODEL, promptTokens, completionTokens);
+    provider = "openrouter";
+    model = ANALYSIS_MODEL;
+    neurons = null;
   }
-
-  const usage: any = result.usage || {};
-  const promptTokens = usage.prompt_tokens ?? null;
-  const completionTokens = usage.completion_tokens ?? null;
-  // OpenRouter returns authoritative usage.cost; fall back to the price table.
-  const costUsd =
-    typeof usage.cost === "number" ? usage.cost : calcCostUsd(ANALYSIS_MODEL, promptTokens, completionTokens);
-
-  const relevance: Relevance = ["high", "medium", "low", "irrelevant"].includes(parsed.relevance)
-    ? parsed.relevance
-    : "low";
-  const relevanceReason = (parsed.relevance_reason || parsed.relevanceReason || "").toString().slice(0, 500);
-  const rawScore = parseInt(parsed.sentiment_score ?? parsed.sentimentScore, 10);
-  const sentimentScore = Math.min(5, Math.max(1, Number.isNaN(rawScore) ? 3 : rawScore));
 
   const domain = domainOf(input.url);
   const rule = domain ? await db.getMonitorSourceRuleByDomain(domain) : undefined;
   const threatLevel = computeThreat(
-    sentimentScore,
-    relevance,
+    parsed.sentimentScore,
+    parsed.relevance,
     rule?.authorityLevel ?? 5,
     (rule?.stance as any) ?? "neutral"
   );
 
-  const entities = Array.isArray(parsed.key_entities) ? parsed.key_entities.slice(0, 5).join("、") : "";
-  const summary = `${(parsed.summary || "").toString().slice(0, 480)}${entities ? `\n关键实体: ${entities}` : ""}`;
+  const entities = parsed.keyEntities.join("、");
+  const summary = `${parsed.summary}${entities ? `\n关键实体: ${entities}` : ""}`;
 
-  return { relevance, relevanceReason, sentimentScore, threatLevel, summary, promptTokens, completionTokens, costUsd };
+  return {
+    relevance: parsed.relevance,
+    relevanceReason: parsed.relevanceReason,
+    sentimentScore: parsed.sentimentScore,
+    threatLevel,
+    summary,
+    promptTokens,
+    completionTokens,
+    costUsd,
+    provider,
+    model,
+    neurons,
+  };
 }

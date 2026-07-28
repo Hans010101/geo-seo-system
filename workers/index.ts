@@ -58,7 +58,12 @@ export interface Env {
   CLOUDFLARE_CANARY_MAX_KEYWORDS?: string;
   CLOUDFLARE_CANARY_MAX_ARTICLES?: string;
   CLOUDFLARE_CANARY_SOURCES?: string;
+  CLOUDFLARE_AI_MODEL?: string;
+  CLOUDFLARE_AI_MAX_TOKENS?: string;
   CLOUDFLARE_MAINTENANCE_OFFSET_MINUTES?: string;
+  AI?: {
+    run(model: string, input: Record<string, unknown>): Promise<unknown>;
+  };
   HYPERDRIVE?: HyperdriveBinding;
 }
 
@@ -245,10 +250,19 @@ async function runObservedCloudflareTask<T>(
   });
   try {
     const result = await work();
+    const resultRecord = result && typeof result === "object"
+      ? result as Record<string, unknown>
+      : null;
+    const analysisFailed = Number(resultRecord?.analysisFailed || 0);
+    const itemFailed = Number(resultRecord?.failed || 0);
+    const partialFailure = analysisFailed > 0 || itemFailed > 0;
     await recordCloudflareCronStatus({
-      status: "success",
+      status: partialFailure ? "partial_failure" : "success",
       finishedAt: String(Date.now()),
       summary: JSON.stringify(result ?? null).slice(0, 4000),
+      error: partialFailure
+        ? `${analysisFailed} analysis failures; ${itemFailed} pipeline failures`
+        : "",
     });
     return result;
   } catch (error) {
