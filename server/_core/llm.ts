@@ -273,6 +273,8 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
     apiKey,
     baseUrl,
     model,
+    maxTokens,
+    max_tokens,
     timeoutMs,
   } = params;
 
@@ -299,7 +301,10 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
     payload.tool_choice = normalizedToolChoice;
   }
 
-  payload.max_tokens = 32768;
+  const requestedMaxTokens = maxTokens ?? max_tokens;
+  payload.max_tokens = Number.isInteger(requestedMaxTokens)
+    ? Math.min(32768, Math.max(1, Number(requestedMaxTokens)))
+    : 32768;
   payload.thinking = {
     "budget_tokens": 128
   };

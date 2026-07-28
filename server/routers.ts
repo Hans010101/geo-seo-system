@@ -119,6 +119,23 @@ async function getActiveKeyForProvider(provider: LLMProvider): Promise<{ apiKey:
   return null;
 }
 
+function runtimeOpenRouterEnv(): { apiKey: string; baseUrl: string } | null {
+  const cfEnv = (globalThis as any).__CF_ENV__ as {
+    OPENROUTER_API_KEY?: string;
+    OPENROUTER_BASE_URL?: string;
+  } | undefined;
+  const apiKey = cfEnv?.OPENROUTER_API_KEY?.trim() || ENV.openrouterApiKey;
+  if (!apiKey) return null;
+  return {
+    apiKey,
+    baseUrl: cfEnv?.OPENROUTER_BASE_URL?.trim() || ENV.openrouterBaseUrl || OPENROUTER_BASE_URL,
+  };
+}
+
+async function getOpenRouterOnlyKey(): Promise<{ apiKey: string; baseUrl: string } | null> {
+  return await getActiveKeyForProvider("openrouter") || runtimeOpenRouterEnv();
+}
+
 // Read the configured primary provider (sysConfig key=llm_primary_provider), defaulting to 'bai'.
 async function getPrimaryProvider(): Promise<LLMProvider> {
   const v = await db.getSysConfig("llm_primary_provider");
@@ -183,12 +200,23 @@ async function resolveProviderForPlatform(platform: string): Promise<{
 
 // ==================== Global API Key Resolution ====================
 // Priority: platform own key > global key (coveredPlatforms) > env OpenRouter > error
-async function resolveApiConfig(platform: string): Promise<{
+async function resolveApiConfig(platform: string, providerOverride?: "openrouter"): Promise<{
   apiKey: string | null;
   baseUrl: string | null;
   model: string;
   source: "platform" | "global" | "env" | "none";
 }> {
+  if (providerOverride === "openrouter") {
+    const openRouter = await getOpenRouterOnlyKey();
+    return openRouter
+      ? {
+          ...openRouter,
+          model: PLATFORM_OPENROUTER_MODELS[platform as Platform] || "openai/gpt-4o",
+          source: "global",
+        }
+      : { apiKey: null, baseUrl: null, model: "openai/gpt-4o", source: "none" };
+  }
+
   const platformConfig = await db.getPlatformConfig(platform);
 
   // 1. Platform's own API key
@@ -262,7 +290,13 @@ function resolveAnalysisModel(baseUrl: string): string {
 
 // For analysis/citation extraction we also respect the primary-provider switch.
 // Order: primary provider (BAI or OpenRouter) → fallback provider → other legacy keys → env.
-async function getAnyActiveApiKey(): Promise<{ apiKey: string; baseUrl: string; model: string } | null> {
+async function getAnyActiveApiKey(providerOverride?: "openrouter"): Promise<{ apiKey: string; baseUrl: string; model: string } | null> {
+  if (providerOverride === "openrouter") {
+    const openRouter = await getOpenRouterOnlyKey();
+    return openRouter
+      ? { ...openRouter, model: resolveAnalysisModel(openRouter.baseUrl) }
+      : null;
+  }
   const primary = await getPrimaryProvider();
   const primaryKey = await getActiveKeyForProvider(primary);
   if (primaryKey) {
@@ -312,9 +346,10 @@ export type LLMCallTelemetry = {
 async function callExternalLLM(
   platform: string,
   messages: { role: string; content: string }[],
-  traceId: string
+  traceId: string,
+  providerOverride?: "openrouter",
 ): Promise<LLMCallTelemetry> {
-  const config = await resolveApiConfig(platform);
+  const config = await resolveApiConfig(platform, providerOverride);
 
   if (!config.apiKey || !config.baseUrl || config.source === "none") {
     throw new Error(`该平台 (${platform}) 未配置 API Key，请在「平台配置」或「全局 API 配置」中设置`);
@@ -419,7 +454,8 @@ async function callExternalLLM(
 async function executeCollection(
   collectionId: number,
   question: { questionId: string; text: string; language: string },
-  platform: string
+  platform: string,
+  providerOverride?: "openrouter",
 ): Promise<{ success: boolean; error?: string }> {
   const traceId = `col-${collectionId}-${nanoid(6)}`;
 
@@ -446,7 +482,8 @@ async function executeCollection(
         { role: "system", content: systemPrompt },
         { role: "user", content: question.text },
       ],
-      traceId
+      traceId,
+      providerOverride,
     );
     const responseText = telemetry.content;
     const apiSource = telemetry.source;
@@ -481,12 +518,12 @@ async function executeCollection(
 
     // Citation extraction (enhanced)
     if (!isCancelled(collectionId)) {
-      await extractCitations(collectionId, responseText, traceId);
+      await extractCitations(collectionId, responseText, traceId, providerOverride);
     }
 
     // AI analysis
     if (!isCancelled(collectionId)) {
-      await analyzeCollection(collectionId, question.text, responseText, traceId);
+      await analyzeCollection(collectionId, question.text, responseText, traceId, providerOverride);
     }
 
     // Alert checking
@@ -516,7 +553,12 @@ async function executeCollection(
 }
 
 // ==================== Citation Extraction (P0-3: Enhanced) ====================
-async function extractCitations(collectionId: number, responseText: string, traceId: string) {
+async function extractCitations(
+  collectionId: number,
+  responseText: string,
+  traceId: string,
+  providerOverride?: "openrouter",
+) {
   try {
     // Step 1: Regex extraction of explicit URLs
     const urlRegex = /https?:\/\/[^\s\)>\]"'，。、；：]+/g;
@@ -557,7 +599,7 @@ async function extractCitations(collectionId: number, responseText: string, trac
 
     // Step 2: LLM-assisted extraction of implicit references (P0-3)
     // Only run if the response is long enough and we have an API key
-    const citationApiKey = await getAnyActiveApiKey();
+    const citationApiKey = await getAnyActiveApiKey(providerOverride);
     if (responseText.length > 200 && citationApiKey) {
       try {
         const extractionResult = await invokeLLM({
@@ -575,6 +617,7 @@ async function extractCitations(collectionId: number, responseText: string, trac
             },
             { role: "user", content: responseText.slice(0, 3000) },
           ],
+          max_tokens: 1024,
           response_format: { type: "json_object" },
         });
 
@@ -721,9 +764,15 @@ async function checkAlerts(
 }
 
 // ==================== Analysis Helper ====================
-async function analyzeCollection(collectionId: number, questionText: string, responseText: string, traceId: string) {
+async function analyzeCollection(
+  collectionId: number,
+  questionText: string,
+  responseText: string,
+  traceId: string,
+  providerOverride?: "openrouter",
+) {
   try {
-    const analysisApiKey = await getAnyActiveApiKey();
+    const analysisApiKey = await getAnyActiveApiKey(providerOverride);
     if (!analysisApiKey) {
       log.warn(`Skipping analysis for collection ${collectionId}: no active API key`, { traceId });
       return;
@@ -764,6 +813,7 @@ ${targetFactKeys.map((k) => `    "${k}": <true|false>`).join(",\n")}
         { role: "system", content: "You are a professional brand reputation analyst. Always respond with valid JSON only." },
         { role: "user", content: prompt },
       ],
+      max_tokens: 2048,
       response_format: { type: "json_object" },
     });
 
@@ -813,14 +863,15 @@ ${targetFactKeys.map((k) => `    "${k}": <true|false>`).join(",\n")}
 // Used by both runBatchConcurrently (scheduler) and executeNextBatch (frontend poll).
 async function runCollectionsConcurrently(
   tasks: { collectionId: number; question: { questionId: string; text: string; language: string }; platform: string }[],
-  concurrency: number
+  concurrency: number,
+  providerOverride?: "openrouter",
 ): Promise<{ completed: number; failed: number }> {
   const pLimit = (await import("p-limit")).default;
   const limit = pLimit(concurrency);
 
   const results = await Promise.allSettled(
     tasks.map((task) =>
-      limit(async () => executeCollection(task.collectionId, task.question, task.platform))
+      limit(async () => executeCollection(task.collectionId, task.question, task.platform, providerOverride))
     )
   );
 
@@ -1957,6 +2008,133 @@ export async function runScheduledCollection(concurrency = schedulerState.concur
   }
 
   await runBatchConcurrently(tasks, batchId, concurrency);
+}
+
+function shanghaiWeekKey(timestamp: number): string {
+  const local = new Date(timestamp + 8 * 60 * 60 * 1000);
+  const daysSinceMonday = (local.getUTCDay() + 6) % 7;
+  local.setUTCDate(local.getUTCDate() - daysSinceMonday);
+  return [
+    local.getUTCFullYear(),
+    String(local.getUTCMonth() + 1).padStart(2, "0"),
+    String(local.getUTCDate()).padStart(2, "0"),
+  ].join("-");
+}
+
+export type CloudflareGeoWeeklyShardResult = {
+  week: string;
+  batchId: string | null;
+  totalCells: number;
+  cursorBefore: number;
+  cursorAfter: number;
+  attempted: number;
+  completed: number;
+  failed: number;
+  remaining: number;
+  done: boolean;
+  provider: "openrouter";
+};
+
+// Cloudflare weekly GEO coverage is advanced in small, idempotent shards. With
+// the production default of 6 cells × 12 social events/day, the current
+// 31-question × 12-platform matrix completes inside one week without exceeding
+// the Free-plan external-subrequest ceiling in any single invocation.
+export async function runCloudflareGeoWeeklyShard(options?: {
+  maxCells?: number;
+  concurrency?: number;
+  timestamp?: number;
+}): Promise<CloudflareGeoWeeklyShardResult> {
+  const timestamp = options?.timestamp ?? Date.now();
+  const maxCells = Math.min(10, Math.max(1, options?.maxCells ?? 6));
+  const concurrency = Math.min(4, Math.max(1, options?.concurrency ?? 3));
+  const week = shanghaiWeekKey(timestamp);
+  const weekKey = "cf_geo_weekly_week";
+  const cursorKey = "cf_geo_weekly_cursor";
+  const completedAtKey = "cf_geo_weekly_completed_at";
+
+  const [questionsList, platformConfigsList, savedWeek, savedCursor] = await Promise.all([
+    db.listQuestions({ status: "active" }),
+    db.listPlatformConfigs(),
+    db.getSysConfig(weekKey),
+    db.getSysConfig(cursorKey),
+  ]);
+  const enabledPlatforms = platformConfigsList
+    .filter((platform: any) => platform.isEnabled && PLATFORMS.includes(platform.platform as Platform))
+    .map((platform: any) => platform.platform as Platform);
+  const cells = questionsList.flatMap((question) =>
+    enabledPlatforms.map((platform) => ({ question, platform })),
+  );
+
+  let cursor = savedWeek === week ? Math.max(0, parseInt(savedCursor || "0", 10) || 0) : 0;
+  if (savedWeek !== week) {
+    await db.setSysConfig(weekKey, week);
+    await db.setSysConfig(cursorKey, "0");
+    await db.setSysConfig(completedAtKey, "");
+  }
+  cursor = Math.min(cursor, cells.length);
+  if (cursor >= cells.length) {
+    return {
+      week,
+      batchId: null,
+      totalCells: cells.length,
+      cursorBefore: cursor,
+      cursorAfter: cursor,
+      attempted: 0,
+      completed: 0,
+      failed: 0,
+      remaining: 0,
+      done: true,
+      provider: "openrouter",
+    };
+  }
+
+  if (!await getOpenRouterOnlyKey()) {
+    throw new Error("Cloudflare weekly GEO collection requires an active OpenRouter key");
+  }
+
+  const shardCells = cells.slice(cursor, cursor + maxCells);
+  const batchId = `cf-weekly-${week}-${cursor}`;
+  const existing = await db.listCollections({ batchId, limit: maxCells });
+  const existingByCell = new Map(
+    existing.data.map((collection: any) => [`${collection.questionId}:${collection.platform}`, collection]),
+  );
+  const tasks: { collectionId: number; question: any; platform: string }[] = [];
+
+  for (const cell of shardCells) {
+    const key = `${cell.question.questionId}:${cell.platform}`;
+    const prior = existingByCell.get(key);
+    if (prior?.status === "success") continue;
+    const collectionId = prior?.id || await db.createCollection({
+      questionId: cell.question.questionId,
+      questionText: cell.question.text,
+      platform: cell.platform,
+      language: cell.question.language,
+      timestamp,
+      status: "pending",
+      batchId,
+    });
+    if (collectionId) tasks.push({ collectionId, question: cell.question, platform: cell.platform });
+  }
+
+  const result = await runCollectionsConcurrently(tasks, concurrency, "openrouter");
+  // Keep the cursor on a partial/failed shard. Successful cells are skipped on
+  // retry while failed/pending rows reuse their existing collection ids.
+  const cursorAfter = result.failed === 0 ? cursor + shardCells.length : cursor;
+  await db.setSysConfig(cursorKey, String(cursorAfter));
+  if (cursorAfter >= cells.length) await db.setSysConfig(completedAtKey, String(Date.now()));
+  return {
+    week,
+    batchId,
+    totalCells: cells.length,
+    cursorBefore: cursor,
+    cursorAfter,
+    attempted: tasks.length,
+    completed: result.completed,
+    failed: result.failed,
+    remaining: Math.max(0, cells.length - cursorAfter),
+    done: cursorAfter >= cells.length,
+    provider: "openrouter",
+  };
 }
 
 // ==================== Load Scheduler Config from DB ====================

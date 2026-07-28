@@ -25,6 +25,7 @@ describe("monitor analyzer", () => {
 
   afterEach(() => {
     delete (globalThis as any).__CF_ENV__;
+    vi.unstubAllGlobals();
   });
 
   it("validates structured analysis payloads", () => {
@@ -97,5 +98,45 @@ describe("monitor analyzer", () => {
 
     expect(run).toHaveBeenCalledTimes(2);
     expect(result.provider).toBe("cloudflare_workers_ai");
+  });
+
+  it("falls back to OpenRouter when Workers AI quota is exhausted", async () => {
+    const run = vi.fn().mockRejectedValue(new Error("daily quota exceeded: 10000 neurons"));
+    dbMocks.getGlobalApiKeyByName.mockResolvedValue({
+      apiKey: "or-test-key",
+      baseUrl: "https://openrouter.ai/api/v1",
+    });
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      model: "deepseek/deepseek-chat",
+      choices: [{ index: 0, message: { role: "assistant", content: JSON.stringify(validPayload) }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 800, completion_tokens: 90, total_tokens: 890 },
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    (globalThis as any).__CF_ENV__ = {
+      AI: { run },
+      CLOUDFLARE_OPENROUTER_FALLBACK_ENABLED: "true",
+      CLOUDFLARE_OPENROUTER_FALLBACK_MODEL: "deepseek/deepseek-chat",
+      CLOUDFLARE_AI_MAX_TOKENS: "512",
+    };
+
+    const result = await analyzeArticle({
+      url: "https://example.com/tron-fallback",
+      title: "TRON update",
+      contentMd: "TRON update content",
+      snippet: "",
+      fetchStatus: "full",
+    });
+
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const requestBody = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(requestBody.max_tokens).toBe(512);
+    expect(result).toMatchObject({
+      provider: "openrouter",
+      model: "deepseek/deepseek-chat",
+      fallbackReason: expect.stringContaining("quota exceeded"),
+      promptTokens: 800,
+      completionTokens: 90,
+    });
   });
 });

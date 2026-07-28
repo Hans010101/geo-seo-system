@@ -21,6 +21,11 @@
     "CLOUDFLARE_PRIMARY_SOCIAL_SOURCES": "gate_square,telegram,x",
     "CLOUDFLARE_AI_MODEL": "@cf/meta/llama-3.1-8b-instruct-fast",
     "CLOUDFLARE_AI_MAX_TOKENS": "512",
+    "CLOUDFLARE_OPENROUTER_FALLBACK_ENABLED": "true",
+    "CLOUDFLARE_OPENROUTER_FALLBACK_MODEL": "deepseek/deepseek-chat",
+    "CLOUDFLARE_GEO_WEEKLY_ENABLED": "false",
+    "CLOUDFLARE_GEO_WEEKLY_MAX_CELLS": "6",
+    "CLOUDFLARE_GEO_WEEKLY_CONCURRENCY": "3",
     "CLOUDFLARE_MAINTENANCE_OFFSET_MINUTES": "15",
     "OPENROUTER_BASE_URL": "https://openrouter.ai/api/v1"
   },

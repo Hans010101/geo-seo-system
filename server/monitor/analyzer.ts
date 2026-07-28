@@ -4,7 +4,7 @@
 import { invokeLLM, type Message } from "../_core/llm";
 import { calcCostUsd } from "@shared/llm-pricing";
 import * as db from "../db";
-import { domainOf } from "./util";
+import { domainOf, log } from "./util";
 
 const ANALYSIS_MODEL = "deepseek/deepseek-chat";
 const CLOUDFLARE_ANALYSIS_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast";
@@ -18,6 +18,10 @@ type CloudflareRuntimeEnv = {
   AI?: WorkersAiBinding;
   CLOUDFLARE_AI_MODEL?: string;
   CLOUDFLARE_AI_MAX_TOKENS?: string;
+  CLOUDFLARE_OPENROUTER_FALLBACK_ENABLED?: string;
+  CLOUDFLARE_OPENROUTER_FALLBACK_MODEL?: string;
+  OPENROUTER_API_KEY?: string;
+  OPENROUTER_BASE_URL?: string;
 };
 
 const ANALYSIS_JSON_SCHEMA = {
@@ -48,6 +52,7 @@ export type MonitorAnalysis = {
   provider: "cloudflare_workers_ai" | "openrouter";
   model: string;
   neurons: number | null;
+  fallbackReason: string | null;
 };
 
 type ParsedAnalysis = {
@@ -158,6 +163,61 @@ async function analyzeWithWorkersAi(
   throw new Error(`Workers AI analysis failed after retry: ${String(lastError instanceof Error ? lastError.message : lastError).slice(0, 300)}`);
 }
 
+async function resolveOpenRouterFallback(env: CloudflareRuntimeEnv): Promise<{
+  apiKey: string;
+  baseUrl: string;
+  model: string;
+} | null> {
+  const configured = await db.getGlobalApiKeyByName("OpenRouter");
+  const apiKey = configured?.apiKey || env.OPENROUTER_API_KEY?.trim();
+  if (!apiKey) return null;
+  return {
+    apiKey,
+    baseUrl: configured?.baseUrl || env.OPENROUTER_BASE_URL?.trim() || "https://openrouter.ai/api/v1",
+    model: env.CLOUDFLARE_OPENROUTER_FALLBACK_MODEL?.trim() || ANALYSIS_MODEL,
+  };
+}
+
+async function analyzeWithOpenRouter(
+  env: CloudflareRuntimeEnv,
+  messages: Message[],
+): Promise<{
+  parsed: ParsedAnalysis;
+  promptTokens: number | null;
+  completionTokens: number | null;
+  costUsd: number | null;
+  model: string;
+}> {
+  const config = await resolveOpenRouterFallback(env);
+  if (!config) {
+    throw new Error("OpenRouter key 未配置：请配置 Cloudflare Secret 或全局 API 配置中的 OpenRouter");
+  }
+  const result = await invokeLLM({
+    ...config,
+    messages,
+    max_tokens: boundedMaxTokens(env.CLOUDFLARE_AI_MAX_TOKENS),
+    response_format: { type: "json_object" },
+    timeoutMs: 60_000,
+  });
+  const content = typeof result.choices?.[0]?.message?.content === "string"
+    ? result.choices[0].message.content as string
+    : "";
+  const parsed = parseMonitorAnalysisPayload(content);
+  const usage = (result.usage || {}) as Record<string, unknown>;
+  const promptTokens = typeof usage.prompt_tokens === "number" ? usage.prompt_tokens : null;
+  const completionTokens = typeof usage.completion_tokens === "number" ? usage.completion_tokens : null;
+  const reportedCost = usage.cost;
+  return {
+    parsed,
+    promptTokens,
+    completionTokens,
+    costUsd: typeof reportedCost === "number"
+      ? reportedCost
+      : calcCostUsd(config.model, promptTokens, completionTokens),
+    model: config.model,
+  };
+}
+
 // Deterministic threat = negative-sentiment intensity × source authority × relevance weight, shifted by stance.
 function computeThreat(
   sentimentScore: number,
@@ -230,41 +290,41 @@ export async function analyzeArticle(input: {
   let provider: MonitorAnalysis["provider"];
   let model: string;
   let neurons: number | null;
+  let fallbackReason: string | null = null;
 
   if (env?.AI) {
-    const result = await analyzeWithWorkersAi(env.AI, env, messages);
+    try {
+      const result = await analyzeWithWorkersAi(env.AI, env, messages);
+      parsed = result.parsed;
+      promptTokens = result.promptTokens;
+      completionTokens = result.completionTokens;
+      costUsd = null;
+      provider = "cloudflare_workers_ai";
+      model = result.model;
+      neurons = result.neurons;
+    } catch (workersAiError) {
+      if (env.CLOUDFLARE_OPENROUTER_FALLBACK_ENABLED !== "true") throw workersAiError;
+      fallbackReason = String(
+        workersAiError instanceof Error ? workersAiError.message : workersAiError,
+      ).slice(0, 300);
+      log.warn(`Workers AI unavailable; falling back to OpenRouter: ${fallbackReason}`);
+      const result = await analyzeWithOpenRouter(env, messages);
+      parsed = result.parsed;
+      promptTokens = result.promptTokens;
+      completionTokens = result.completionTokens;
+      costUsd = result.costUsd;
+      provider = "openrouter";
+      model = result.model;
+      neurons = null;
+    }
+  } else {
+    const result = await analyzeWithOpenRouter(env || {}, messages);
     parsed = result.parsed;
     promptTokens = result.promptTokens;
     completionTokens = result.completionTokens;
-    costUsd = null;
-    provider = "cloudflare_workers_ai";
-    model = result.model;
-    neurons = result.neurons;
-  } else {
-    const orKey = await db.getGlobalApiKeyByName("OpenRouter");
-    if (!orKey?.apiKey || !orKey.baseUrl) {
-      throw new Error("OpenRouter key 未配置：舆情分析需要「全局 API 配置」中名为 'OpenRouter' 的有效条目");
-    }
-    const result = await invokeLLM({
-      apiKey: orKey.apiKey,
-      baseUrl: orKey.baseUrl,
-      model: ANALYSIS_MODEL,
-      messages,
-      response_format: { type: "json_object" },
-      timeoutMs: 60000,
-    });
-    const content = typeof result.choices?.[0]?.message?.content === "string"
-      ? result.choices[0].message.content as string
-      : "";
-    parsed = parseMonitorAnalysisPayload(content);
-    const usage: any = result.usage || {};
-    promptTokens = usage.prompt_tokens ?? null;
-    completionTokens = usage.completion_tokens ?? null;
-    costUsd = typeof usage.cost === "number"
-      ? usage.cost
-      : calcCostUsd(ANALYSIS_MODEL, promptTokens, completionTokens);
+    costUsd = result.costUsd;
     provider = "openrouter";
-    model = ANALYSIS_MODEL;
+    model = result.model;
     neurons = null;
   }
 
@@ -292,5 +352,6 @@ export async function analyzeArticle(input: {
     provider,
     model,
     neurons,
+    fallbackReason,
   };
 }

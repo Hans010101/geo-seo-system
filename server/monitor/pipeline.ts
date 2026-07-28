@@ -30,6 +30,8 @@ export type MonitorCycleResult = {
   analysisPromptTokens: number;
   analysisCompletionTokens: number;
   analysisNeurons: number;
+  analysisFallbacks: number;
+  analysisFallbackReasons: string[];
   engineDist: Record<string, number>; // fetchEngine → count (self/firecrawl/snippet/source_api)
   sourceDist: Record<string, number>; // sourcePlatform → count (web/binance_square)
   fetchCostUsd: number;
@@ -150,6 +152,7 @@ export async function runMonitorCycle(opts?: MonitorCycleOptions): Promise<Monit
     analysisAttempted: 0, analysisFailed: 0, analysisErrors: [],
     analysisProviderDist: {}, analysisModelDist: {},
     analysisPromptTokens: 0, analysisCompletionTokens: 0, analysisNeurons: 0,
+    analysisFallbacks: 0, analysisFallbackReasons: [],
     engineDist: {}, sourceDist: {},
     fetchCostUsd: 0, analysisCostUsd: 0, failed: 0, realtimeAlerts: 0, briefingSent: false,
     tbs: tbsOverride ?? "auto(d/w)",
@@ -245,6 +248,15 @@ export async function runMonitorCycle(opts?: MonitorCycleOptions): Promise<Monit
           stats.analysisPromptTokens += analysis.promptTokens || 0;
           stats.analysisCompletionTokens += analysis.completionTokens || 0;
           stats.analysisNeurons += analysis.neurons || 0;
+          if (analysis.fallbackReason) {
+            stats.analysisFallbacks++;
+            if (
+              stats.analysisFallbackReasons.length < 3 &&
+              !stats.analysisFallbackReasons.includes(analysis.fallbackReason)
+            ) {
+              stats.analysisFallbackReasons.push(analysis.fallbackReason);
+            }
+          }
           // Collect high/medium relevance for the briefing (low/irrelevant excluded → no noise).
           if (analysis.relevance === "high" || analysis.relevance === "medium") {
             briefingItems.push({

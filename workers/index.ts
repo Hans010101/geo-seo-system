@@ -24,6 +24,7 @@ import { sql } from "drizzle-orm";
 import { COOKIE_NAME } from "../shared/const";
 import {
   appRouter,
+  runCloudflareGeoWeeklyShard,
   runScheduledCollection,
   runScheduledMonitorCycle,
 } from "../server/routers";
@@ -66,6 +67,11 @@ export interface Env {
   CLOUDFLARE_PRIMARY_SOCIAL_SOURCES?: string;
   CLOUDFLARE_AI_MODEL?: string;
   CLOUDFLARE_AI_MAX_TOKENS?: string;
+  CLOUDFLARE_OPENROUTER_FALLBACK_ENABLED?: string;
+  CLOUDFLARE_OPENROUTER_FALLBACK_MODEL?: string;
+  CLOUDFLARE_GEO_WEEKLY_ENABLED?: string;
+  CLOUDFLARE_GEO_WEEKLY_MAX_CELLS?: string;
+  CLOUDFLARE_GEO_WEEKLY_CONCURRENCY?: string;
   CLOUDFLARE_MAINTENANCE_OFFSET_MINUTES?: string;
   AI?: {
     run(model: string, input: Record<string, unknown>): Promise<unknown>;
@@ -227,17 +233,31 @@ const CF_CRON_STATUS_KEYS = {
   error: "cf_cron_last_error",
 } as const;
 
+const CF_GEO_WEEKLY_STATUS_KEYS = {
+  mode: "cf_geo_weekly_mode",
+  task: "cf_geo_weekly_last_task",
+  status: "cf_geo_weekly_last_status",
+  startedAt: "cf_geo_weekly_last_started_at",
+  finishedAt: "cf_geo_weekly_last_finished_at",
+  summary: "cf_geo_weekly_last_summary",
+  error: "cf_geo_weekly_last_error",
+} as const;
+
+type CloudflareStatusField = keyof typeof CF_CRON_STATUS_KEYS;
+type CloudflareStatusKeys = Record<CloudflareStatusField, string>;
+
 function positiveInt(value: string | undefined, fallback: number): number {
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 async function recordCloudflareCronStatus(
-  values: Partial<Record<keyof typeof CF_CRON_STATUS_KEYS, string>>,
+  values: Partial<Record<CloudflareStatusField, string>>,
+  keys: CloudflareStatusKeys = CF_CRON_STATUS_KEYS,
 ) {
   await Promise.all(
     Object.entries(values).map(([key, value]) =>
-      setSysConfig(CF_CRON_STATUS_KEYS[key as keyof typeof CF_CRON_STATUS_KEYS], value ?? ""),
+      setSysConfig(keys[key as CloudflareStatusField], value ?? ""),
     ),
   );
 }
@@ -246,6 +266,7 @@ async function runObservedCloudflareTask<T>(
   mode: string,
   task: string,
   work: () => Promise<T>,
+  statusKeys: CloudflareStatusKeys = CF_CRON_STATUS_KEYS,
 ): Promise<T> {
   await recordCloudflareCronStatus({
     mode,
@@ -253,7 +274,7 @@ async function runObservedCloudflareTask<T>(
     status: "running",
     startedAt: String(Date.now()),
     error: "",
-  });
+  }, statusKeys);
   try {
     const result = await work();
     const resultRecord = result && typeof result === "object"
@@ -269,23 +290,26 @@ async function runObservedCloudflareTask<T>(
       error: partialFailure
         ? `${analysisFailed} analysis failures; ${itemFailed} pipeline failures`
         : "",
-    });
+    }, statusKeys);
     return result;
   } catch (error) {
     await recordCloudflareCronStatus({
       status: "failed",
       finishedAt: String(Date.now()),
       error: (error instanceof Error ? error.message : String(error)).slice(0, 2000),
-    });
+    }, statusKeys);
     throw error;
   }
 }
 
 export async function getCloudflareCronStatus() {
-  const entries = await Promise.all(
-    Object.entries(CF_CRON_STATUS_KEYS).map(async ([name, key]) => [name, await getSysConfig(key)] as const),
-  );
-  return Object.fromEntries(entries);
+  const readStatus = async (keys: CloudflareStatusKeys) => Object.fromEntries(await Promise.all(
+    Object.entries(keys).map(async ([name, key]) => [name, await getSysConfig(key)] as const),
+  ));
+  return {
+    ...await readStatus(CF_CRON_STATUS_KEYS),
+    weeklyGeo: await readStatus(CF_GEO_WEEKLY_STATUS_KEYS),
+  };
 }
 
 export async function runCloudflareScheduledTasks(event: ScheduledEvent, env: Env) {
@@ -345,6 +369,21 @@ export async function runCloudflareScheduledTasks(event: ScheduledEvent, env: En
             suppressNotifications: false,
             recordSchedulerRun: false,
           }),
+        );
+      }
+      if (
+        profile?.minute === 40 &&
+        env.CLOUDFLARE_GEO_WEEKLY_ENABLED === "true"
+      ) {
+        await runObservedCloudflareTask(
+          mode,
+          "geo_weekly_openrouter_shard",
+          () => runCloudflareGeoWeeklyShard({
+            maxCells: positiveInt(env.CLOUDFLARE_GEO_WEEKLY_MAX_CELLS, 6),
+            concurrency: positiveInt(env.CLOUDFLARE_GEO_WEEKLY_CONCURRENCY, 3),
+            timestamp: event.scheduledTime,
+          }),
+          CF_GEO_WEEKLY_STATUS_KEYS,
         );
       }
     } else {
