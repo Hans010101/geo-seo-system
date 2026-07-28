@@ -263,12 +263,13 @@ async function resolveApiConfig(platform: string, providerOverride?: "openrouter
   }
 
   // 3. Environment variable fallback (OpenRouter)
-  if (ENV.openrouterApiKey) {
+  const envOpenRouter = runtimeOpenRouterEnv();
+  if (envOpenRouter) {
     const model = PLATFORM_OPENROUTER_MODELS[platform as Platform] || "openai/gpt-4o";
     log.info(`resolveApiConfig: ${platform} using env OpenRouter fallback, model=${model}`);
     return {
-      apiKey: ENV.openrouterApiKey,
-      baseUrl: ENV.openrouterBaseUrl || "https://openrouter.ai/api/v1",
+      apiKey: envOpenRouter.apiKey,
+      baseUrl: envOpenRouter.baseUrl,
       model,
       source: "env",
     };
@@ -315,9 +316,9 @@ async function getAnyActiveApiKey(providerOverride?: "openrouter"): Promise<{ ap
     }
   }
   // Fallback to env
-  if (ENV.openrouterApiKey) {
-    const baseUrl = ENV.openrouterBaseUrl || "https://openrouter.ai/api/v1";
-    return { apiKey: ENV.openrouterApiKey, baseUrl, model: "openai/gpt-4o" };
+  const envOpenRouter = runtimeOpenRouterEnv();
+  if (envOpenRouter) {
+    return { ...envOpenRouter, model: "openai/gpt-4o" };
   }
   return null;
 }
