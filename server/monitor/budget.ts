@@ -122,3 +122,42 @@ export async function readBudget() {
     maxArticlesPerCycle: await num(KEYS.maxPerCycle, DEFAULTS.maxPerCycle),
   };
 }
+
+// Queue-backed Cloudflare cycles span many isolates, so the in-memory `live`
+// snapshot cannot coordinate their paid-source counters. The bootstrap message
+// reserves the small, known number of calls up front and discovery messages run
+// with `budgetReserved=true`.
+export async function reserveQueuedBudget(requested: {
+  firecrawl?: number;
+  serper?: number;
+}): Promise<{ firecrawl: number; serper: number; xAvailable: boolean }> {
+  const state = await readBudget();
+  const firecrawl = Math.max(
+    0,
+    Math.min(requested.firecrawl || 0, state.firecrawl.limit - state.firecrawl.used),
+  );
+  const serper = Math.max(
+    0,
+    Math.min(requested.serper || 0, state.serper.limit - state.serper.used),
+  );
+  if (firecrawl > 0) {
+    await db.setSysConfig(KEYS.firecrawlUsed, String(state.firecrawl.used + firecrawl));
+  }
+  if (serper > 0) {
+    await db.setSysConfig(KEYS.serperUsed, String(state.serper.used + serper));
+  }
+  return {
+    firecrawl,
+    serper,
+    xAvailable: state.x.used < state.x.limit,
+  };
+}
+
+export async function addQueuedXUsage(tweets: number): Promise<void> {
+  if (tweets <= 0) return;
+  const state = await readBudget();
+  await db.setSysConfig(
+    KEYS.xUsed,
+    String(Math.min(state.x.limit, state.x.used + tweets)),
+  );
+}

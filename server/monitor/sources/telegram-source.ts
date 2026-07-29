@@ -13,13 +13,13 @@ import type { SocialSource, DiscoveredPost, SearchOpts } from "./types";
 // 2026-07-04): TRON is a low-frequency topic in general crypto broadcast channels (~1/20 msgs), and TRON's
 // own channels are groups (t.me/s serves no messages). Best available: wublockchainenglish (吴说, HTX/Sun
 // beat) + theblockbeats (律动, 中文) added to the general-news set. RSS tag feeds carry the real signal.
-const CHANNELS = ["watcherguru", "cointelegraph", "BWEnews", "wublockchainenglish", "theblockbeats"];
+export const TELEGRAM_CHANNELS = ["watcherguru", "cointelegraph", "BWEnews", "wublockchainenglish", "theblockbeats"];
 const CACHE_TTL_MS = 8 * 60 * 1000;
 const MAX_MSGS_PER_CHANNEL = 40;
 const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
 type TgMsg = { url: string; text: string; publishedAt: number | null };
-let cache: { at: number; msgs: TgMsg[] } | null = null;
+const caches = new Map<string, { at: number; msgs: TgMsg[] }>();
 
 const stripHtml = (s: string) =>
   (s || "")
@@ -47,17 +47,20 @@ export function parseTelegramPreview(html: string): TgMsg[] {
       text: text.slice(0, 4000),
       publishedAt: timeM ? Date.parse(timeM[1]) || null : null,
     });
-    if (out.length >= MAX_MSGS_PER_CHANNEL * CHANNELS.length) break;
+    if (out.length >= MAX_MSGS_PER_CHANNEL * TELEGRAM_CHANNELS.length) break;
   }
   return out;
 }
 
-async function ensureMessages(): Promise<TgMsg[]> {
+async function ensureMessages(shard?: string): Promise<TgMsg[]> {
+  const selected = shard && TELEGRAM_CHANNELS.includes(shard) ? [shard] : TELEGRAM_CHANNELS;
+  const cacheKey = shard || "*";
+  const cache = caches.get(cacheKey);
   if (cache && Date.now() - cache.at < CACHE_TTL_MS) return cache.msgs;
   const all: TgMsg[] = [];
   const seen = new Set<string>();
   await Promise.all(
-    CHANNELS.map(async (ch) => {
+    selected.map(async (ch) => {
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), 15000); // don't let a hung t.me request stall the cycle
       try {
@@ -76,8 +79,8 @@ async function ensureMessages(): Promise<TgMsg[]> {
       }
     })
   );
-  cache = { at: Date.now(), msgs: all };
-  log.info(`telegram: fetched ${CHANNELS.length} channels → ${all.length} messages`);
+  caches.set(cacheKey, { at: Date.now(), msgs: all });
+  log.info(`telegram: fetched ${selected.length} channels → ${all.length} messages`);
   return all;
 }
 
@@ -85,8 +88,8 @@ export const telegramSource: SocialSource = {
   name: "telegram",
   platform: "telegram",
   enabled: true,
-  async search(keyword: string, _opts?: SearchOpts): Promise<DiscoveredPost[]> {
-    const msgs = await ensureMessages();
+  async search(keyword: string, opts?: SearchOpts): Promise<DiscoveredPost[]> {
+    const msgs = await ensureMessages(opts?.shard);
     if (!keyword.trim()) return [];
     const matched = msgs.filter((m) => keywordMatchesText(keyword, m.text));
     return matched.map((m) => ({
@@ -102,4 +105,4 @@ export const telegramSource: SocialSource = {
   },
 };
 
-export function __resetTelegramCache() { cache = null; }
+export function __resetTelegramCache() { caches.clear(); }

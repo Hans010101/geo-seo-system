@@ -11,13 +11,14 @@ import type { SocialSource, DiscoveredPost, SearchOpts } from "./types";
 
 // TRON/TRX topic feeds — the 广场 "Latest" firehose is generic (≈0 TRON UGC/snapshot), but these
 // topic pages are TRON-dedicated UGC and render fine through Firecrawl. 2 renders = 2 credits/cycle.
-const LIST_URLS = ["https://www.gate.com/post/topic/TRON", "https://www.gate.com/post/topic/TRX"];
+export const GATE_LIST_URLS = ["https://www.gate.com/post/topic/TRON", "https://www.gate.com/post/topic/TRX"];
 const CACHE_TTL_MS = 8 * 60 * 1000; // one monitor cycle shares a single render pass
 const MAX_POSTS = 80; // safety cap on parsed posts per render
 
 type ParsedPost = { url: string; author: string | null; body: string; publishedAt: number | null };
 
-let cache: { at: number; posts: ParsedPost[]; renderCostUsd: number; costClaimed: boolean } | null = null;
+type GateCache = { at: number; posts: ParsedPost[]; renderCostUsd: number; costClaimed: boolean };
+const caches = new Map<string, GateCache>();
 
 async function firecrawlMarkdown(url: string): Promise<string> {
   const key = await db.getGlobalApiKeyByName("Firecrawl");
@@ -76,13 +77,18 @@ export function parseGateFeed(md: string): ParsedPost[] {
   return out;
 }
 
-async function ensureFeed(): Promise<ParsedPost[]> {
+async function ensureFeed(opts?: SearchOpts): Promise<ParsedPost[]> {
+  const cacheKey = opts?.shard || "*";
+  const cache = caches.get(cacheKey);
   if (cache && Date.now() - cache.at < CACHE_TTL_MS) return cache.posts;
   const all: ParsedPost[] = [];
   const seen = new Set<string>();
   let creditsUsed = 0;
-  for (const url of LIST_URLS) {
-    if (!budget.hasFirecrawlBudget() || !budget.tryConsumeFirecrawl()) {
+  const selected = opts?.shard && GATE_LIST_URLS.includes(opts.shard)
+    ? [opts.shard]
+    : GATE_LIST_URLS;
+  for (const url of selected) {
+    if (!opts?.budgetReserved && (!budget.hasFirecrawlBudget() || !budget.tryConsumeFirecrawl())) {
       log.warn("gate_square: Firecrawl budget exhausted — stopping feed render early");
       break;
     }
@@ -96,7 +102,7 @@ async function ensureFeed(): Promise<ParsedPost[]> {
     }
   }
   if (creditsUsed === 0) return cache?.posts || []; // no budget at all → reuse stale cache if present
-  cache = { at: Date.now(), posts: all, renderCostUsd: budget.FIRECRAWL_USD_PER_CREDIT * creditsUsed, costClaimed: false };
+  caches.set(cacheKey, { at: Date.now(), posts: all, renderCostUsd: budget.FIRECRAWL_USD_PER_CREDIT * creditsUsed, costClaimed: false });
   log.info(`gate_square: rendered ${creditsUsed} topic feed(s) (${creditsUsed} credits) → ${all.length} UGC posts parsed`);
   return all;
 }
@@ -105,13 +111,14 @@ export const gateSquareSource: SocialSource = {
   name: "gate_square",
   platform: "gate_square",
   enabled: true,
-  async search(keyword: string, _opts?: SearchOpts): Promise<DiscoveredPost[]> {
-    const posts = await ensureFeed();
+  async search(keyword: string, opts?: SearchOpts): Promise<DiscoveredPost[]> {
+    const posts = await ensureFeed(opts);
     if (!keyword.trim()) return [];
     const matched = posts.filter((p) => keywordMatchesText(keyword, p.body));
     return matched.map((p) => {
       // Attribute the single per-cycle render credit to the first post that actually surfaces.
       let costHint = 0;
+      const cache = caches.get(opts?.shard || "*");
       if (cache && !cache.costClaimed) { costHint = cache.renderCostUsd; cache.costClaimed = true; }
       return {
         url: p.url,
@@ -129,4 +136,4 @@ export const gateSquareSource: SocialSource = {
 };
 
 // test-only: reset the module cache between runs
-export function __resetGateCache() { cache = null; }
+export function __resetGateCache() { caches.clear(); }

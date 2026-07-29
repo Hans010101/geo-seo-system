@@ -29,6 +29,7 @@ import {
   runScheduledMonitorCycle,
 } from "../server/routers";
 import { getBootErrors, getBootInfo } from "../server/_core/boot";
+import { withCloudflareEnv } from "../server/_core/cloudflare-env";
 import {
   getDb,
   getSchedulerConfig,
@@ -86,13 +87,14 @@ export const app = new Hono<{ Bindings: Env }>();
 // Scope one Hyperdrive-backed mysql2 connection to each API request. Static
 // assets bypass this Worker at the Cloudflare routing layer.
 app.use("*", async (c, next) => {
-  (globalThis as any).__CF_ENV__ = c.env;
-  if (!c.env.HYPERDRIVE) {
-    await next();
-    return;
-  }
-  await withHyperdriveDatabase(c.env.HYPERDRIVE, async () => {
-    await next();
+  await withCloudflareEnv(c.env, async () => {
+    if (!c.env.HYPERDRIVE) {
+      await next();
+      return;
+    }
+    await withHyperdriveDatabase(c.env.HYPERDRIVE, async () => {
+      await next();
+    });
   });
 });
 
@@ -444,13 +446,14 @@ export default {
   fetch: app.fetch,
 
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
-    (globalThis as any).__CF_ENV__ = env;
     if (env.ENABLE_CLOUDFLARE_CRON !== "true") return;
     ctx.waitUntil(
-      runCloudflareScheduledTasks(event, env).catch((error) => {
-        console.error(`[Cloudflare Cron] ${error instanceof Error ? error.message : String(error)}`);
-        throw error;
-      }),
+      withCloudflareEnv(env, () =>
+        runCloudflareScheduledTasks(event, env).catch((error) => {
+          console.error(`[Cloudflare Cron] ${error instanceof Error ? error.message : String(error)}`);
+          throw error;
+        }),
+      ),
     );
   },
 };

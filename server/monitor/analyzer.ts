@@ -4,25 +4,16 @@
 import { invokeLLM, type Message } from "../_core/llm";
 import { calcCostUsd } from "@shared/llm-pricing";
 import * as db from "../db";
+import {
+  getCloudflareEnv,
+  type CloudflareRuntimeEnv,
+  type WorkersAiBinding,
+} from "../_core/cloudflare-env";
 import { domainOf, log } from "./util";
 
 const ANALYSIS_MODEL = "deepseek/deepseek-chat";
 const CLOUDFLARE_ANALYSIS_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast";
 const CLOUDFLARE_MAX_TOKENS = 512;
-
-type WorkersAiBinding = {
-  run(model: string, input: Record<string, unknown>): Promise<unknown>;
-};
-
-type CloudflareRuntimeEnv = {
-  AI?: WorkersAiBinding;
-  CLOUDFLARE_AI_MODEL?: string;
-  CLOUDFLARE_AI_MAX_TOKENS?: string;
-  CLOUDFLARE_OPENROUTER_FALLBACK_ENABLED?: string;
-  CLOUDFLARE_OPENROUTER_FALLBACK_MODEL?: string;
-  OPENROUTER_API_KEY?: string;
-  OPENROUTER_BASE_URL?: string;
-};
 
 const ANALYSIS_JSON_SCHEMA = {
   type: "object",
@@ -64,7 +55,7 @@ type ParsedAnalysis = {
 };
 
 function runtimeEnv(): CloudflareRuntimeEnv | undefined {
-  return (globalThis as any).__CF_ENV__ as CloudflareRuntimeEnv | undefined;
+  return getCloudflareEnv();
 }
 
 function boundedMaxTokens(value: string | undefined): number {

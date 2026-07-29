@@ -14,12 +14,13 @@ import { SignJWT, jwtVerify } from "jose";
 import { createHmac, randomBytes, randomInt, scrypt, timingSafeEqual } from "node:crypto";
 import { promisify } from "node:util";
 import * as db from "../server/db";
+import { getCloudflareEnv } from "../server/_core/cloudflare-env";
 import { COOKIE_NAME, ONE_YEAR_MS } from "@shared/const";
 import type { User } from "../drizzle/schema";
 
 // ─── Env access ───
 function getEnv() {
-  return (globalThis as any).__CF_ENV__ || {};
+  return getCloudflareEnv();
 }
 
 // ─── Password Hashing ───

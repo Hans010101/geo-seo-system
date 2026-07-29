@@ -8,6 +8,7 @@ const dbMocks = vi.hoisted(() => ({
 vi.mock("../db", () => dbMocks);
 
 import { analyzeArticle, parseMonitorAnalysisPayload } from "./analyzer";
+import { withCloudflareEnv } from "../_core/cloudflare-env";
 
 const validPayload = {
   relevance: "high",
@@ -24,7 +25,6 @@ describe("monitor analyzer", () => {
   });
 
   afterEach(() => {
-    delete (globalThis as any).__CF_ENV__;
     vi.unstubAllGlobals();
   });
 
@@ -47,19 +47,21 @@ describe("monitor analyzer", () => {
       response: validPayload,
       usage: { prompt_tokens: 1_000, completion_tokens: 100, neurons: 1.23 },
     });
-    (globalThis as any).__CF_ENV__ = {
+    const env = {
       AI: { run },
       CLOUDFLARE_AI_MODEL: "@cf/meta/llama-3.1-8b-instruct-fast",
       CLOUDFLARE_AI_MAX_TOKENS: "512",
     };
 
-    const result = await analyzeArticle({
-      url: "https://example.com/tron",
-      title: "TRON announces a new partnership",
-      contentMd: "孙宇晨宣布 TRON 达成新的合作。",
-      snippet: "",
-      fetchStatus: "full",
-    });
+    const result = await withCloudflareEnv(env, () =>
+      analyzeArticle({
+        url: "https://example.com/tron",
+        title: "TRON announces a new partnership",
+        contentMd: "孙宇晨宣布 TRON 达成新的合作。",
+        snippet: "",
+        fetchStatus: "full",
+      }),
+    );
 
     expect(run).toHaveBeenCalledTimes(1);
     expect(run).toHaveBeenCalledWith(
@@ -86,15 +88,15 @@ describe("monitor analyzer", () => {
       .fn()
       .mockResolvedValueOnce({ response: { relevance: "invalid" } })
       .mockResolvedValueOnce({ response: validPayload });
-    (globalThis as any).__CF_ENV__ = { AI: { run } };
-
-    const result = await analyzeArticle({
-      url: "https://example.com/tron-retry",
-      title: "TRON update",
-      contentMd: "TRON update content",
-      snippet: "",
-      fetchStatus: "full",
-    });
+    const result = await withCloudflareEnv({ AI: { run } }, () =>
+      analyzeArticle({
+        url: "https://example.com/tron-retry",
+        title: "TRON update",
+        contentMd: "TRON update content",
+        snippet: "",
+        fetchStatus: "full",
+      }),
+    );
 
     expect(run).toHaveBeenCalledTimes(2);
     expect(result.provider).toBe("cloudflare_workers_ai");
@@ -112,20 +114,22 @@ describe("monitor analyzer", () => {
       usage: { prompt_tokens: 800, completion_tokens: 90, total_tokens: 890 },
     }), { status: 200, headers: { "content-type": "application/json" } }));
     vi.stubGlobal("fetch", fetchMock);
-    (globalThis as any).__CF_ENV__ = {
+    const env = {
       AI: { run },
       CLOUDFLARE_OPENROUTER_FALLBACK_ENABLED: "true",
       CLOUDFLARE_OPENROUTER_FALLBACK_MODEL: "deepseek/deepseek-chat",
       CLOUDFLARE_AI_MAX_TOKENS: "512",
     };
 
-    const result = await analyzeArticle({
-      url: "https://example.com/tron-fallback",
-      title: "TRON update",
-      contentMd: "TRON update content",
-      snippet: "",
-      fetchStatus: "full",
-    });
+    const result = await withCloudflareEnv(env, () =>
+      analyzeArticle({
+        url: "https://example.com/tron-fallback",
+        title: "TRON update",
+        contentMd: "TRON update content",
+        snippet: "",
+        fetchStatus: "full",
+      }),
+    );
 
     expect(run).toHaveBeenCalledTimes(1);
     expect(fetchMock).toHaveBeenCalledTimes(1);

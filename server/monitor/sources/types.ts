@@ -1,7 +1,14 @@
 // Unified "social source" abstraction. Every discovery source (Serper, 币安广场, future X/Reddit)
 // implements SocialSource and returns DiscoveredPost[]. Adding a source = implement + register in
 // registry.ts; the pipeline doesn't change.
-export type SearchOpts = { tbs?: string; num?: number; gl?: string; hl?: string };
+export type SearchOpts = {
+  tbs?: string;
+  num?: number;
+  gl?: string;
+  hl?: string;
+  shard?: string;
+  budgetReserved?: boolean;
+};
 
 export interface DiscoveredPost {
   url: string;

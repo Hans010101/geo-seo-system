@@ -61,11 +61,11 @@ const toTw = (t: any, own: boolean): Tw => ({
   own,
 });
 
-async function ensureTweets(): Promise<Tw[]> {
+async function ensureTweets(opts?: SearchOpts): Promise<Tw[]> {
   if (cache && Date.now() - cache.at < CACHE_TTL_MS) return cache.tweets;
   const { apiKey, base, minEng } = await getCfg();
   if (!apiKey) { log.warn("x: no TwitterAPI key (globalApiKeys 'TwitterAPI') — skipping"); cache = { at: Date.now(), tweets: [] }; return []; }
-  if (!budget.hasXBudget()) { log.warn("x: monthly tweet budget exhausted — skipping"); cache = { at: Date.now(), tweets: [] }; return []; }
+  if (!opts?.budgetReserved && !budget.hasXBudget()) { log.warn("x: monthly tweet budget exhausted — skipping"); cache = { at: Date.now(), tweets: [] }; return []; }
 
   const since = Math.floor((Date.now() - WINDOW_DAYS * 86_400_000) / 1000);
   const out: Tw[] = [];
@@ -97,7 +97,8 @@ async function ensureTweets(): Promise<Tw[]> {
     } catch (e: any) { log.warn(`x: search "${q.slice(0, 20)}" failed: ${String(e?.message || e).slice(0, 100)}`); }
   }
 
-  budget.addXUsage(pulled); // record tweets billed (whole pages) — cost = pulled × $0.00015
+  if (opts?.budgetReserved) await budget.addQueuedXUsage(pulled);
+  else budget.addXUsage(pulled); // record tweets billed (whole pages) — cost = pulled × $0.00015
   // Founder timeline was pushed first, so the cap keeps @justinsuntron before trimming mentions.
   const kept = out.slice(0, MAX_KEEP_PER_CYCLE);
   cache = { at: Date.now(), tweets: kept };
@@ -109,8 +110,8 @@ export const xSource: SocialSource = {
   name: "x",
   platform: "x",
   enabled: true,
-  async search(keyword: string, _opts?: SearchOpts): Promise<DiscoveredPost[]> {
-    const tweets = await ensureTweets();
+  async search(keyword: string, opts?: SearchOpts): Promise<DiscoveredPost[]> {
+    const tweets = await ensureTweets(opts);
     if (!keyword.trim()) return [];
     const isPersonKw = PERSON_KW_RE.test(keyword);
     const matched = tweets.filter((tw) =>

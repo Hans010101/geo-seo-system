@@ -4,6 +4,7 @@ import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, protectedProcedure, adminProcedure, developerProcedure, router } from "./_core/trpc";
 import { z } from "zod";
 import * as db from "./db";
+import { getCloudflareEnv } from "./_core/cloudflare-env";
 import { invokeLLM } from "./_core/llm";
 import { nanoid } from "nanoid";
 import { PLATFORMS, PLATFORM_OPENROUTER_MODELS, PLATFORM_BAILIAN_MODELS, PLATFORM_BAI_MODELS, BAI_SUPPORTED_PLATFORMS, BAI_BASE_URL, OPENROUTER_BASE_URL, PLATFORM_RECOMMENDED_PROVIDER, PLATFORM_LABELS, type Platform, type LLMProvider } from "@shared/geo-types";
@@ -120,10 +121,7 @@ async function getActiveKeyForProvider(provider: LLMProvider): Promise<{ apiKey:
 }
 
 function runtimeOpenRouterEnv(): { apiKey: string; baseUrl: string } | null {
-  const cfEnv = (globalThis as any).__CF_ENV__ as {
-    OPENROUTER_API_KEY?: string;
-    OPENROUTER_BASE_URL?: string;
-  } | undefined;
+  const cfEnv = getCloudflareEnv();
   const apiKey = cfEnv?.OPENROUTER_API_KEY?.trim() || ENV.openrouterApiKey;
   if (!apiKey) return null;
   return {

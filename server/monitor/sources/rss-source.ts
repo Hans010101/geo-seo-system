@@ -10,7 +10,7 @@ import type { SocialSource, DiscoveredPost, SearchOpts } from "./types";
 // 2026-07-04, density 10-36/feed); (B) general crypto feeds — ~0 TRON density but zero marginal cost and
 // occasionally catch a mainstream TRON story before it's tagged. TRON news is sparse, so most tag-feed
 // items are weeks old (why the RSS collect window is widened to 30d in the pipeline, RSS-only).
-const FEEDS = [
+export const RSS_FEEDS = [
   // (A) TRON / Justin Sun dedicated
   "https://cointelegraph.com/rss/tag/tron",
   "https://cointelegraph.com/rss/tag/justin-sun",
@@ -46,17 +46,20 @@ async function fetchFeed(url: string) {
 }
 
 type FeedItem = { url: string; title: string; text: string; publishedAt: number | null };
-let cache: { at: number; items: FeedItem[] } | null = null;
+const caches = new Map<string, { at: number; items: FeedItem[] }>();
 
 const stripHtml = (s: string) =>
   (s || "").replace(/<[^>]+>/g, " ").replace(/&[a-z#0-9]+;/gi, " ").replace(/\s+/g, " ").trim();
 
-async function ensureFeeds(): Promise<FeedItem[]> {
+async function ensureFeeds(shard?: string): Promise<FeedItem[]> {
+  const selected = shard && RSS_FEEDS.includes(shard) ? [shard] : RSS_FEEDS;
+  const cacheKey = shard || "*";
+  const cache = caches.get(cacheKey);
   if (cache && Date.now() - cache.at < CACHE_TTL_MS) return cache.items;
   const items: FeedItem[] = [];
   const seen = new Set<string>();
   await Promise.all(
-    FEEDS.map(async (url) => {
+    selected.map(async (url) => {
       try {
         const feed = await fetchFeed(url);
         for (const it of (feed.items || []).slice(0, MAX_ITEMS_PER_FEED)) {
@@ -76,8 +79,8 @@ async function ensureFeeds(): Promise<FeedItem[]> {
       }
     })
   );
-  cache = { at: Date.now(), items };
-  log.info(`rss: pulled ${FEEDS.length} feeds → ${items.length} unique items`);
+  caches.set(cacheKey, { at: Date.now(), items });
+  log.info(`rss: pulled ${selected.length} feeds → ${items.length} unique items`);
   return items;
 }
 
@@ -85,8 +88,8 @@ export const rssSource: SocialSource = {
   name: "rss",
   platform: "rss",
   enabled: true,
-  async search(keyword: string, _opts?: SearchOpts): Promise<DiscoveredPost[]> {
-    const items = await ensureFeeds();
+  async search(keyword: string, opts?: SearchOpts): Promise<DiscoveredPost[]> {
+    const items = await ensureFeeds(opts?.shard);
     if (!keyword.trim()) return [];
     const matched = items.filter((it) => keywordMatchesText(keyword, `${it.title} ${it.text}`));
     return matched.map((it) => {
@@ -104,4 +107,4 @@ export const rssSource: SocialSource = {
   },
 };
 
-export function __resetRssCache() { cache = null; }
+export function __resetRssCache() { caches.clear(); }

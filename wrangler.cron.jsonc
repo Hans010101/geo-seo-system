@@ -33,6 +33,38 @@
   "ai": {
     "binding": "AI"
   },
+  "queues": {
+    "producers": [
+      {
+        "binding": "MONITOR_QUEUE",
+        "queue": "geo-seo-monitor"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "geo-seo-monitor",
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
+        "max_retries": 4,
+        "max_concurrency": 3,
+        "retry_delay": 30
+      }
+    ]
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "MONITOR_COORDINATOR",
+        "class_name": "MonitorCoordinator"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1-monitor-coordinator",
+      "new_sqlite_classes": ["MonitorCoordinator"]
+    }
+  ],
   "hyperdrive": [
     {
       "binding": "HYPERDRIVE",
