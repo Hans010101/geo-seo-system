@@ -25,6 +25,8 @@ export type CoordinatorStats = {
   discoveryCompleted: number;
   discoveryFailed: number;
   discovered: number;
+  candidateExpected: number;
+  candidateSettled: number;
   accepted: number;
   completed: number;
   inserted: number;
@@ -62,6 +64,8 @@ function emptyState(body: {
     discoveryCompleted: 0,
     discoveryFailed: 0,
     discovered: 0,
+    candidateExpected: 0,
+    candidateSettled: 0,
     accepted: 0,
     completed: 0,
     inserted: 0,
@@ -90,7 +94,7 @@ export class MonitorCoordinator extends DurableObject<CoordinatorEnv> {
   private finalize(state: CoordinatorStats): CoordinatorStats {
     if (
       state.discoveryCompleted >= state.discoveryExpected &&
-      state.completed >= state.accepted
+      state.candidateSettled >= state.candidateExpected
     ) {
       state.status =
         state.discoveryFailed > 0 || state.analysisFailed > 0 || state.failed > 0
@@ -130,6 +134,7 @@ export class MonitorCoordinator extends DurableObject<CoordinatorEnv> {
         await this.ctx.storage.put(taskKey, true);
         state.discoveryCompleted++;
         state.discovered += Math.max(0, Number(body.discovered) || 0);
+        state.candidateExpected += Math.max(0, Number(body.enqueued) || 0);
         if (body.failed) state.discoveryFailed++;
         this.finalize(state);
         await this.save(state);
@@ -167,6 +172,18 @@ export class MonitorCoordinator extends DurableObject<CoordinatorEnv> {
       return json({ accepted: true, state });
     }
 
+    if (path === "/settle") {
+      const deliveryId = String(body.deliveryId || "");
+      const settleKey = `settled:${deliveryId}`;
+      if (!(await this.ctx.storage.get<boolean>(settleKey))) {
+        await this.ctx.storage.put(settleKey, true);
+        state.candidateSettled++;
+        this.finalize(state);
+        await this.save(state);
+      }
+      return json(state);
+    }
+
     if (path === "/complete") {
       const hash = String(body.urlHash || "");
       const key = `candidate:${hash}`;
@@ -174,6 +191,7 @@ export class MonitorCoordinator extends DurableObject<CoordinatorEnv> {
       if (!claimed || claimed.done) return json(this.finalize(state));
       await this.ctx.storage.put(key, { ...claimed, done: true });
       state.completed++;
+      state.candidateSettled++;
       state.inserted += body.inserted ? 1 : 0;
       state.analyzed += body.analyzed ? 1 : 0;
       state.analysisFailed += body.analysisFailed ? 1 : 0;

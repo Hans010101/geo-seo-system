@@ -321,6 +321,7 @@ async function discover(task: DiscoveryTask, env: QueueEnv): Promise<void> {
       cycleId: task.cycleId,
       taskId: task.taskId,
       discovered: posts.size,
+      enqueued: selected.length,
       failed: false,
     },
   );
@@ -350,7 +351,10 @@ async function completeCandidate(
 }
 
 async function candidate(task: CandidateTask, env: QueueEnv): Promise<void> {
-  const claim = await coordinatorPost<{ accepted: boolean }>(
+  const claim = await coordinatorPost<{
+    accepted: boolean;
+    inFlight?: boolean;
+  }>(
     env,
     task.profile,
     "/claim",
@@ -360,7 +364,22 @@ async function candidate(task: CandidateTask, env: QueueEnv): Promise<void> {
       deliveryId: task.deliveryId,
     },
   );
-  if (!claim.accepted) return;
+  if (claim.inFlight) return;
+  if (!claim.accepted) {
+    const state = await coordinatorPost<CoordinatorStats>(
+      env,
+      task.profile,
+      "/settle",
+      {
+        cycleId: task.cycleId,
+        deliveryId: task.deliveryId,
+      },
+    );
+    if (state.status === "success" || state.status === "partial_failure") {
+      await syncLegacyStatus(state);
+    }
+    return;
+  }
 
   if (await db.getMonitorArticleByUrlHash(task.urlHash)) {
     await completeCandidate(env, task, {});
@@ -516,6 +535,7 @@ export async function processMonitorQueue(batch: QueueBatch, env: QueueEnv): Pro
                   cycleId: message.body.cycleId,
                   taskId: message.body.taskId,
                   discovered: 0,
+                  enqueued: 0,
                   failed: true,
                 },
               ),
