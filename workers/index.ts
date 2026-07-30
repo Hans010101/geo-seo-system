@@ -352,8 +352,8 @@ export async function runCloudflareScheduledTasks(event: ScheduledEvent, env: En
           task: "monitor_primary_social",
           minute: 40,
           maxArticles: positiveInt(env.CLOUDFLARE_PRIMARY_SOCIAL_MAX_ARTICLES, 14),
-          // Binance currently rejects Cloudflare egress with HTTP 403; unchanged
-          // Cloud Run remains its fallback during the parallel-observation period.
+          // The queue-backed Cron Worker owns the Cloudflare-native Binance
+          // Browser/Serper chain. Cloud Run is comparison-only, never a runtime fallback.
           sources: env.CLOUDFLARE_PRIMARY_SOCIAL_SOURCES || "gate_square,telegram,x",
         },
       ];

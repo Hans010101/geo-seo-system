@@ -13,6 +13,8 @@ export type SerperNewsItem = {
   source: string | null;
 };
 
+export type SerperWebItem = SerperNewsItem;
+
 async function getSerper(): Promise<{ apiKey: string; base: string }> {
   const key = await db.getGlobalApiKeyByName("Serper");
   if (!key?.apiKey) {
@@ -49,5 +51,37 @@ export async function searchNews(
       snippet: (n.snippet || "") as string,
       date: (n.date || null) as string | null,
       source: (n.source || null) as string | null,
+    }));
+}
+
+// General web search is used for site-scoped sources whose pages are indexed by
+// Google but whose origin blocks Cloudflare egress (for example Binance Square).
+export async function searchWeb(
+  keyword: string,
+  opts?: { tbs?: string; num?: number; gl?: string; hl?: string },
+): Promise<SerperWebItem[]> {
+  const { apiKey, base } = await getSerper();
+  const body: Record<string, unknown> = { q: keyword, num: opts?.num ?? 10 };
+  if (opts?.tbs) body.tbs = opts.tbs;
+  if (opts?.gl) body.gl = opts.gl;
+  if (opts?.hl) body.hl = opts.hl;
+  const resp = await fetchWithTimeout(`${base}/search`, {
+    method: "POST",
+    headers: { "X-API-KEY": apiKey, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }, 20_000);
+  if (!resp.ok) {
+    const errorBody = await resp.text();
+    throw new Error(`Serper search ${resp.status}: ${errorBody.slice(0, 200)}`);
+  }
+  const json = await resp.json() as { organic?: Array<Record<string, unknown>> };
+  return (json.organic || [])
+    .filter((item) => typeof item.link === "string" && item.link.length > 0)
+    .map((item) => ({
+      url: String(item.link),
+      title: typeof item.title === "string" ? item.title : "",
+      snippet: typeof item.snippet === "string" ? item.snippet : "",
+      date: typeof item.date === "string" ? item.date : null,
+      source: typeof item.source === "string" ? item.source : null,
     }));
 }

@@ -12,7 +12,9 @@ if [ "$NODE_MAJOR" -lt 22 ]; then
 fi
 
 pnpm run check
+pnpm run check:workers
 pnpm test
 pnpm run cf:deploy:pages
+pnpm run cf:deploy:binance-browser
 pnpm run cf:deploy:cron
 bash scripts/post-deploy-cloudflare-smoke.sh

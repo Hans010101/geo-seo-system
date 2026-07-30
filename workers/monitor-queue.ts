@@ -1,5 +1,5 @@
 import * as db from "../server/db";
-import { withHyperdriveDatabase, type HyperdriveBinding } from "../server/db";
+import { withHyperdriveDatabase } from "../server/db";
 import { withCloudflareEnv, type CloudflareRuntimeEnv } from "../server/_core/cloudflare-env";
 import { analyzeArticle } from "../server/monitor/analyzer";
 import * as budget from "../server/monitor/budget";
@@ -8,11 +8,14 @@ import { RSS_FEEDS } from "../server/monitor/sources/rss-source";
 import { GATE_LIST_URLS } from "../server/monitor/sources/gate-source";
 import { TELEGRAM_CHANNELS } from "../server/monitor/sources/telegram-source";
 import type { DiscoveredPost } from "../server/monitor/sources/types";
+import { searchWeb } from "../server/monitor/search";
 import {
   detectContentLang,
   domainOf,
   hasCJK,
+  keywordMatchesText,
   normalizeUrl,
+  parseSerperDate,
   sha256,
 } from "../server/monitor/util";
 import {
@@ -26,31 +29,26 @@ import {
 import type {
   CoordinatorStats,
   MonitorProfile,
+  SourceDiagnostic,
 } from "./monitor-coordinator";
+import type { BinanceBrowserSearchResult } from "./binance-square-browser";
 
-type QueueBinding = {
-  send(body: QueueTask, options?: { delaySeconds?: number }): Promise<void>;
-  sendBatch(messages: Array<{ body: QueueTask }>): Promise<void>;
-};
+type CronBindings = Pick<
+  CronWorkerEnv,
+  "BINANCE_BROWSER" | "HYPERDRIVE" | "MONITOR_COORDINATOR" | "MONITOR_QUEUE"
+>;
 
-type DurableObjectStub = {
-  fetch(input: Request | string, init?: RequestInit): Promise<Response>;
-};
-
-type DurableObjectNamespace = {
-  idFromName(name: string): unknown;
-  get(id: unknown): DurableObjectStub;
-};
-
-export type QueueEnv = CloudflareRuntimeEnv & {
+export type QueueEnv = CloudflareRuntimeEnv & CronBindings & {
   ENABLE_CLOUDFLARE_CRON?: string;
   CLOUDFLARE_CRON_MODE?: string;
   CLOUDFLARE_PRIMARY_MAX_KEYWORDS?: string;
   CLOUDFLARE_PRIMARY_NEWS_MAX_ARTICLES?: string;
   CLOUDFLARE_PRIMARY_SOCIAL_MAX_ARTICLES?: string;
-  HYPERDRIVE?: HyperdriveBinding;
-  MONITOR_QUEUE: QueueBinding;
-  MONITOR_COORDINATOR: DurableObjectNamespace;
+  CLOUDFLARE_BINANCE_SHADOW_ENABLED?: string;
+  CLOUDFLARE_BINANCE_WRITE_ENABLED?: string;
+  CLOUDFLARE_BINANCE_MAX_QUERIES?: string;
+  CLOUDFLARE_BINANCE_QUERY_TERMS?: string;
+  CLOUDFLARE_BINANCE_INTERVAL_HOURS?: string;
 };
 
 type Keyword = { keyword: string; priority: number };
@@ -90,22 +88,17 @@ type MaintenanceTask = {
   scheduledTime: number;
 };
 
+type BinanceProbeTask = {
+  kind: "binance_probe";
+  scheduledTime: number;
+};
+
 export type QueueTask =
   | BootstrapTask
   | DiscoveryTask
   | CandidateTask
-  | MaintenanceTask;
-
-type QueueMessage = {
-  body: QueueTask;
-  attempts?: number;
-  ack(): void;
-  retry(options?: { delaySeconds?: number }): void;
-};
-
-type QueueBatch = {
-  messages: QueueMessage[];
-};
+  | MaintenanceTask
+  | BinanceProbeTask;
 
 const SOURCE_LIMITS: Record<string, number> = {
   serper: 3,
@@ -113,7 +106,10 @@ const SOURCE_LIMITS: Record<string, number> = {
   gate_square: 5,
   telegram: 3,
   x: 20,
+  binance_square_browser: 5,
 };
+
+const BINANCE_BROWSER_SOURCE = "binance_square_browser";
 
 const CF_STATUS_KEYS = {
   mode: "cf_cron_mode",
@@ -125,12 +121,35 @@ const CF_STATUS_KEYS = {
   error: "cf_cron_last_error",
 } as const;
 
+const BINANCE_STATUS_KEYS = {
+  status: "cf_binance_last_status",
+  provider: "cf_binance_last_provider",
+  mode: "cf_binance_last_mode",
+  startedAt: "cf_binance_last_started_at",
+  finishedAt: "cf_binance_last_finished_at",
+  summary: "cf_binance_last_summary",
+  error: "cf_binance_last_error",
+} as const;
+
 function positiveInt(value: string | undefined, fallback: number): number {
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-function coordinator(env: QueueEnv, profile: MonitorProfile): DurableObjectStub {
+function binanceEnabled(env: QueueEnv): boolean {
+  return (
+    env.CLOUDFLARE_BINANCE_SHADOW_ENABLED === "true" ||
+    env.CLOUDFLARE_BINANCE_WRITE_ENABLED === "true"
+  );
+}
+
+function binanceDue(cycle: BootstrapTask, env: QueueEnv): boolean {
+  if (cycle.profile !== "monitor_primary_social" || !binanceEnabled(env)) return false;
+  const interval = Math.max(2, positiveInt(env.CLOUDFLARE_BINANCE_INTERVAL_HOURS, 6));
+  return shanghaiParts(cycle.scheduledTime).hour % interval === 3 % interval;
+}
+
+function coordinator(env: QueueEnv, profile: MonitorProfile) {
   return env.MONITOR_COORDINATOR.get(env.MONITOR_COORDINATOR.idFromName(profile));
 }
 
@@ -185,6 +204,7 @@ function buildDiscoveryTasks(
   cycle: BootstrapTask,
   keywords: Keyword[],
   budgetGrant: { firecrawl: number; serper: number; xAvailable: boolean },
+  env: QueueEnv,
 ): DiscoveryTask[] {
   const base = {
     kind: "discovery" as const,
@@ -233,7 +253,16 @@ function buildDiscoveryTasks(
         budgetReserved: true,
       }]
     : [];
-  return [...gate, ...telegram, ...x];
+  const binance = binanceDue(cycle, env)
+    ? [{
+        ...base,
+        taskId: `${BINANCE_BROWSER_SOURCE}:0`,
+        sourceName: BINANCE_BROWSER_SOURCE,
+        keywords,
+        budgetReserved: budgetGrant.serper > 0,
+      }]
+    : [];
+  return [...gate, ...telegram, ...x, ...binance];
 }
 
 async function bootstrap(task: BootstrapTask, env: QueueEnv): Promise<void> {
@@ -246,11 +275,12 @@ async function bootstrap(task: BootstrapTask, env: QueueEnv): Promise<void> {
     priority: item.priority,
   }));
   const isNews = task.profile === "monitor_primary_news";
+  const runBinance = binanceDue(task, env);
   const budgetGrant = await budget.reserveQueuedBudget({
-    serper: isNews ? keywords.length : 0,
+    serper: isNews ? keywords.length : runBinance ? 1 : 0,
     firecrawl: isNews ? 0 : GATE_LIST_URLS.length,
   });
-  const discoveryTasks = buildDiscoveryTasks(task, keywords, budgetGrant);
+  const discoveryTasks = buildDiscoveryTasks(task, keywords, budgetGrant, env);
   const maxArticles = isNews
     ? positiveInt(env.CLOUDFLARE_PRIMARY_NEWS_MAX_ARTICLES, 12)
     : positiveInt(env.CLOUDFLARE_PRIMARY_SOCIAL_MAX_ARTICLES, 14);
@@ -259,7 +289,16 @@ async function bootstrap(task: BootstrapTask, env: QueueEnv): Promise<void> {
     profile: task.profile,
     maxArticles,
     keywords: keywords.length,
-    sources: isNews ? ["serper", "rss"] : ["gate_square", "telegram", "x"],
+    sources: isNews
+      ? ["serper", "rss"]
+      : [
+          "gate_square",
+          "telegram",
+          "x",
+          ...(discoveryTasks.some((item) => item.sourceName === BINANCE_BROWSER_SOURCE)
+            ? ["binance_square"]
+            : []),
+        ],
     discoveryExpected: discoveryTasks.length,
   });
   await syncLegacyStatus(state);
@@ -267,7 +306,346 @@ async function bootstrap(task: BootstrapTask, env: QueueEnv): Promise<void> {
   await env.MONITOR_QUEUE.sendBatch(discoveryTasks.map((body) => ({ body })));
 }
 
+function configuredBinanceTerms(env: QueueEnv): string[] {
+  return (env.CLOUDFLARE_BINANCE_QUERY_TERMS || "孙宇晨,TRON")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .slice(0, 4);
+}
+
+function binanceQueries(env: QueueEnv): string[] {
+  const max = Math.min(4, positiveInt(env.CLOUDFLARE_BINANCE_MAX_QUERIES, 1));
+  return configuredBinanceTerms(env).slice(0, max);
+}
+
+function sourceDiagnostic(
+  result: BinanceBrowserSearchResult,
+  mode: "shadow" | "write",
+  provider: "browser" | "serper",
+  enqueued: number,
+): SourceDiagnostic {
+  const errors = result.diagnostics
+    .filter((item) => item.error)
+    .map((item) => `${item.query}: ${item.error}`)
+    .slice(0, 3);
+  const status =
+    !result.ok
+      ? "failed"
+      : errors.length > 0
+        ? "partial"
+        : result.posts.length > 0
+          ? "success"
+          : "empty";
+  return {
+    status,
+    mode,
+    provider,
+    discovered: result.posts.length,
+    enqueued,
+    durationMs: result.durationMs,
+    queriesAttempted: result.queriesAttempted,
+    queriesSucceeded: result.queriesSucceeded,
+    ...(errors.length > 0 ? { errors } : {}),
+    updatedAt: Date.now(),
+  };
+}
+
+function binancePostUrl(raw: string): string | null {
+  try {
+    const url = new URL(raw);
+    if (!/(^|\.)binance\.com$/i.test(url.hostname)) return null;
+    if (!/\/square\/post\/[^/]+/i.test(url.pathname)) return null;
+    url.hash = "";
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+async function searchBinanceViaSerper(env: QueueEnv): Promise<DiscoveredPost[]> {
+  const queryTerms = configuredBinanceTerms(env)
+    .map((term) => /\s/.test(term) ? `"${term}"` : term)
+    .join(" OR ");
+  const results = await searchWeb(
+    `site:binance.com/zh-CN/square/post (${queryTerms})`,
+    { tbs: "qdr:w", num: 10, gl: "us", hl: "zh-cn" },
+  );
+  const posts: DiscoveredPost[] = [];
+  const seen = new Set<string>();
+  for (const item of results) {
+    const url = binancePostUrl(item.url);
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    posts.push({
+      url,
+      title: item.title,
+      contentSnippet: item.snippet,
+      author: item.source,
+      publishedAt: parseSerperDate(item.date),
+      sourceName: "binance_square_serper",
+      sourcePlatform: "binance_square",
+      fetchEngineHint: "serper_site_search",
+      fetchCostUsdHint: 0,
+    });
+  }
+  return posts;
+}
+
+async function fetchBinancePosts(
+  env: QueueEnv,
+  serperBudgetReserved: boolean,
+): Promise<{ result: BinanceBrowserSearchResult; provider: "browser" | "serper" }> {
+  const startedAt = Date.now();
+  let browserResult: BinanceBrowserSearchResult;
+  try {
+    const response = await env.BINANCE_BROWSER.fetch("https://binance-browser/search", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        queries: binanceQueries(env),
+        pageSize: 10,
+      }),
+      signal: AbortSignal.timeout(55_000),
+    });
+    if (!response.ok) {
+      throw new Error(
+        `Binance Browser Worker HTTP ${response.status}: ${(await response.text()).slice(0, 300)}`,
+      );
+    }
+    browserResult = await response.json<BinanceBrowserSearchResult>();
+  } catch (error) {
+    const message = (error instanceof Error ? error.message : String(error)).slice(0, 300);
+    browserResult = {
+      ok: false,
+      posts: [],
+      durationMs: Date.now() - startedAt,
+      sessionId: "",
+      queriesAttempted: binanceQueries(env).length,
+      queriesSucceeded: 0,
+      diagnostics: [{
+        query: "browser",
+        status: "failed",
+        posts: 0,
+        error: message,
+      }],
+    };
+  }
+  if (browserResult.ok || !serperBudgetReserved) {
+    return { result: browserResult, provider: "browser" };
+  }
+
+  try {
+    const posts = await searchBinanceViaSerper(env);
+    return {
+      provider: "serper",
+      result: {
+        ...browserResult,
+        ok: true,
+        posts,
+        durationMs: Date.now() - startedAt,
+        queriesAttempted: browserResult.queriesAttempted + 1,
+        queriesSucceeded: 1,
+        diagnostics: [
+          ...browserResult.diagnostics,
+          {
+            query: "serper_site_search",
+            status: posts.length > 0 ? "success" : "empty",
+            posts: posts.length,
+          },
+        ],
+      },
+    };
+  } catch (error) {
+    return {
+      provider: "serper",
+      result: {
+        ...browserResult,
+        durationMs: Date.now() - startedAt,
+        queriesAttempted: browserResult.queriesAttempted + 1,
+        diagnostics: [
+          ...browserResult.diagnostics,
+          {
+            query: "serper_site_search",
+            status: "failed",
+            posts: 0,
+            error: (error instanceof Error ? error.message : String(error)).slice(0, 300),
+          },
+        ],
+      },
+    };
+  }
+}
+
+type MatchedPost = {
+  post: DiscoveredPost;
+  normalizedUrl: string;
+  matched: Set<string>;
+};
+
+function matchBinancePosts(
+  sourcePosts: DiscoveredPost[],
+  keywords: Keyword[],
+): Map<string, MatchedPost> {
+  const posts = new Map<string, MatchedPost>();
+  for (const post of sourcePosts) {
+    if (!post.url) continue;
+    const content = `${post.title || ""} ${post.fullContent || post.contentSnippet || ""}`;
+    const matched = keywords
+      .filter((keyword) => keywordMatchesText(keyword.keyword, content))
+      .map((keyword) => keyword.keyword);
+    if (matched.length === 0) continue;
+    const normalizedUrl = normalizeUrl(post.url);
+    const urlHash = sha256(normalizedUrl);
+    const current = posts.get(urlHash);
+    if (current) matched.forEach((keyword) => current.matched.add(keyword));
+    else posts.set(urlHash, {
+      post,
+      normalizedUrl,
+      matched: new Set(matched),
+    });
+  }
+  return posts;
+}
+
+export async function getBinanceProbeStatus(): Promise<Record<string, string | null>> {
+  return Object.fromEntries(await Promise.all(
+    Object.entries(BINANCE_STATUS_KEYS).map(async ([name, key]) => [
+      name,
+      await db.getSysConfig(key),
+    ]),
+  ));
+}
+
+async function binanceProbe(task: BinanceProbeTask, env: QueueEnv): Promise<void> {
+  const startedAt = Date.now();
+  await Promise.all([
+    db.setSysConfig(BINANCE_STATUS_KEYS.status, "running"),
+    db.setSysConfig(BINANCE_STATUS_KEYS.mode, "shadow"),
+    db.setSysConfig(BINANCE_STATUS_KEYS.startedAt, String(startedAt)),
+    db.setSysConfig(BINANCE_STATUS_KEYS.error, ""),
+  ]);
+  try {
+    const allKeywords = await db.listMonitorKeywords(true);
+    const maxKeywords = positiveInt(env.CLOUDFLARE_PRIMARY_MAX_KEYWORDS, 100);
+    const keywords = allKeywords.slice(0, maxKeywords).map((item) => ({
+      keyword: item.keyword,
+      priority: item.priority,
+    }));
+    const grant = await budget.reserveQueuedBudget({ serper: 1 });
+    const { result, provider } = await fetchBinancePosts(env, grant.serper > 0);
+    const matched = matchBinancePosts(result.posts, keywords);
+    const diagnostic = {
+      ...sourceDiagnostic(result, "shadow", provider, 0),
+      discovered: matched.size,
+    };
+    await Promise.all([
+      db.setSysConfig(BINANCE_STATUS_KEYS.status, diagnostic.status),
+      db.setSysConfig(BINANCE_STATUS_KEYS.provider, provider),
+      db.setSysConfig(BINANCE_STATUS_KEYS.finishedAt, String(Date.now())),
+      db.setSysConfig(BINANCE_STATUS_KEYS.summary, JSON.stringify({
+        scheduledTime: task.scheduledTime,
+        rawPosts: result.posts.length,
+        matchedPosts: matched.size,
+        samples: Array.from(matched.values()).slice(0, 3).map((item) => ({
+          title: item.post.title.slice(0, 160),
+          url: item.post.url.slice(0, 500),
+        })),
+        diagnostic,
+      }).slice(0, 4000)),
+      db.setSysConfig(BINANCE_STATUS_KEYS.error, (diagnostic.errors || []).join("; ").slice(0, 1000)),
+    ]);
+  } catch (error) {
+    const message = (error instanceof Error ? error.message : String(error)).slice(0, 1000);
+    await Promise.all([
+      db.setSysConfig(BINANCE_STATUS_KEYS.status, "failed"),
+      db.setSysConfig(BINANCE_STATUS_KEYS.finishedAt, String(Date.now())),
+      db.setSysConfig(BINANCE_STATUS_KEYS.error, message),
+    ]);
+  }
+}
+
+async function finishDiscovery(
+  task: DiscoveryTask,
+  env: QueueEnv,
+  values: {
+    discovered: number;
+    enqueued: number;
+    failed: boolean;
+    sourceName?: string;
+    diagnostic?: SourceDiagnostic;
+  },
+): Promise<void> {
+  const state = await coordinatorPost<CoordinatorStats>(
+    env,
+    task.profile,
+    "/discovery-done",
+    {
+      cycleId: task.cycleId,
+      taskId: task.taskId,
+      ...values,
+    },
+  );
+  if (state.status === "success" || state.status === "partial_failure") {
+    await syncLegacyStatus(state);
+  }
+}
+
+async function discoverBinance(task: DiscoveryTask, env: QueueEnv): Promise<void> {
+  const writeEnabled = env.CLOUDFLARE_BINANCE_WRITE_ENABLED === "true";
+  const mode = writeEnabled ? "write" : "shadow";
+  const { result, provider } = await fetchBinancePosts(
+    env,
+    task.budgetReserved === true,
+  );
+
+  const posts = matchBinancePosts(result.posts, task.keywords);
+
+  const selected = writeEnabled
+    ? Array.from(posts.entries()).slice(0, SOURCE_LIMITS[BINANCE_BROWSER_SOURCE])
+    : [];
+  if (selected.length > 0) {
+    await env.MONITOR_QUEUE.sendBatch(selected.map(([urlHash, value]) => ({
+      body: {
+        kind: "candidate",
+        cycleId: task.cycleId,
+        profile: task.profile,
+        deliveryId: `${task.taskId}:${urlHash}`,
+        urlHash,
+        normalizedUrl: value.normalizedUrl,
+        post: value.post,
+        matchedKeywords: Array.from(value.matched),
+      },
+    })));
+  }
+  const diagnostic = sourceDiagnostic(result, mode, provider, selected.length);
+  console.log(JSON.stringify({
+    event: "binance_square.discovery",
+    cycleId: task.cycleId,
+    mode,
+    provider,
+    rawPosts: result.posts.length,
+    matchedPosts: posts.size,
+    enqueued: selected.length,
+    diagnostic,
+  }));
+  await finishDiscovery(task, env, {
+    discovered: posts.size,
+    enqueued: selected.length,
+    failed: writeEnabled && !result.ok,
+    sourceName: "binance_square",
+    diagnostic: {
+      ...diagnostic,
+      discovered: posts.size,
+    },
+  });
+}
+
 async function discover(task: DiscoveryTask, env: QueueEnv): Promise<void> {
+  if (task.sourceName === BINANCE_BROWSER_SOURCE) {
+    await discoverBinance(task, env);
+    return;
+  }
   const source = enabledSources().find((candidate) => candidate.name === task.sourceName);
   if (!source) throw new Error(`unknown monitor source ${task.sourceName}`);
   const posts = new Map<string, {
@@ -313,21 +691,11 @@ async function discover(task: DiscoveryTask, env: QueueEnv): Promise<void> {
       },
     })));
   }
-  const state = await coordinatorPost<CoordinatorStats>(
-    env,
-    task.profile,
-    "/discovery-done",
-    {
-      cycleId: task.cycleId,
-      taskId: task.taskId,
-      discovered: posts.size,
-      enqueued: selected.length,
-      failed: false,
-    },
-  );
-  if (state.status === "success" || state.status === "partial_failure") {
-    await syncLegacyStatus(state);
-  }
+  await finishDiscovery(task, env, {
+    discovered: posts.size,
+    enqueued: selected.length,
+    failed: false,
+  });
 }
 
 function toFetchMethod(engine: string): "snippet_only" | null {
@@ -505,35 +873,40 @@ async function processTask(task: QueueTask, env: QueueEnv): Promise<void> {
   if (task.kind === "bootstrap") return bootstrap(task, env);
   if (task.kind === "discovery") return discover(task, env);
   if (task.kind === "candidate") return candidate(task, env);
+  if (task.kind === "binance_probe") return binanceProbe(task, env);
   return maintenance(task);
 }
 
-export async function processMonitorQueue(batch: QueueBatch, env: QueueEnv): Promise<void> {
+export async function processMonitorQueue(
+  batch: MessageBatch<QueueTask>,
+  env: QueueEnv,
+): Promise<void> {
   if (!env.HYPERDRIVE) throw new Error("HYPERDRIVE binding is required for queued monitor work");
   for (const message of batch.messages) {
+    const task = message.body;
     try {
       await withCloudflareEnv(env, () =>
-        withHyperdriveDatabase(env.HYPERDRIVE!, () => processTask(message.body, env)),
+        withHyperdriveDatabase(env.HYPERDRIVE!, () => processTask(task, env)),
       );
       message.ack();
     } catch (error) {
-      console.error(`[Monitor Queue] ${message.body.kind}: ${String(error).slice(0, 500)}`);
+      console.error(`[Monitor Queue] ${task.kind}: ${String(error).slice(0, 500)}`);
       const finalAttempt = (message.attempts || 1) >= 4;
       if (!finalAttempt) {
         message.retry({ delaySeconds: 30 });
         continue;
       }
       try {
-        if (message.body.kind === "discovery") {
+        if (task.kind === "discovery") {
           const state = await withCloudflareEnv(env, () =>
             withHyperdriveDatabase(env.HYPERDRIVE!, () =>
               coordinatorPost<CoordinatorStats>(
                 env,
-                message.body.profile,
+                task.profile,
                 "/discovery-done",
                 {
-                  cycleId: message.body.cycleId,
-                  taskId: message.body.taskId,
+                  cycleId: task.cycleId,
+                  taskId: task.taskId,
                   discovered: 0,
                   enqueued: 0,
                   failed: true,
@@ -546,10 +919,10 @@ export async function processMonitorQueue(batch: QueueBatch, env: QueueEnv): Pro
               withHyperdriveDatabase(env.HYPERDRIVE!, () => syncLegacyStatus(state)),
             );
           }
-        } else if (message.body.kind === "candidate") {
+        } else if (task.kind === "candidate") {
           await withCloudflareEnv(env, () =>
             withHyperdriveDatabase(env.HYPERDRIVE!, () =>
-              completeCandidate(env, message.body, { failed: true }),
+              completeCandidate(env, task, { failed: true }),
             ),
           );
         }

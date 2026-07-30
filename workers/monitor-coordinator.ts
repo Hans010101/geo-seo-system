@@ -12,6 +12,19 @@ export type BriefingRecord = {
   threatLevel: "high" | "medium" | "low" | "none";
 };
 
+export type SourceDiagnostic = {
+  status: "success" | "empty" | "partial" | "failed";
+  mode?: "shadow" | "write";
+  provider?: "browser" | "serper";
+  discovered: number;
+  enqueued: number;
+  durationMs?: number;
+  queriesAttempted?: number;
+  queriesSucceeded?: number;
+  errors?: string[];
+  updatedAt: number;
+};
+
 export type CoordinatorStats = {
   cycleId: string;
   profile: MonitorProfile;
@@ -39,6 +52,7 @@ export type CoordinatorStats = {
   analysisProviderDist: Record<string, number>;
   analysisFallbackReasons: string[];
   sourceDist: Record<string, number>;
+  sourceDiagnostics: Record<string, SourceDiagnostic>;
   briefingItems: BriefingRecord[];
 };
 
@@ -78,6 +92,7 @@ function emptyState(body: {
     analysisProviderDist: {},
     analysisFallbackReasons: [],
     sourceDist: {},
+    sourceDiagnostics: {},
     briefingItems: [],
   };
 }
@@ -136,6 +151,11 @@ export class MonitorCoordinator extends DurableObject<CoordinatorEnv> {
         state.discovered += Math.max(0, Number(body.discovered) || 0);
         state.candidateExpected += Math.max(0, Number(body.enqueued) || 0);
         if (body.failed) state.discoveryFailed++;
+        state.sourceDiagnostics ||= {};
+        if (body.sourceName && body.diagnostic) {
+          state.sourceDiagnostics[String(body.sourceName)] =
+            body.diagnostic as SourceDiagnostic;
+        }
         this.finalize(state);
         await this.save(state);
       }

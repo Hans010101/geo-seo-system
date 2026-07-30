@@ -18,7 +18,12 @@
     "CLOUDFLARE_PRIMARY_NEWS_MAX_ARTICLES": "12",
     "CLOUDFLARE_PRIMARY_NEWS_SOURCES": "serper,rss",
     "CLOUDFLARE_PRIMARY_SOCIAL_MAX_ARTICLES": "14",
-    "CLOUDFLARE_PRIMARY_SOCIAL_SOURCES": "gate_square,telegram,x",
+    "CLOUDFLARE_PRIMARY_SOCIAL_SOURCES": "gate_square,telegram,x,binance_square",
+    "CLOUDFLARE_BINANCE_SHADOW_ENABLED": "true",
+    "CLOUDFLARE_BINANCE_WRITE_ENABLED": "true",
+    "CLOUDFLARE_BINANCE_MAX_QUERIES": "1",
+    "CLOUDFLARE_BINANCE_QUERY_TERMS": "孙宇晨,TRON",
+    "CLOUDFLARE_BINANCE_INTERVAL_HOURS": "6",
     "CLOUDFLARE_AI_MODEL": "@cf/meta/llama-3.1-8b-instruct-fast",
     "CLOUDFLARE_AI_MAX_TOKENS": "512",
     "CLOUDFLARE_OPENROUTER_FALLBACK_ENABLED": "true",
@@ -33,6 +38,12 @@
   "ai": {
     "binding": "AI"
   },
+  "services": [
+    {
+      "binding": "BINANCE_BROWSER",
+      "service": "geo-seo-system-binance-browser"
+    }
+  ],
   "queues": {
     "producers": [
       {

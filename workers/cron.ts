@@ -3,9 +3,11 @@ import { withCloudflareEnv } from "../server/_core/cloudflare-env";
 import { MonitorCoordinator } from "./monitor-coordinator";
 import {
   enqueueScheduledMonitor,
+  getBinanceProbeStatus,
   getCoordinatorStatus,
   processMonitorQueue,
   type QueueEnv,
+  type QueueTask,
 } from "./monitor-queue";
 
 export { MonitorCoordinator };
@@ -41,9 +43,10 @@ async function readKeys(keys: Record<string, string>) {
 }
 
 async function status(env: Env) {
-  const [legacy, weeklyGeo, news, social] = await Promise.all([
+  const [legacy, weeklyGeo, binance, news, social] = await Promise.all([
     readKeys(STATUS_KEYS),
     readKeys(WEEKLY_KEYS),
+    getBinanceProbeStatus(),
     getCoordinatorStatus(env, "monitor_primary_news"),
     getCoordinatorStatus(env, "monitor_primary_social"),
   ]);
@@ -52,6 +55,15 @@ async function status(env: Env) {
     weeklyGeo: {
       ...weeklyGeo,
       enabled: env.CLOUDFLARE_GEO_WEEKLY_ENABLED === "true",
+    },
+    binance: {
+      ...binance,
+      enabled:
+        env.CLOUDFLARE_BINANCE_SHADOW_ENABLED === "true" ||
+        env.CLOUDFLARE_BINANCE_WRITE_ENABLED === "true",
+      configuredMode:
+        env.CLOUDFLARE_BINANCE_WRITE_ENABLED === "true" ? "write" : "shadow",
+      intervalHours: Number(env.CLOUDFLARE_BINANCE_INTERVAL_HOURS || 6),
     },
     profiles: {
       monitor_primary_news: news,
@@ -91,7 +103,7 @@ export default {
     ctx.waitUntil(enqueueScheduledMonitor(event.scheduledTime, env));
   },
 
-  async queue(batch: any, env: Env) {
+  async queue(batch: MessageBatch<QueueTask>, env: Env) {
     await processMonitorQueue(batch, env);
   },
 };

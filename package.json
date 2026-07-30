@@ -8,13 +8,15 @@
     "build": "vite build && esbuild server/_core/index.ts --platform=node --packages=external --bundle --format=esm --outdir=dist --external:./vite --external:./vite.js",
     "start": "NODE_ENV=production node dist/index.js",
     "check": "tsc --noEmit",
+    "check:workers": "tsc --noEmit --project tsconfig.workers.json",
     "format": "prettier --write .",
     "test": "vitest run",
     "db:push": "drizzle-kit generate && drizzle-kit migrate",
     "cf:build": "vite build && wrangler pages functions build functions --project-directory . --build-output-directory dist/public --compatibility-date 2026-07-25 --compatibility-flag nodejs_compat",
     "cf:deploy:pages": "vite build && wrangler pages deploy dist/public --project-name geo-seo-system --branch main",
+    "cf:deploy:binance-browser": "wrangler deploy --config wrangler.binance-browser.jsonc",
     "cf:deploy:cron": "wrangler deploy --config wrangler.cron.jsonc",
-    "cf:deploy": "pnpm run cf:deploy:pages && pnpm run cf:deploy:cron"
+    "cf:deploy": "pnpm run cf:deploy:pages && pnpm run cf:deploy:binance-browser && pnpm run cf:deploy:cron"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.693.0",
@@ -97,6 +99,8 @@
     "zod": "^4.1.12"
   },
   "devDependencies": {
+    "@cloudflare/playwright": "1.3.3",
+    "@cloudflare/workers-types": "5.20260730.1",
     "@tailwindcss/typography": "^0.5.15",
     "@tailwindcss/vite": "^4.1.3",
     "@types/express": "4.17.21",
