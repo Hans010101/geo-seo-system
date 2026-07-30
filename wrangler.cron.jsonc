@@ -46,6 +46,7 @@
     "CLOUDFLARE_BROWSER_FULLTEXT_MAX_PAGES_PER_DAY": "4",
     "CLOUDFLARE_BROWSER_FULLTEXT_MAX_MS_PER_DAY": "480000",
     "CLOUDFLARE_BROWSER_FULLTEXT_TIMEOUT_MS": "22000",
+    "CLOUDFLARE_ACCEPTANCE_WINDOW_START": "1785377555000",
     "CLOUDFLARE_MAINTENANCE_OFFSET_MINUTES": "15",
     "OPENROUTER_BASE_URL": "https://openrouter.ai/api/v1"
   },
@@ -89,6 +90,10 @@
       {
         "name": "BROWSER_SHADOW_BUDGET",
         "class_name": "BrowserShadowBudget"
+      },
+      {
+        "name": "MIGRATION_ACCEPTANCE",
+        "class_name": "MigrationAcceptanceLedger"
       }
     ]
   },
@@ -100,6 +105,10 @@
     {
       "tag": "v2-browser-shadow-budget",
       "new_sqlite_classes": ["BrowserShadowBudget"]
+    },
+    {
+      "tag": "v3-migration-acceptance-ledger",
+      "new_sqlite_classes": ["MigrationAcceptanceLedger"]
     }
   ],
   "hyperdrive": [

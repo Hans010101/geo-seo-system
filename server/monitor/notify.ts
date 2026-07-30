@@ -119,9 +119,20 @@ export async function sendBriefing(items: BriefingItem[], cycle: { keywords: num
   const msg = buildBriefing(items, cycle, { monthCostUsd: stats?.monthCostUsd || 0, total: stats?.total || 0 }, aiReach);
   if (!cfg.briefingEnabled) return { sent: false, reason: "briefing disabled", content: msg.content };
   if (cfg.briefingMode === "negative_only" && negOrHigh === 0) return { sent: false, reason: "negative_only mode, nothing to report", content: msg.content };
-  await dispatchNotification({ messageType: "batch_summary", title: msg.title, content: msg.content }); // no dedupKey (intentional per-cycle), no severity gating
-  log.info(`Briefing dispatched (high/medium items ${items.length}, neg/high ${negOrHigh})`);
-  return { sent: true, content: msg.content };
+  const delivery = await dispatchNotification({
+    messageType: "batch_summary",
+    title: msg.title,
+    content: msg.content,
+  }); // no dedupKey (intentional per-cycle), no severity gating
+  const sent = delivery.sent > 0;
+  log.info(
+    `Briefing dispatch completed (sent ${delivery.sent}/${delivery.attempted}, high/medium items ${items.length}, neg/high ${negOrHigh})`,
+  );
+  return {
+    sent,
+    ...(sent ? {} : { reason: "no notification channel delivered" }),
+    content: msg.content,
+  };
 }
 
 // High-threat real-time alert: creates a negative_article alert + dispatches immediately. Deduped by
@@ -173,13 +184,19 @@ export async function dispatchHighThreatAlert(a: {
 
   if (cfg.realtimeEnabled) {
     const notifyTitle = `【${amplified ? "危·已入AI" : threat}】负面舆情 - ${a.domain || ""}`;
-    // Telegram (via the shared dispatcher) — fire-and-forget, isolated.
-    dispatchNotification({ messageType: "alert", alertId, severity, title: notifyTitle, content, dedupKey }).catch((e) =>
-      log.warn(`High-threat notify failed: ${e.message}`)
-    );
-    // Email — INDEPENDENT path (原则: 邮件与TG分家), fire-and-forget, locked recipient, silent-degrades.
+    // Queue/Worker invocations can end immediately after this function returns,
+    // so both independent notification paths are explicitly awaited.
     const emailHtml = buildAlertEmailHtml({ title: a.title, domain: a.domain, threat, sentiment: a.sentimentScore, stance: rule?.stance ?? null, summary: a.summary, url: a.url, penLine: penLine.replace(/^\n/, "") || null });
-    sendEmailAlert(`【负面舆情·威胁${threat}】${a.title.slice(0, 50)}`, emailHtml).catch((e) => log.warn(`High-threat email failed: ${e.message}`));
+    const [telegramResult, emailResult] = await Promise.allSettled([
+      dispatchNotification({ messageType: "alert", alertId, severity, title: notifyTitle, content, dedupKey }),
+      sendEmailAlert(`【负面舆情·威胁${threat}】${a.title.slice(0, 50)}`, emailHtml),
+    ]);
+    if (telegramResult.status === "rejected") {
+      log.warn(`High-threat notify failed: ${telegramResult.reason}`);
+    }
+    if (emailResult.status === "rejected") {
+      log.warn(`High-threat email failed: ${emailResult.reason}`);
+    }
     log.info(`High-threat alert created + dispatched ${a.url}`);
   } else {
     log.info(`High-threat alert row created (realtime push disabled) ${a.url}`);

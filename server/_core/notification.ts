@@ -30,7 +30,9 @@ export async function dispatchNotification(payload: {
   content: string;
   severity?: string;
   dedupKey?: string;
-}): Promise<void> {
+}): Promise<{ attempted: number; sent: number }> {
+  let attempted = 0;
+  let sent = 0;
   try {
     const configs = await db.listNotificationConfigs();
     for (const config of configs) {
@@ -59,6 +61,7 @@ export async function dispatchNotification(payload: {
         const msg = { title: payload.title, content: payload.content, severity: payload.severity };
 
         if (config.channel === "telegram") {
+          attempted++;
           result = await sendTelegramAlert(msg); // 原则1: sender reads token+chat_id internally, no id passed
         } else {
           continue; // Only Telegram here; email is its own path (email-alert.ts), feishu removed.
@@ -75,6 +78,7 @@ export async function dispatchNotification(payload: {
           errorMessage: result.error || null,
           dedupKey: payload.dedupKey ? `${config.channel}:${payload.dedupKey}` : null,
         });
+        if (result.success) sent++;
       } catch (chErr: any) {
         console.warn(`[notify] ${config.channel} failed (isolated):`, chErr?.message || chErr);
       }
@@ -82,4 +86,5 @@ export async function dispatchNotification(payload: {
   } catch (err: any) {
     console.error("[Notification] dispatch failed:", err.message);
   }
+  return { attempted, sent };
 }

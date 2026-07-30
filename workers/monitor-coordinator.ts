@@ -68,6 +68,10 @@ export type CoordinatorStats = {
   analysisProviderDist: Record<string, number>;
   analysisFallbackReasons: string[];
   sourceDist: Record<string, number>;
+  insertedSourceDist: Record<string, number>;
+  dedupExisting: number;
+  dedupConflicts: number;
+  realtimeAlerts: number;
   sourceDiagnostics: Record<string, SourceDiagnostic>;
   fetchTelemetry: FetchTelemetryStats;
   briefingItems: BriefingRecord[];
@@ -123,6 +127,10 @@ function emptyState(body: {
     analysisProviderDist: {},
     analysisFallbackReasons: [],
     sourceDist: {},
+    insertedSourceDist: {},
+    dedupExisting: 0,
+    dedupConflicts: 0,
+    realtimeAlerts: 0,
     sourceDiagnostics: {},
     fetchTelemetry: emptyFetchTelemetry(),
     briefingItems: [],
@@ -236,6 +244,18 @@ export class MonitorCoordinator extends DurableObject<CoordinatorEnv> {
       return json(state);
     }
 
+    if (path === "/claim-post-cycle") {
+      if (state.status !== "success" && state.status !== "partial_failure") {
+        return json({ accepted: false, reason: "cycle_not_terminal", state }, 409);
+      }
+      const claimKey = "post-cycle-claimed";
+      if (await this.ctx.storage.get<boolean>(claimKey)) {
+        return json({ accepted: false, duplicate: true, state });
+      }
+      await this.ctx.storage.put(claimKey, true);
+      return json({ accepted: true, state });
+    }
+
     if (path === "/complete") {
       const hash = String(body.urlHash || "");
       const key = `candidate:${hash}`;
@@ -248,15 +268,26 @@ export class MonitorCoordinator extends DurableObject<CoordinatorEnv> {
       state.analyzed += body.analyzed ? 1 : 0;
       state.analysisFailed += body.analysisFailed ? 1 : 0;
       state.failed += body.failed ? 1 : 0;
+      state.dedupExisting = (state.dedupExisting || 0) + (body.dedupExisting ? 1 : 0);
+      state.dedupConflicts = (state.dedupConflicts || 0) + (body.dedupConflict ? 1 : 0);
+      state.realtimeAlerts = (state.realtimeAlerts || 0) + (body.realtimeAlertCreated ? 1 : 0);
       state.analysisNeurons += Number(body.analysisNeurons) || 0;
       state.analysisCostUsd += Number(body.analysisCostUsd) || 0;
+      state.analysisProviderDist ||= {};
       const provider = String(body.analysisProvider || "");
       if (provider) {
         state.analysisProviderDist[provider] =
           (state.analysisProviderDist[provider] || 0) + 1;
       }
+      state.sourceDist ||= {};
       const source = String(body.sourcePlatform || "");
-      if (source) state.sourceDist[source] = (state.sourceDist[source] || 0) + 1;
+      if (source && (body.inserted || body.analyzed)) {
+        state.sourceDist[source] = (state.sourceDist[source] || 0) + 1;
+      }
+      state.insertedSourceDist ||= {};
+      if (source && body.inserted) {
+        state.insertedSourceDist[source] = (state.insertedSourceDist[source] || 0) + 1;
+      }
       if (body.fetchAttempt) {
         const attempt = body.fetchAttempt as Record<string, unknown>;
         state.fetchTelemetry ||= emptyFetchTelemetry();
@@ -286,6 +317,7 @@ export class MonitorCoordinator extends DurableObject<CoordinatorEnv> {
       }
       if (body.fallbackReason) {
         state.analysisFallbacks++;
+        state.analysisFallbackReasons ||= [];
         const reason = String(body.fallbackReason).slice(0, 300);
         if (
           state.analysisFallbackReasons.length < 3 &&
@@ -294,6 +326,7 @@ export class MonitorCoordinator extends DurableObject<CoordinatorEnv> {
           state.analysisFallbackReasons.push(reason);
         }
       }
+      state.briefingItems ||= [];
       if (body.briefingItem && state.briefingItems.length < state.maxArticles) {
         state.briefingItems.push(body.briefingItem as BriefingRecord);
       }

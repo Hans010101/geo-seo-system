@@ -6,7 +6,9 @@
     "workers/binance-worker-configuration.d.ts",
     "workers/fulltext-browser.ts",
     "workers/fulltext-browser-guard.ts",
-    "workers/fulltext-browser-configuration.d.ts"
+    "workers/fulltext-browser-configuration.d.ts",
+    "workers/migration-acceptance-ledger.ts",
+    "workers/migration-acceptance-types.ts"
   ],
   "exclude": ["node_modules", "build", "dist", "**/*.test.ts"],
   "compilerOptions": {

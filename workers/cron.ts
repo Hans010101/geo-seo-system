@@ -2,18 +2,20 @@ import { getSysConfig, withHyperdriveDatabase } from "../server/db";
 import { withCloudflareEnv } from "../server/_core/cloudflare-env";
 import { MonitorCoordinator } from "./monitor-coordinator";
 import { BrowserShadowBudget } from "./browser-shadow-budget";
+import { MigrationAcceptanceLedger } from "./migration-acceptance-ledger";
 import { getCloudflareFeatureFlags } from "./feature-flags";
 import {
   enqueueScheduledMonitor,
   getBinanceProbeStatus,
   getBrowserShadowStatus,
   getCoordinatorStatus,
+  getMigrationAcceptanceStatus,
   processMonitorQueue,
   type QueueEnv,
   type QueueTask,
 } from "./monitor-queue";
 
-export { BrowserShadowBudget, MonitorCoordinator };
+export { BrowserShadowBudget, MigrationAcceptanceLedger, MonitorCoordinator };
 
 type Env = QueueEnv & {
   CLOUDFLARE_GEO_WEEKLY_ENABLED?: string;
@@ -46,11 +48,20 @@ async function readKeys(keys: Record<string, string>) {
 }
 
 async function status(env: Env) {
-  const [legacy, weeklyGeo, binance, browserFulltext, news, social] = await Promise.all([
+  const [
+    legacy,
+    weeklyGeo,
+    binance,
+    browserFulltext,
+    migrationAcceptance,
+    news,
+    social,
+  ] = await Promise.all([
     readKeys(STATUS_KEYS),
     readKeys(WEEKLY_KEYS),
     getBinanceProbeStatus(),
     getBrowserShadowStatus(env),
+    getMigrationAcceptanceStatus(env),
     getCoordinatorStatus(env, "monitor_primary_news"),
     getCoordinatorStatus(env, "monitor_primary_social"),
   ]);
@@ -75,6 +86,7 @@ async function status(env: Env) {
       configuredMaxPagesPerDay: Number(env.CLOUDFLARE_BROWSER_FULLTEXT_MAX_PAGES_PER_DAY || 4),
       configuredMaxBrowserMsPerDay: Number(env.CLOUDFLARE_BROWSER_FULLTEXT_MAX_MS_PER_DAY || 480_000),
     },
+    migrationAcceptance,
     profiles: {
       monitor_primary_news: news,
       monitor_primary_social: social,

@@ -23,15 +23,16 @@
 | 正文抓取 | self → Firecrawl → snippet | 复用同一抓取路由 | 功能已有，缺逐次尝试可观测性 | `CLOUDFLARE_FETCH_OBSERVABILITY_ENABLED`；阶段 1 |
 | Browser 正文兜底 | 无 Cloudflare Browser | 独立私有 Browser Worker，snippet 后异步 Shadow | 已部署影子链路，不写生产正文 | `CLOUDFLARE_BROWSER_FULLTEXT_SHADOW_ENABLED`；阶段 2 |
 | AI 舆情分析 | OpenRouter | Workers AI 优先，失败时 OpenRouter | 已运行；当天无新增时不会产生 AI 调用 | `CLOUDFLARE_OPENROUTER_FALLBACK_ENABLED` |
-| 高威胁实时预警 | pipeline 内建，按配置推送 | Queue 候选链尚未调用预警模块 | 未迁移 | `CLOUDFLARE_REALTIME_ALERTS_ENABLED`；阶段 5 |
-| 每轮舆情简报 | pipeline 周期结束后生成/推送 | Coordinator 已收集素材，尚未派发 | 未迁移 | `CLOUDFLARE_BRIEFING_ENABLED`；阶段 5 |
+| 高威胁实时预警 | pipeline 内建，按配置推送 | Queue 候选链已接入，生产开关关闭 | 代码就绪，未启用 | `CLOUDFLARE_REALTIME_ALERTS_ENABLED`；阶段 5 |
+| 每轮舆情简报 | pipeline 周期结束后生成/推送 | Coordinator 收集素材，幂等 Post-cycle Queue 已接入 | 代码就绪，未启用 | `CLOUDFLARE_BRIEFING_ENABLED`；阶段 5 |
 | 舆情周报 | 周一 08:30（北京） | 周一 03:40 Queue | 已运行；共享库 upsert 幂等，推送需防双发 | `CLOUDFLARE_WEEKLY_REPORT_ENABLED` |
 | 舆情月报 | 每月 1 日 08:40（北京） | 每月 1 日 03:40 Queue | 已运行；共享库 upsert 幂等，推送需防双发 | `CLOUDFLARE_MONTHLY_REPORT_ENABLED` |
 | 35 天正文清理 | 每日 04:30（北京） | 每日 03:40 Queue | 已运行；操作幂等 | `CLOUDFLARE_CLEANUP_ENABLED` |
 | GEO 日常采集 | DB 动态 Cron，全部启用问题 × 平台 | 正式 Queue 主链未接入 | 未迁移 | `CLOUDFLARE_GEO_DAILY_ENABLED`；阶段 5 |
 | GEO 每周 15 平台覆盖 | Cloud Run 可运行完整批次 | 已有 6 cells/shard 实现，但未接入正式 Queue 且保持关闭 | 未迁移 | `CLOUDFLARE_GEO_WEEKLY_ENABLED`；续费后阶段 5 |
 | Queue 重试 | 进程内任务错误处理 | 最多 4 次，30 秒退避，终态写 Coordinator | 技术重试已有 | Queue 配置 |
-| 最终失败通知 | 日志/现有通知模块 | 尚未形成统一用户通知 | 未迁移 | `CLOUDFLARE_FAILURE_NOTIFICATIONS_ENABLED`；阶段 5 |
+| 最终失败通知 | 日志/现有通知模块 | partial_failure 终态 Post-cycle Queue 已接入 | 代码就绪，未启用 | `CLOUDFLARE_FAILURE_NOTIFICATIONS_ENABLED`；阶段 5 |
+| 迁移验收历史 | 无独立迁移台账 | Durable Object 保存 35 天精简运行指标 | 已接入；等待自然样本累计 | `status.migrationAcceptance` |
 | Google 登录 | Cloud Run OAuth 配置 | Pages Functions OAuth 配置 | 已配置；持续抽测回调域名 | Pages secrets |
 | 邮箱登录/邮件 | Resend | Pages Functions Resend | 已配置 | Pages secrets / `RESEND_FROM` |
 
@@ -65,6 +66,7 @@
 - 阶段 1：已上线；正常批次可读取逐次抓取与域名聚合统计。
 - 阶段 2：已实现并通过本地/部署前检查；等待线上低风险探针和自然样本验收。
 - 阶段 3：自 2026-07-30 10:12（北京）起进行 7 天计时观察，最早 2026-08-06 验收，不能提前宣告通过。
-- 阶段 4：已开启小流量写入，等待正式批次与去重证据。
-- 阶段 5–6：待前置闸门通过后逐项执行。
+- 阶段 4：已开启小流量写入；插入来源、候选去重和唯一冲突指标已进入验收台账，等待自然批次。
+- 阶段 5：实时告警、简报和最终失败通知的 Queue 链路已准备，三个生产开关保持关闭；待阶段 3/4 通过后逐项启用。
+- 阶段 6：14 天窗口尚未开始，待所有核心功能完成 2–3 个周期观察后建立。
 - 阶段 7：锁定，必须获得新的明确授权。

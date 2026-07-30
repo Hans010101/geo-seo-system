@@ -329,9 +329,15 @@ export async function generateMonitorReport(
 
   if (await getReportPushEnabled()) {
     const msg = buildReportDigest(p, data);
-    dispatchNotification({ messageType: "batch_summary", title: msg.title, content: msg.content }).catch((e) =>
-      log.warn(`Report push failed: ${e?.message || e}`)
-    );
+    try {
+      await dispatchNotification({
+        messageType: "batch_summary",
+        title: msg.title,
+        content: msg.content,
+      });
+    } catch (error: any) {
+      log.warn(`Report push failed: ${error?.message || error}`);
+    }
   }
   return { reportPeriod: p.reportPeriod, periodLabel: data.periodLabel, data };
 }

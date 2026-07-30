@@ -2,6 +2,12 @@ import * as db from "../server/db";
 import { withHyperdriveDatabase } from "../server/db";
 import { withCloudflareEnv, type CloudflareRuntimeEnv } from "../server/_core/cloudflare-env";
 import { analyzeArticle } from "../server/monitor/analyzer";
+import {
+  alertThresholdMet,
+  dispatchHighThreatAlert,
+  sendBriefing,
+} from "../server/monitor/notify";
+import { dispatchNotification } from "../server/_core/notification";
 import * as budget from "../server/monitor/budget";
 import { enabledSources } from "../server/monitor/sources/registry";
 import { RSS_FEEDS } from "../server/monitor/sources/rss-source";
@@ -37,6 +43,12 @@ import type {
   BrowserShadowResultSummary,
 } from "./browser-shadow-budget";
 import type { FulltextBrowserResult } from "./fulltext-browser";
+import type {
+  AcceptanceCycleRecord,
+  BinanceAcceptanceRecord,
+  BrowserAcceptanceRecord,
+  NotificationAcceptanceRecord,
+} from "./migration-acceptance-types";
 import type { BinanceBrowserSearchResult } from "./binance-square-browser";
 import {
   getCloudflareFeatureFlags,
@@ -49,6 +61,7 @@ type CronBindings = Pick<
   | "BROWSER_SHADOW_BUDGET"
   | "FULLTEXT_BROWSER"
   | "HYPERDRIVE"
+  | "MIGRATION_ACCEPTANCE"
   | "MONITOR_COORDINATOR"
   | "MONITOR_QUEUE"
 >;
@@ -67,6 +80,7 @@ export type QueueEnv = CloudflareRuntimeEnv & CronBindings & CloudflareFeatureEn
   CLOUDFLARE_BROWSER_FULLTEXT_MAX_PAGES_PER_DAY?: string;
   CLOUDFLARE_BROWSER_FULLTEXT_MAX_MS_PER_DAY?: string;
   CLOUDFLARE_BROWSER_FULLTEXT_TIMEOUT_MS?: string;
+  CLOUDFLARE_ACCEPTANCE_WINDOW_START?: string;
 };
 
 type Keyword = { keyword: string; priority: number };
@@ -119,13 +133,25 @@ export type BrowserShadowTask = {
   originalChars: number;
 };
 
+type PostCycleTask = {
+  kind: "post_cycle";
+  cycleId: string;
+  profile: MonitorProfile;
+  status: "success" | "partial_failure";
+  keywords: number;
+  sourceCount: number;
+  inserted: number;
+  briefingItems: CoordinatorStats["briefingItems"];
+};
+
 export type QueueTask =
   | BootstrapTask
   | DiscoveryTask
   | CandidateTask
   | MaintenanceTask
   | BinanceProbeTask
-  | BrowserShadowTask;
+  | BrowserShadowTask
+  | PostCycleTask;
 
 const SOURCE_LIMITS: Record<string, number> = {
   serper: 3,
@@ -184,6 +210,52 @@ function browserShadowBudget(env: QueueEnv) {
   );
 }
 
+function acceptanceLedger(env: QueueEnv) {
+  return env.MIGRATION_ACCEPTANCE.get(
+    env.MIGRATION_ACCEPTANCE.idFromName("cloudflare-migration-acceptance"),
+  );
+}
+
+async function recordAcceptance(
+  env: QueueEnv,
+  path: string,
+  record: unknown,
+): Promise<void> {
+  try {
+    const response = await acceptanceLedger(env).fetch(`https://acceptance${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(record),
+    });
+    if (!response.ok) {
+      console.warn(JSON.stringify({
+        event: "migration_acceptance.record_failed",
+        path,
+        status: response.status,
+      }));
+    }
+  } catch (error) {
+    // Acceptance telemetry must never fail a production collection task.
+    console.warn(JSON.stringify({
+      event: "migration_acceptance.record_failed",
+      path,
+      error: String(error).slice(0, 300),
+    }));
+  }
+}
+
+export async function getMigrationAcceptanceStatus(env: QueueEnv): Promise<unknown> {
+  const windowStart = Math.max(
+    0,
+    Number(env.CLOUDFLARE_ACCEPTANCE_WINDOW_START) || Date.now() - 7 * 86_400_000,
+  );
+  const response = await acceptanceLedger(env).fetch(
+    `https://acceptance/status?windowStart=${windowStart}`,
+  );
+  if (!response.ok) throw new Error(`migration acceptance status HTTP ${response.status}`);
+  return response.json();
+}
+
 export async function getBrowserShadowStatus(
   env: QueueEnv,
 ): Promise<BrowserShadowBudgetState | { status: "idle" }> {
@@ -223,7 +295,71 @@ function statusSummary(state: CoordinatorStats): string {
   return JSON.stringify(summary).slice(0, 4000);
 }
 
-async function syncLegacyStatus(state: CoordinatorStats): Promise<void> {
+function cycleAcceptanceRecord(state: CoordinatorStats): AcceptanceCycleRecord {
+  return {
+    cycleId: state.cycleId,
+    profile: state.profile,
+    status: state.status === "partial_failure" ? "partial_failure" : "success",
+    startedAt: state.startedAt,
+    finishedAt: state.finishedAt || Date.now(),
+    discovered: state.discovered,
+    accepted: state.accepted,
+    completed: state.completed,
+    inserted: state.inserted,
+    analyzed: state.analyzed,
+    analysisFailed: state.analysisFailed,
+    failed: state.failed,
+    analysisNeurons: state.analysisNeurons,
+    analysisFallbacks: state.analysisFallbacks,
+    analysisCostUsd: state.analysisCostUsd,
+    analysisProviderDist: state.analysisProviderDist || {},
+    sourceDist: state.sourceDist || {},
+    insertedSourceDist: state.insertedSourceDist || {},
+    dedupExisting: state.dedupExisting || 0,
+    dedupConflicts: state.dedupConflicts || 0,
+    sourceDiagnostics: state.sourceDiagnostics || {},
+    fetchTelemetry: state.fetchTelemetry || {
+      attempts: 0,
+      successes: 0,
+      fallbacks: 0,
+      durationMs: 0,
+      contentChars: 0,
+      costUsd: 0,
+      engineDist: {},
+      failureReasons: {},
+      domains: {},
+    },
+  };
+}
+
+async function enqueuePostCycleIfEnabled(
+  env: QueueEnv,
+  state: CoordinatorStats,
+): Promise<void> {
+  const flags = getCloudflareFeatureFlags(env);
+  if (
+    !flags.briefing &&
+    !(flags.failureNotifications && state.status === "partial_failure")
+  ) {
+    return;
+  }
+  const claim = await coordinatorPost<{
+    accepted: boolean;
+  }>(env, state.profile, "/claim-post-cycle", { cycleId: state.cycleId });
+  if (!claim.accepted) return;
+  await env.MONITOR_QUEUE.send({
+    kind: "post_cycle",
+    cycleId: state.cycleId,
+    profile: state.profile,
+    status: state.status,
+    keywords: state.keywords,
+    sourceCount: state.sources.length,
+    inserted: state.inserted,
+    briefingItems: state.briefingItems,
+  } satisfies PostCycleTask);
+}
+
+async function syncLegacyStatus(env: QueueEnv, state: CoordinatorStats): Promise<void> {
   const terminal = state.status === "success" || state.status === "partial_failure";
   const error = state.status === "partial_failure"
     ? `${state.discoveryFailed} discovery failures; ${state.analysisFailed} analysis failures; ${state.failed} item failures`
@@ -237,6 +373,10 @@ async function syncLegacyStatus(state: CoordinatorStats): Promise<void> {
     db.setSysConfig(CF_STATUS_KEYS.summary, statusSummary(state)),
     db.setSysConfig(CF_STATUS_KEYS.error, error),
   ]);
+  if (terminal) {
+    await recordAcceptance(env, "/record-cycle", cycleAcceptanceRecord(state));
+    await enqueuePostCycleIfEnabled(env, state);
+  }
 }
 
 function buildDiscoveryTasks(
@@ -340,7 +480,7 @@ async function bootstrap(task: BootstrapTask, env: QueueEnv): Promise<void> {
         ],
     discoveryExpected: discoveryTasks.length,
   });
-  await syncLegacyStatus(state);
+  await syncLegacyStatus(env, state);
   if (discoveryTasks.length === 0) return;
   await env.MONITOR_QUEUE.sendBatch(discoveryTasks.map((body) => ({ body })));
 }
@@ -387,6 +527,42 @@ function sourceDiagnostic(
     queriesSucceeded: result.queriesSucceeded,
     ...(errors.length > 0 ? { errors } : {}),
     updatedAt: Date.now(),
+  };
+}
+
+function binanceAcceptanceRecord(input: {
+  runId: string;
+  mode: "shadow" | "write";
+  provider: "browser" | "serper";
+  result: BinanceBrowserSearchResult;
+  matched: Map<string, MatchedPost>;
+  enqueued: number;
+  startedAt: number;
+}): BinanceAcceptanceRecord {
+  const diagnostic = sourceDiagnostic(
+    input.result,
+    input.mode,
+    input.provider,
+    input.enqueued,
+  );
+  const sampleUrls = Array.from(input.matched.values())
+    .slice(0, 3)
+    .map((item) => item.post.url);
+  return {
+    runId: input.runId,
+    mode: input.mode,
+    provider: input.provider,
+    status: diagnostic.status,
+    startedAt: input.startedAt,
+    finishedAt: Date.now(),
+    rawPosts: input.result.posts.length,
+    matchedPosts: input.matched.size,
+    enqueued: input.enqueued,
+    queriesAttempted: input.result.queriesAttempted,
+    queriesSucceeded: input.result.queriesSucceeded,
+    validSampleUrls: sampleUrls.filter((url) => binancePostUrl(url) != null).length,
+    invalidSampleUrls: sampleUrls.filter((url) => binancePostUrl(url) == null).length,
+    errors: diagnostic.errors || [],
   };
 }
 
@@ -578,6 +754,15 @@ async function binanceProbe(task: BinanceProbeTask, env: QueueEnv): Promise<void
       ...sourceDiagnostic(result, "shadow", provider, 0),
       discovered: matched.size,
     };
+    await recordAcceptance(env, "/record-binance", binanceAcceptanceRecord({
+      runId: `probe:${task.scheduledTime}`,
+      mode: "shadow",
+      provider,
+      result,
+      matched,
+      enqueued: 0,
+      startedAt,
+    }));
     await Promise.all([
       db.setSysConfig(BINANCE_STATUS_KEYS.status, diagnostic.status),
       db.setSysConfig(BINANCE_STATUS_KEYS.provider, provider),
@@ -596,6 +781,22 @@ async function binanceProbe(task: BinanceProbeTask, env: QueueEnv): Promise<void
     ]);
   } catch (error) {
     const message = (error instanceof Error ? error.message : String(error)).slice(0, 1000);
+    await recordAcceptance(env, "/record-binance", {
+      runId: `probe:${task.scheduledTime}`,
+      mode: "shadow",
+      provider: "browser",
+      status: "failed",
+      startedAt,
+      finishedAt: Date.now(),
+      rawPosts: 0,
+      matchedPosts: 0,
+      enqueued: 0,
+      queriesAttempted: binanceQueries(env).length,
+      queriesSucceeded: 0,
+      validSampleUrls: 0,
+      invalidSampleUrls: 0,
+      errors: [message],
+    } satisfies BinanceAcceptanceRecord);
     await Promise.all([
       db.setSysConfig(BINANCE_STATUS_KEYS.status, "failed"),
       db.setSysConfig(BINANCE_STATUS_KEYS.finishedAt, String(Date.now())),
@@ -626,7 +827,7 @@ async function finishDiscovery(
     },
   );
   if (state.status === "success" || state.status === "partial_failure") {
-    await syncLegacyStatus(state);
+    await syncLegacyStatus(env, state);
   }
 }
 
@@ -658,6 +859,15 @@ async function discoverBinance(task: DiscoveryTask, env: QueueEnv): Promise<void
     })));
   }
   const diagnostic = sourceDiagnostic(result, mode, provider, selected.length);
+  await recordAcceptance(env, "/record-binance", binanceAcceptanceRecord({
+    runId: `${task.cycleId}:${task.taskId}`,
+    mode,
+    provider,
+    result,
+    matched: posts,
+    enqueued: selected.length,
+    startedAt: Date.now() - result.durationMs,
+  }));
   console.log(JSON.stringify({
     event: "binance_square.discovery",
     cycleId: task.cycleId,
@@ -753,7 +963,7 @@ async function completeCandidate(
     { cycleId: task.cycleId, urlHash: task.urlHash, ...patch },
   );
   if (state.status === "success" || state.status === "partial_failure") {
-    await syncLegacyStatus(state);
+    await syncLegacyStatus(env, state);
   }
 }
 
@@ -783,13 +993,16 @@ async function candidate(task: CandidateTask, env: QueueEnv): Promise<void> {
       },
     );
     if (state.status === "success" || state.status === "partial_failure") {
-      await syncLegacyStatus(state);
+      await syncLegacyStatus(env, state);
     }
     return;
   }
 
   if (await db.getMonitorArticleByUrlHash(task.urlHash)) {
-    await completeCandidate(env, task, {});
+    await completeCandidate(env, task, {
+      dedupExisting: true,
+      sourcePlatform: task.post.sourcePlatform,
+    });
     return;
   }
 
@@ -846,6 +1059,7 @@ async function candidate(task: CandidateTask, env: QueueEnv): Promise<void> {
 
   const domain = domainOf(post.url);
   let inserted = false;
+  let dedupConflict = false;
   try {
     inserted = Boolean(await db.createMonitorArticle({
       url: task.normalizedUrl.slice(0, 768),
@@ -876,6 +1090,34 @@ async function candidate(task: CandidateTask, env: QueueEnv): Promise<void> {
     // A concurrent shard can win the unique URL race. Treat that as a clean
     // dedup outcome; unexpected database failures still retry the queue message.
     if (!/duplicate|unique/i.test(String(error))) throw error;
+    dedupConflict = true;
+  }
+
+  let realtimeAlertCreated = false;
+  if (
+    inserted &&
+    analysis &&
+    getCloudflareFeatureFlags(env).realtimeAlerts &&
+    await alertThresholdMet(analysis.threatLevel)
+  ) {
+    try {
+      const alert = await dispatchHighThreatAlert({
+        url: post.url,
+        urlHash: task.urlHash,
+        title,
+        domain: domain || null,
+        sentimentScore: analysis.sentimentScore,
+        summary: analysis.summary,
+        threatLevel: analysis.threatLevel,
+      });
+      realtimeAlertCreated = alert.created;
+    } catch (error) {
+      console.error(JSON.stringify({
+        event: "cloudflare_realtime_alert.failed",
+        urlHash: task.urlHash,
+        error: String(error).slice(0, 300),
+      }));
+    }
   }
 
   const briefingItem =
@@ -892,6 +1134,8 @@ async function candidate(task: CandidateTask, env: QueueEnv): Promise<void> {
       : undefined;
   await completeCandidate(env, task, {
     inserted,
+    dedupConflict,
+    realtimeAlertCreated,
     analyzed: Boolean(analysis),
     analysisFailed,
     analysisNeurons: analysis?.neurons || 0,
@@ -1015,9 +1259,74 @@ async function browserShadow(task: BrowserShadowTask, env: QueueEnv): Promise<vo
     headers: { "content-type": "application/json" },
     body: JSON.stringify(summary),
   });
+  await recordAcceptance(env, "/record-browser", {
+    urlHash: summary.urlHash,
+    domain: summary.domain,
+    sourcePlatform: summary.sourcePlatform,
+    status: summary.status,
+    originalChars: summary.originalChars,
+    browserChars: summary.browserChars,
+    browserMs: summary.browserMs,
+    durationMs: summary.durationMs,
+    gainRatio: summary.gainRatio,
+    usable: summary.usable,
+    httpStatus: summary.httpStatus,
+    error: summary.error,
+    finishedAt: summary.finishedAt,
+  } satisfies BrowserAcceptanceRecord);
   console.log(JSON.stringify({
     event: "browser_fulltext_shadow.result",
     ...summary,
+  }));
+}
+
+async function postCycle(task: PostCycleTask, env: QueueEnv): Promise<void> {
+  const flags = getCloudflareFeatureFlags(env);
+  const record: NotificationAcceptanceRecord = {
+    cycleId: task.cycleId,
+    profile: task.profile,
+    briefingAttempted: false,
+    briefingSent: false,
+    failureNotificationAttempted: false,
+    failureNotificationSent: false,
+    finishedAt: Date.now(),
+  };
+  const errors: string[] = [];
+  if (flags.briefing) {
+    record.briefingAttempted = true;
+    try {
+      const result = await sendBriefing(task.briefingItems, {
+        keywords: task.keywords,
+        sourceCount: task.sourceCount,
+        newArticles: task.inserted,
+      });
+      record.briefingSent = result.sent;
+      record.briefingReason = result.reason;
+    } catch (error) {
+      errors.push(`briefing: ${String(error).slice(0, 200)}`);
+    }
+  }
+  if (flags.failureNotifications && task.status === "partial_failure") {
+    record.failureNotificationAttempted = true;
+    try {
+      const result = await dispatchNotification({
+        messageType: "alert",
+        title: `Cloudflare 舆情批次异常 · ${task.profile}`,
+        content: `批次 ${task.cycleId} 以 partial_failure 结束，请检查 Worker 状态与日志。`,
+        severity: "high",
+        dedupKey: `cloudflare_cycle_failure:${task.cycleId}`,
+      });
+      record.failureNotificationSent = result.sent > 0;
+    } catch (error) {
+      errors.push(`failure notification: ${String(error).slice(0, 200)}`);
+    }
+  }
+  record.finishedAt = Date.now();
+  if (errors.length > 0) record.error = errors.join("; ").slice(0, 300);
+  await recordAcceptance(env, "/record-notification", record);
+  console.log(JSON.stringify({
+    event: "cloudflare_post_cycle.result",
+    ...record,
   }));
 }
 
@@ -1041,6 +1350,7 @@ async function processTask(task: QueueTask, env: QueueEnv): Promise<void> {
   if (task.kind === "candidate") return candidate(task, env);
   if (task.kind === "binance_probe") return binanceProbe(task, env);
   if (task.kind === "browser_shadow") return browserShadow(task, env);
+  if (task.kind === "post_cycle") return postCycle(task, env);
   return maintenance(task);
 }
 
@@ -1087,7 +1397,7 @@ export async function processMonitorQueue(
           );
           if (state.status === "success" || state.status === "partial_failure") {
             await withCloudflareEnv(env, () =>
-              withHyperdriveDatabase(env.HYPERDRIVE!, () => syncLegacyStatus(state)),
+              withHyperdriveDatabase(env.HYPERDRIVE!, () => syncLegacyStatus(env, state)),
             );
           }
         } else if (task.kind === "candidate") {
