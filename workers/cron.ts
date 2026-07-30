@@ -1,16 +1,19 @@
 import { getSysConfig, withHyperdriveDatabase } from "../server/db";
 import { withCloudflareEnv } from "../server/_core/cloudflare-env";
 import { MonitorCoordinator } from "./monitor-coordinator";
+import { BrowserShadowBudget } from "./browser-shadow-budget";
+import { getCloudflareFeatureFlags } from "./feature-flags";
 import {
   enqueueScheduledMonitor,
   getBinanceProbeStatus,
+  getBrowserShadowStatus,
   getCoordinatorStatus,
   processMonitorQueue,
   type QueueEnv,
   type QueueTask,
 } from "./monitor-queue";
 
-export { MonitorCoordinator };
+export { BrowserShadowBudget, MonitorCoordinator };
 
 type Env = QueueEnv & {
   CLOUDFLARE_GEO_WEEKLY_ENABLED?: string;
@@ -43,27 +46,34 @@ async function readKeys(keys: Record<string, string>) {
 }
 
 async function status(env: Env) {
-  const [legacy, weeklyGeo, binance, news, social] = await Promise.all([
+  const [legacy, weeklyGeo, binance, browserFulltext, news, social] = await Promise.all([
     readKeys(STATUS_KEYS),
     readKeys(WEEKLY_KEYS),
     getBinanceProbeStatus(),
+    getBrowserShadowStatus(env),
     getCoordinatorStatus(env, "monitor_primary_news"),
     getCoordinatorStatus(env, "monitor_primary_social"),
   ]);
+  const features = getCloudflareFeatureFlags(env);
   return {
     ...legacy,
+    features,
     weeklyGeo: {
       ...weeklyGeo,
-      enabled: env.CLOUDFLARE_GEO_WEEKLY_ENABLED === "true",
+      enabled: features.geoWeekly,
     },
     binance: {
       ...binance,
-      enabled:
-        env.CLOUDFLARE_BINANCE_SHADOW_ENABLED === "true" ||
-        env.CLOUDFLARE_BINANCE_WRITE_ENABLED === "true",
+      enabled: features.binanceShadow || features.binanceWrite,
       configuredMode:
-        env.CLOUDFLARE_BINANCE_WRITE_ENABLED === "true" ? "write" : "shadow",
+        features.binanceWrite ? "write" : "shadow",
       intervalHours: Number(env.CLOUDFLARE_BINANCE_INTERVAL_HOURS || 6),
+    },
+    browserFulltext: {
+      ...browserFulltext,
+      enabled: features.browserFullTextShadow,
+      configuredMaxPagesPerDay: Number(env.CLOUDFLARE_BROWSER_FULLTEXT_MAX_PAGES_PER_DAY || 4),
+      configuredMaxBrowserMsPerDay: Number(env.CLOUDFLARE_BROWSER_FULLTEXT_MAX_MS_PER_DAY || 480_000),
     },
     profiles: {
       monitor_primary_news: news,

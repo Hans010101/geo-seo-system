@@ -15,8 +15,9 @@
     "cf:build": "vite build && wrangler pages functions build functions --project-directory . --build-output-directory dist/public --compatibility-date 2026-07-25 --compatibility-flag nodejs_compat",
     "cf:deploy:pages": "vite build && wrangler pages deploy dist/public --project-name geo-seo-system --branch main",
     "cf:deploy:binance-browser": "wrangler deploy --config wrangler.binance-browser.jsonc",
+    "cf:deploy:fulltext-browser": "wrangler deploy --config wrangler.fulltext-browser.jsonc",
     "cf:deploy:cron": "wrangler deploy --config wrangler.cron.jsonc",
-    "cf:deploy": "pnpm run cf:deploy:pages && pnpm run cf:deploy:binance-browser && pnpm run cf:deploy:cron"
+    "cf:deploy": "pnpm run cf:deploy:pages && pnpm run cf:deploy:binance-browser && pnpm run cf:deploy:fulltext-browser && pnpm run cf:deploy:cron"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.693.0",

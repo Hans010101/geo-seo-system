@@ -21,6 +21,7 @@ import {
 import {
   cleanupOldArticles,
 } from "../server/monitor/cleanup";
+import { recordFetchAttempt } from "../server/monitor/fetch/observability";
 import {
   generateMonitorReport,
   monthlyPeriodOf,
@@ -31,14 +32,28 @@ import type {
   MonitorProfile,
   SourceDiagnostic,
 } from "./monitor-coordinator";
+import type {
+  BrowserShadowBudgetState,
+  BrowserShadowResultSummary,
+} from "./browser-shadow-budget";
+import type { FulltextBrowserResult } from "./fulltext-browser";
 import type { BinanceBrowserSearchResult } from "./binance-square-browser";
+import {
+  getCloudflareFeatureFlags,
+  type CloudflareFeatureEnv,
+} from "./feature-flags";
 
 type CronBindings = Pick<
   CronWorkerEnv,
-  "BINANCE_BROWSER" | "HYPERDRIVE" | "MONITOR_COORDINATOR" | "MONITOR_QUEUE"
+  | "BINANCE_BROWSER"
+  | "BROWSER_SHADOW_BUDGET"
+  | "FULLTEXT_BROWSER"
+  | "HYPERDRIVE"
+  | "MONITOR_COORDINATOR"
+  | "MONITOR_QUEUE"
 >;
 
-export type QueueEnv = CloudflareRuntimeEnv & CronBindings & {
+export type QueueEnv = CloudflareRuntimeEnv & CronBindings & CloudflareFeatureEnv & {
   ENABLE_CLOUDFLARE_CRON?: string;
   CLOUDFLARE_CRON_MODE?: string;
   CLOUDFLARE_PRIMARY_MAX_KEYWORDS?: string;
@@ -49,6 +64,9 @@ export type QueueEnv = CloudflareRuntimeEnv & CronBindings & {
   CLOUDFLARE_BINANCE_MAX_QUERIES?: string;
   CLOUDFLARE_BINANCE_QUERY_TERMS?: string;
   CLOUDFLARE_BINANCE_INTERVAL_HOURS?: string;
+  CLOUDFLARE_BROWSER_FULLTEXT_MAX_PAGES_PER_DAY?: string;
+  CLOUDFLARE_BROWSER_FULLTEXT_MAX_MS_PER_DAY?: string;
+  CLOUDFLARE_BROWSER_FULLTEXT_TIMEOUT_MS?: string;
 };
 
 type Keyword = { keyword: string; priority: number };
@@ -93,12 +111,21 @@ type BinanceProbeTask = {
   scheduledTime: number;
 };
 
+export type BrowserShadowTask = {
+  kind: "browser_shadow";
+  urlHash: string;
+  url: string;
+  sourcePlatform: string;
+  originalChars: number;
+};
+
 export type QueueTask =
   | BootstrapTask
   | DiscoveryTask
   | CandidateTask
   | MaintenanceTask
-  | BinanceProbeTask;
+  | BinanceProbeTask
+  | BrowserShadowTask;
 
 const SOURCE_LIMITS: Record<string, number> = {
   serper: 3,
@@ -137,10 +164,8 @@ function positiveInt(value: string | undefined, fallback: number): number {
 }
 
 function binanceEnabled(env: QueueEnv): boolean {
-  return (
-    env.CLOUDFLARE_BINANCE_SHADOW_ENABLED === "true" ||
-    env.CLOUDFLARE_BINANCE_WRITE_ENABLED === "true"
-  );
+  const flags = getCloudflareFeatureFlags(env);
+  return flags.binanceShadow || flags.binanceWrite;
 }
 
 function binanceDue(cycle: BootstrapTask, env: QueueEnv): boolean {
@@ -151,6 +176,20 @@ function binanceDue(cycle: BootstrapTask, env: QueueEnv): boolean {
 
 function coordinator(env: QueueEnv, profile: MonitorProfile) {
   return env.MONITOR_COORDINATOR.get(env.MONITOR_COORDINATOR.idFromName(profile));
+}
+
+function browserShadowBudget(env: QueueEnv) {
+  return env.BROWSER_SHADOW_BUDGET.get(
+    env.BROWSER_SHADOW_BUDGET.idFromName("fulltext-browser-shadow"),
+  );
+}
+
+export async function getBrowserShadowStatus(
+  env: QueueEnv,
+): Promise<BrowserShadowBudgetState | { status: "idle" }> {
+  const response = await browserShadowBudget(env).fetch("https://browser-shadow-budget/status");
+  if (!response.ok) throw new Error(`browser shadow budget status HTTP ${response.status}`);
+  return response.json();
 }
 
 async function coordinatorPost<T>(
@@ -779,6 +818,15 @@ async function candidate(task: CandidateTask, env: QueueEnv): Promise<void> {
     ? (post.fetchEngineHint || "source_api")
     : "snippet";
   const fetchStatus = post.fullContent ? "full" : contentMd ? "partial" : "failed";
+  const fetchAttempt = {
+    engine: fetchEngine,
+    outcome: post.fullContent ? "success" as const : "fallback" as const,
+    reason: post.fullContent ? "success" as const : "snippet_fallback" as const,
+    durationMs: 0,
+    contentChars: contentMd.length,
+    costUsd: post.fetchCostUsdHint || 0,
+  };
+  recordFetchAttempt(post.url, fetchAttempt, post.sourcePlatform);
   let analysis: Awaited<ReturnType<typeof analyzeArticle>> | null = null;
   let analysisFailed = false;
   if (contentMd) {
@@ -851,8 +899,126 @@ async function candidate(task: CandidateTask, env: QueueEnv): Promise<void> {
     analysisProvider: analysis?.provider || "",
     fallbackReason: analysis?.fallbackReason || "",
     sourcePlatform: post.sourcePlatform,
+    fetchAttempt: {
+      ...fetchAttempt,
+      domain: domain || "unknown",
+    },
     briefingItem,
   });
+  if (
+    !post.fullContent &&
+    contentMd &&
+    getCloudflareFeatureFlags(env).browserFullTextShadow
+  ) {
+    try {
+      await env.MONITOR_QUEUE.send({
+        kind: "browser_shadow",
+        urlHash: task.urlHash,
+        url: post.url,
+        sourcePlatform: post.sourcePlatform,
+        originalChars: contentMd.length,
+      } satisfies BrowserShadowTask);
+    } catch (error) {
+      // Shadow work must never turn a completed production candidate into a
+      // failed queue delivery.
+      console.error(JSON.stringify({
+        event: "browser_fulltext_shadow.enqueue_failed",
+        urlHash: task.urlHash,
+        error: String(error).slice(0, 300),
+      }));
+    }
+  }
+}
+
+function browserShadowGain(originalChars: number, browserChars: number): {
+  gainRatio: number;
+  usable: boolean;
+} {
+  const gainRatio = originalChars > 0
+    ? Math.round((browserChars / originalChars) * 100) / 100
+    : browserChars > 0 ? 1 : 0;
+  return {
+    gainRatio,
+    usable: browserChars >= 500 && browserChars >= Math.max(500, originalChars * 1.25),
+  };
+}
+
+async function browserShadow(task: BrowserShadowTask, env: QueueEnv): Promise<void> {
+  if (!getCloudflareFeatureFlags(env).browserFullTextShadow) return;
+  const budgetStub = browserShadowBudget(env);
+  const reservationResponse = await budgetStub.fetch("https://browser-shadow-budget/reserve", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      maxPages: positiveInt(env.CLOUDFLARE_BROWSER_FULLTEXT_MAX_PAGES_PER_DAY, 4),
+      maxBrowserMs: positiveInt(env.CLOUDFLARE_BROWSER_FULLTEXT_MAX_MS_PER_DAY, 480_000),
+    }),
+  });
+  const reservation = await reservationResponse.json<{
+    accepted: boolean;
+    token?: string;
+    reason?: string;
+  }>();
+  if (!reservation.accepted || !reservation.token) {
+    console.log(JSON.stringify({
+      event: "browser_fulltext_shadow.skipped",
+      urlHash: task.urlHash,
+      reason: reservation.reason || "budget_rejected",
+    }));
+    return;
+  }
+
+  const startedAt = Date.now();
+  let result: FulltextBrowserResult;
+  try {
+    const response = await env.FULLTEXT_BROWSER.fetch("https://fulltext-browser/extract", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        url: task.url,
+        maxChars: 20_000,
+        timeoutMs: positiveInt(env.CLOUDFLARE_BROWSER_FULLTEXT_TIMEOUT_MS, 22_000),
+      }),
+    });
+    result = await response.json<FulltextBrowserResult>();
+    if (!response.ok && !result.error) result.error = `fulltext browser HTTP ${response.status}`;
+  } catch (error) {
+    result = {
+      ok: false,
+      status: "failed",
+      url: task.url,
+      contentChars: 0,
+      browserMs: 0,
+      durationMs: Date.now() - startedAt,
+      error: String(error).slice(0, 300),
+    };
+  }
+  const browserChars = Math.max(0, Number(result.contentChars) || 0);
+  const gain = browserShadowGain(task.originalChars, browserChars);
+  const summary: BrowserShadowResultSummary = {
+    token: reservation.token,
+    urlHash: task.urlHash,
+    domain: domainOf(task.url) || "unknown",
+    sourcePlatform: task.sourcePlatform,
+    status: result.status,
+    originalChars: task.originalChars,
+    browserChars,
+    browserMs: Math.max(0, Number(result.browserMs) || 0),
+    durationMs: Math.max(0, Number(result.durationMs) || Date.now() - startedAt),
+    ...gain,
+    httpStatus: result.httpStatus,
+    error: result.error,
+    finishedAt: Date.now(),
+  };
+  await budgetStub.fetch("https://browser-shadow-budget/record", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(summary),
+  });
+  console.log(JSON.stringify({
+    event: "browser_fulltext_shadow.result",
+    ...summary,
+  }));
 }
 
 async function maintenance(task: MaintenanceTask): Promise<void> {
@@ -874,6 +1040,7 @@ async function processTask(task: QueueTask, env: QueueEnv): Promise<void> {
   if (task.kind === "discovery") return discover(task, env);
   if (task.kind === "candidate") return candidate(task, env);
   if (task.kind === "binance_probe") return binanceProbe(task, env);
+  if (task.kind === "browser_shadow") return browserShadow(task, env);
   return maintenance(task);
 }
 
@@ -885,9 +1052,13 @@ export async function processMonitorQueue(
   for (const message of batch.messages) {
     const task = message.body;
     try {
-      await withCloudflareEnv(env, () =>
-        withHyperdriveDatabase(env.HYPERDRIVE!, () => processTask(task, env)),
-      );
+      if (task.kind === "browser_shadow") {
+        await processTask(task, env);
+      } else {
+        await withCloudflareEnv(env, () =>
+          withHyperdriveDatabase(env.HYPERDRIVE!, () => processTask(task, env)),
+        );
+      }
       message.ack();
     } catch (error) {
       console.error(`[Monitor Queue] ${task.kind}: ${String(error).slice(0, 500)}`);
@@ -963,11 +1134,12 @@ export async function enqueueScheduledMonitor(
   env: QueueEnv,
 ): Promise<void> {
   const local = shanghaiParts(scheduledTime);
+  const flags = getCloudflareFeatureFlags(env);
   const messages: Array<{ body: QueueTask }> = [];
   const profile: MonitorProfile | null =
-    local.minute === 15
+    local.minute === 15 && flags.monitorNews
       ? "monitor_primary_news"
-      : local.minute === 40
+      : local.minute === 40 && flags.monitorSocial
         ? "monitor_primary_social"
         : null;
   if (profile) {
@@ -981,11 +1153,13 @@ export async function enqueueScheduledMonitor(
     });
   }
   if (local.hour === 3 && local.minute === 40) {
-    messages.push({ body: { kind: "maintenance", task: "cleanup", scheduledTime } });
-    if (local.weekday === 1) {
+    if (flags.cleanup) {
+      messages.push({ body: { kind: "maintenance", task: "cleanup", scheduledTime } });
+    }
+    if (local.weekday === 1 && flags.weeklyReport) {
       messages.push({ body: { kind: "maintenance", task: "weekly_report", scheduledTime } });
     }
-    if (local.day === 1) {
+    if (local.day === 1 && flags.monthlyReport) {
       messages.push({ body: { kind: "maintenance", task: "monthly_report", scheduledTime } });
     }
   }

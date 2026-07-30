@@ -25,6 +25,22 @@ export type SourceDiagnostic = {
   updatedAt: number;
 };
 
+export type FetchTelemetryStats = {
+  attempts: number;
+  successes: number;
+  fallbacks: number;
+  durationMs: number;
+  contentChars: number;
+  costUsd: number;
+  engineDist: Record<string, number>;
+  failureReasons: Record<string, number>;
+  domains: Record<string, {
+    attempts: number;
+    successes: number;
+    fallbacks: number;
+  }>;
+};
+
 export type CoordinatorStats = {
   cycleId: string;
   profile: MonitorProfile;
@@ -53,6 +69,7 @@ export type CoordinatorStats = {
   analysisFallbackReasons: string[];
   sourceDist: Record<string, number>;
   sourceDiagnostics: Record<string, SourceDiagnostic>;
+  fetchTelemetry: FetchTelemetryStats;
   briefingItems: BriefingRecord[];
 };
 
@@ -60,6 +77,20 @@ type CoordinatorEnv = Record<string, never>;
 
 function json(value: unknown, status = 200): Response {
   return Response.json(value, { status });
+}
+
+function emptyFetchTelemetry(): FetchTelemetryStats {
+  return {
+    attempts: 0,
+    successes: 0,
+    fallbacks: 0,
+    durationMs: 0,
+    contentChars: 0,
+    costUsd: 0,
+    engineDist: {},
+    failureReasons: {},
+    domains: {},
+  };
 }
 
 function emptyState(body: {
@@ -93,6 +124,7 @@ function emptyState(body: {
     analysisFallbackReasons: [],
     sourceDist: {},
     sourceDiagnostics: {},
+    fetchTelemetry: emptyFetchTelemetry(),
     briefingItems: [],
   };
 }
@@ -225,6 +257,33 @@ export class MonitorCoordinator extends DurableObject<CoordinatorEnv> {
       }
       const source = String(body.sourcePlatform || "");
       if (source) state.sourceDist[source] = (state.sourceDist[source] || 0) + 1;
+      if (body.fetchAttempt) {
+        const attempt = body.fetchAttempt as Record<string, unknown>;
+        state.fetchTelemetry ||= emptyFetchTelemetry();
+        const telemetry = state.fetchTelemetry;
+        const engine = String(attempt.engine || "unknown").slice(0, 64);
+        const outcome = String(attempt.outcome || "failed");
+        const reason = String(attempt.reason || "engine_error").slice(0, 64);
+        const domain = String(attempt.domain || "unknown").slice(0, 128);
+        telemetry.attempts++;
+        if (outcome === "success") telemetry.successes++;
+        if (outcome === "fallback") telemetry.fallbacks++;
+        telemetry.durationMs += Math.max(0, Number(attempt.durationMs) || 0);
+        telemetry.contentChars += Math.max(0, Number(attempt.contentChars) || 0);
+        telemetry.costUsd += Math.max(0, Number(attempt.costUsd) || 0);
+        telemetry.engineDist[engine] = (telemetry.engineDist[engine] || 0) + 1;
+        if (reason !== "success") {
+          telemetry.failureReasons[reason] = (telemetry.failureReasons[reason] || 0) + 1;
+        }
+        const domainStats = telemetry.domains[domain] ||= {
+          attempts: 0,
+          successes: 0,
+          fallbacks: 0,
+        };
+        domainStats.attempts++;
+        if (outcome === "success") domainStats.successes++;
+        if (outcome === "fallback") domainStats.fallbacks++;
+      }
       if (body.fallbackReason) {
         state.analysisFallbacks++;
         const reason = String(body.fallbackReason).slice(0, 300);

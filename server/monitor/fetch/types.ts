@@ -8,6 +8,34 @@ export interface FetchResult {
   costUsd: number; // fetch cost: L1 self = 0, L4 firecrawl = credit 折算
   status?: "full" | "partial" | "failed";
   error?: string;
+  httpStatus?: number;
+  contentChars?: number;
+  failureReason?: FetchFailureReason;
+  attempts?: FetchAttempt[];
+}
+
+export type FetchFailureReason =
+  | "http_403"
+  | "http_429"
+  | "http_error"
+  | "timeout"
+  | "short_content"
+  | "js_shell"
+  | "budget_exhausted"
+  | "missing_key"
+  | "empty_content"
+  | "engine_error"
+  | "gate_disabled"
+  | "snippet_fallback";
+
+export interface FetchAttempt {
+  engine: string;
+  outcome: "success" | "failed" | "skipped" | "fallback";
+  reason: "success" | FetchFailureReason;
+  durationMs: number;
+  contentChars: number;
+  costUsd: number;
+  httpStatus?: number;
 }
 
 export interface FetchEngine {

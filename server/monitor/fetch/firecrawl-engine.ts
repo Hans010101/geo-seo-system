@@ -18,26 +18,72 @@ export const firecrawlEngine: FetchEngine = {
   async fetch(url: string): Promise<FetchResult> {
     // Atomic reserve of one credit (race-safe). If the budget is gone, bail → router falls to snippet.
     if (!budget.tryConsumeFirecrawl()) {
-      return { success: false, engine: "firecrawl", costUsd: 0, status: "failed", error: "firecrawl budget exhausted" };
+      return {
+        success: false,
+        engine: "firecrawl",
+        costUsd: 0,
+        status: "failed",
+        error: "firecrawl budget exhausted",
+        failureReason: "budget_exhausted",
+      };
     }
     const cost = budget.FIRECRAWL_USD_PER_CREDIT; // charged per attempt (firecrawl bills per call)
     try {
       const key = await db.getGlobalApiKeyByName("Firecrawl");
-      if (!key?.apiKey) return { success: false, engine: "firecrawl", costUsd: 0, status: "failed", error: "no firecrawl key" };
+      if (!key?.apiKey) {
+        return {
+          success: false,
+          engine: "firecrawl",
+          costUsd: 0,
+          status: "failed",
+          error: "no firecrawl key",
+          failureReason: "missing_key",
+        };
+      }
       const base = (key.baseUrl || "https://api.firecrawl.dev").replace(/\/$/, "");
       const resp = await fetchWithTimeout(`${base}/v1/scrape`, {
         method: "POST",
         headers: { Authorization: `Bearer ${key.apiKey}`, "Content-Type": "application/json" },
         body: JSON.stringify({ url, formats: ["markdown"], onlyMainContent: true, timeout: 60000 }),
       }, 70000); // client abort above Firecrawl's 60s server-side scrape timeout
-      if (!resp.ok) return { success: false, engine: "firecrawl", costUsd: cost, status: "failed", error: `HTTP ${resp.status}` };
+      if (!resp.ok) {
+        return {
+          success: false,
+          engine: "firecrawl",
+          costUsd: cost,
+          status: "failed",
+          error: `HTTP ${resp.status}`,
+          httpStatus: resp.status,
+          failureReason:
+            resp.status === 403 ? "http_403" : resp.status === 429 ? "http_429" : "http_error",
+        };
+      }
       const json: any = await resp.json();
       const d = json?.data || json;
       const md = (d?.markdown || "").trim();
       const title = d?.metadata?.title || null;
-      return { success: md.length >= MIN_FULL_CHARS, contentMd: md, title, engine: "firecrawl", costUsd: cost, status: "full" };
+      const success = md.length >= MIN_FULL_CHARS;
+      return {
+        success,
+        contentMd: md,
+        title,
+        engine: "firecrawl",
+        costUsd: cost,
+        status: success ? "full" : "failed",
+        contentChars: md.length,
+        failureReason: success ? undefined : md.length > 0 ? "short_content" : "empty_content",
+        error: success ? undefined : md.length > 0 ? "content too short" : "empty content",
+      };
     } catch (e: any) {
-      return { success: false, engine: "firecrawl", costUsd: cost, status: "failed", error: String(e?.message || e).slice(0, 120) };
+      const error = String(e?.message || e).slice(0, 120);
+      return {
+        success: false,
+        engine: "firecrawl",
+        costUsd: cost,
+        status: "failed",
+        error,
+        failureReason: /abort|timeout|timed out/i.test(error) ? "timeout" : "engine_error",
+      };
     }
   },
 };

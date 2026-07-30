@@ -33,7 +33,18 @@ export const selfEngine: FetchEngine = {
   async fetch(url: string): Promise<FetchResult> {
     try {
       const resp = await timedFetch(url);
-      if (!resp.ok) return { success: false, engine: "self", costUsd: 0, status: "failed", error: `HTTP ${resp.status}` };
+      if (!resp.ok) {
+        return {
+          success: false,
+          engine: "self",
+          costUsd: 0,
+          status: "failed",
+          error: `HTTP ${resp.status}`,
+          httpStatus: resp.status,
+          failureReason:
+            resp.status === 403 ? "http_403" : resp.status === 429 ? "http_429" : "http_error",
+        };
+      }
       const html = await resp.text();
       let doc: Document;
       try {
@@ -48,12 +59,38 @@ export const selfEngine: FetchEngine = {
       const article = new Readability(doc).parse();
       const text = (article?.textContent || "").replace(/\s+/g, " ").trim();
       if (text.length < MIN_FULL_CHARS) {
-        return { success: false, engine: "self", costUsd: 0, status: "failed", error: "content too short" };
+        const scriptCount = html.match(/<script\b/gi)?.length || 0;
+        const jsShell = scriptCount >= 5 && text.length < 100;
+        return {
+          success: false,
+          engine: "self",
+          costUsd: 0,
+          status: "failed",
+          error: jsShell ? "js shell" : "content too short",
+          contentChars: text.length,
+          failureReason: jsShell ? "js_shell" : "short_content",
+        };
       }
       const md = article?.content ? turndown.turndown(article.content).trim() : text;
-      return { success: md.length > 0, contentMd: md, title: article?.title ?? null, engine: "self", costUsd: 0, status: "full" };
+      return {
+        success: md.length > 0,
+        contentMd: md,
+        title: article?.title ?? null,
+        engine: "self",
+        costUsd: 0,
+        status: "full",
+        contentChars: md.length,
+      };
     } catch (e: any) {
-      return { success: false, engine: "self", costUsd: 0, status: "failed", error: String(e?.message || e).slice(0, 120) };
+      const error = String(e?.message || e).slice(0, 120);
+      return {
+        success: false,
+        engine: "self",
+        costUsd: 0,
+        status: "failed",
+        error,
+        failureReason: /abort|timeout|timed out/i.test(error) ? "timeout" : "engine_error",
+      };
     }
   },
 };

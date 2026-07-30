@@ -13,6 +13,8 @@ import type { FetchEngine, FetchResult } from "./types";
 import { selfEngine } from "./self-engine";
 import { firecrawlEngine } from "./firecrawl-engine";
 import { log } from "../util";
+import { attemptFromResult, recordFetchAttempt } from "./observability";
+import type { FetchAttempt } from "./types";
 
 const engines: FetchEngine[] = [selfEngine, firecrawlEngine].sort((a, b) => a.level - b.level);
 
@@ -23,18 +25,57 @@ export function registeredEngines() {
 // Try each engine in order; return the first success. All fail → keep the Serper snippet so the article
 // stays analyzable (marked engine='snippet').
 export async function fetchArticle(url: string, snippet: string): Promise<FetchResult> {
+  const attempts: FetchAttempt[] = [];
   for (const engine of engines) {
     if (engine.canHandle) {
       const ok = await engine.canHandle(url);
-      if (!ok) continue; // e.g. firecrawl budget exhausted → skip this engine
+      if (!ok) {
+        const skipped: FetchAttempt = {
+          engine: engine.name,
+          outcome: "skipped",
+          reason: "gate_disabled",
+          durationMs: 0,
+          contentChars: 0,
+          costUsd: 0,
+        };
+        attempts.push(skipped);
+        recordFetchAttempt(url, skipped);
+        continue; // e.g. firecrawl budget exhausted → skip this engine
+      }
     }
+    const startedAt = Date.now();
     try {
       const result = await engine.fetch(url);
-      if (result.success) return result;
+      const attempt = attemptFromResult(result, Date.now() - startedAt);
+      attempts.push(attempt);
+      recordFetchAttempt(url, attempt);
+      if (result.success) return { ...result, attempts };
     } catch (e: any) {
+      const attempt: FetchAttempt = {
+        engine: engine.name,
+        outcome: "failed",
+        reason: /abort|timeout|timed out/i.test(String(e?.message || e))
+          ? "timeout"
+          : "engine_error",
+        durationMs: Date.now() - startedAt,
+        contentChars: 0,
+        costUsd: engine.costPerPage,
+      };
+      attempts.push(attempt);
+      recordFetchAttempt(url, attempt);
       log.warn(`fetch engine ${engine.name} threw for ${url}: ${String(e?.message || e).slice(0, 120)}`);
     }
   }
+  const fallback: FetchAttempt = {
+    engine: "snippet",
+    outcome: "fallback",
+    reason: "snippet_fallback",
+    durationMs: 0,
+    contentChars: snippet.length,
+    costUsd: 0,
+  };
+  attempts.push(fallback);
+  recordFetchAttempt(url, fallback);
   return {
     success: !!snippet,
     contentMd: snippet || "",
@@ -42,5 +83,7 @@ export async function fetchArticle(url: string, snippet: string): Promise<FetchR
     engine: "snippet",
     costUsd: 0,
     status: snippet ? "partial" : "failed",
+    contentChars: snippet.length,
+    attempts,
   };
 }

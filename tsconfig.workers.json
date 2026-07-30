@@ -3,7 +3,10 @@
   "include": [
     "workers/binance-browser.ts",
     "workers/binance-square-browser.ts",
-    "workers/binance-worker-configuration.d.ts"
+    "workers/binance-worker-configuration.d.ts",
+    "workers/fulltext-browser.ts",
+    "workers/fulltext-browser-guard.ts",
+    "workers/fulltext-browser-configuration.d.ts"
   ],
   "exclude": ["node_modules", "build", "dist", "**/*.test.ts"],
   "compilerOptions": {
