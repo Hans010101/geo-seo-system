@@ -9,6 +9,7 @@ import {
   getBinanceProbeStatus,
   getBrowserShadowStatus,
   getCoordinatorStatus,
+  getGeoQueueStatus,
   getMigrationAcceptanceStatus,
   processMonitorQueue,
   type QueueEnv,
@@ -56,6 +57,7 @@ async function status(env: Env) {
     migrationAcceptance,
     news,
     social,
+    geoQueue,
   ] = await Promise.all([
     readKeys(STATUS_KEYS),
     readKeys(WEEKLY_KEYS),
@@ -64,6 +66,7 @@ async function status(env: Env) {
     getMigrationAcceptanceStatus(env),
     getCoordinatorStatus(env, "monitor_primary_news"),
     getCoordinatorStatus(env, "monitor_primary_social"),
+    getGeoQueueStatus(),
   ]);
   const features = getCloudflareFeatureFlags(env);
   return {
@@ -71,7 +74,12 @@ async function status(env: Env) {
     features,
     weeklyGeo: {
       ...weeklyGeo,
+      ...geoQueue.weekly,
       enabled: features.geoWeekly,
+    },
+    dailyGeo: {
+      ...geoQueue.daily,
+      enabled: features.geoDaily,
     },
     binance: {
       ...binance,

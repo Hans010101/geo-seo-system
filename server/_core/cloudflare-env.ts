@@ -18,6 +18,9 @@ export type CloudflareRuntimeEnv = {
   JWT_SECRET?: string;
   OPENROUTER_API_KEY?: string;
   OPENROUTER_BASE_URL?: string;
+  RESEND_API_KEY?: string;
+  RESEND_FROM?: string;
+  AUTH_ALLOWED_EMAIL?: string;
   CLOUDFLARE_AI_MODEL?: string;
   CLOUDFLARE_AI_MAX_TOKENS?: string;
   CLOUDFLARE_OPENROUTER_FALLBACK_ENABLED?: string;

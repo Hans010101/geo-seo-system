@@ -5,16 +5,21 @@
 // recipient is read from sysConfigs, so a caller physically cannot email anyone else — safe with the
 // Resend TEST sender (onboarding@resend.dev), which may ONLY send to the account owner's address.
 import * as db from "../db";
-import { log } from "./util";
+import { getCloudflareEnv } from "../_core/cloudflare-env";
+import { log, sha256 } from "./util";
 
 const CFG = { key: "resend_api_key", from: "resend_from", recipient: "alert_email_recipient" };
 export const DEFAULT_FROM = "波场舆情监控 <onboarding@resend.dev>"; // Resend 测试发件地址
 
 export async function getEmailAlertConfig(): Promise<{ apiKey: string | null; from: string; recipient: string | null }> {
+  const env = getCloudflareEnv();
   return {
-    apiKey: (await db.getSysConfig(CFG.key)) || null,
-    from: (await db.getSysConfig(CFG.from)) || DEFAULT_FROM,
-    recipient: (await db.getSysConfig(CFG.recipient)) || null,
+    apiKey: (await db.getSysConfig(CFG.key)) || env.RESEND_API_KEY?.trim() || null,
+    from: (await db.getSysConfig(CFG.from)) || env.RESEND_FROM?.trim() || DEFAULT_FROM,
+    recipient:
+      (await db.getSysConfig(CFG.recipient)) ||
+      env.AUTH_ALLOWED_EMAIL?.trim() ||
+      null,
   };
 }
 export async function setEmailAlertConfig(p: { apiKey?: string; from?: string; recipient?: string }): Promise<void> {
@@ -32,10 +37,22 @@ export async function sendEmailAlert(subject: string, html: string): Promise<{ s
       log.warn(`email alert skipped: ${!apiKey ? "Resend key 未配置" : "收件邮箱未配置"}`); // 静默降级,不报错不阻塞
       return { sent: false, error: !apiKey ? "Resend 未配置" : "收件邮箱未配置" };
     }
-    const pkg = "resend";
-    const { Resend } = await import(/* @vite-ignore */ pkg);
-    const { error } = await new Resend(apiKey).emails.send({ from, to: recipient, subject, html });
-    if (error) { log.warn(`email alert failed: ${(error as any)?.message || error}`); return { sent: false, error: String((error as any)?.message || error).slice(0, 200) }; }
+    const response = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        "User-Agent": "geo-seo-system/1.0",
+        "Idempotency-Key": `geo-alert-${sha256(`${recipient}\n${subject}\n${html}`).slice(0, 48)}`,
+      },
+      body: JSON.stringify({ from, to: [recipient], subject, html }),
+    });
+    const result = await response.json().catch(() => ({})) as Record<string, unknown>;
+    if (!response.ok) {
+      const error = String(result.message || result.name || `HTTP ${response.status}`).slice(0, 200);
+      log.warn(`email alert failed: ${error}`);
+      return { sent: false, error };
+    }
     return { sent: true };
   } catch (e: any) {
     log.warn(`email alert error: ${e?.message || e}`);

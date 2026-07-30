@@ -47,6 +47,7 @@ import type {
   AcceptanceCycleRecord,
   BinanceAcceptanceRecord,
   BrowserAcceptanceRecord,
+  GeoAcceptanceRecord,
   NotificationAcceptanceRecord,
 } from "./migration-acceptance-types";
 import type { BinanceBrowserSearchResult } from "./binance-square-browser";
@@ -54,6 +55,10 @@ import {
   getCloudflareFeatureFlags,
   type CloudflareFeatureEnv,
 } from "./feature-flags";
+import {
+  runCloudflareGeoDailyShard,
+  runCloudflareGeoWeeklyShard,
+} from "../server/routers";
 
 type CronBindings = Pick<
   CronWorkerEnv,
@@ -63,6 +68,7 @@ type CronBindings = Pick<
   | "HYPERDRIVE"
   | "MIGRATION_ACCEPTANCE"
   | "MONITOR_COORDINATOR"
+  | "BROWSER_SHADOW_QUEUE"
   | "MONITOR_QUEUE"
 >;
 
@@ -81,6 +87,13 @@ export type QueueEnv = CloudflareRuntimeEnv & CronBindings & CloudflareFeatureEn
   CLOUDFLARE_BROWSER_FULLTEXT_MAX_MS_PER_DAY?: string;
   CLOUDFLARE_BROWSER_FULLTEXT_TIMEOUT_MS?: string;
   CLOUDFLARE_ACCEPTANCE_WINDOW_START?: string;
+  CLOUDFLARE_GEO_DAILY_MAX_CELLS?: string;
+  CLOUDFLARE_GEO_DAILY_CONCURRENCY?: string;
+  CLOUDFLARE_GEO_DAILY_START_HOUR?: string;
+  CLOUDFLARE_GEO_WEEKLY_ALL_PLATFORMS?: string;
+  CLOUDFLARE_GEO_WEEKLY_MAX_CELLS?: string;
+  CLOUDFLARE_GEO_WEEKLY_CONCURRENCY?: string;
+  CLOUDFLARE_STAGE6_WINDOW_START?: string;
 };
 
 type Keyword = { keyword: string; priority: number };
@@ -125,6 +138,16 @@ type BinanceProbeTask = {
   scheduledTime: number;
 };
 
+type GeoDailyShardTask = {
+  kind: "geo_daily_shard";
+  scheduledTime: number;
+};
+
+type GeoWeeklyShardTask = {
+  kind: "geo_weekly_shard";
+  scheduledTime: number;
+};
+
 export type BrowserShadowTask = {
   kind: "browser_shadow";
   urlHash: string;
@@ -150,6 +173,8 @@ export type QueueTask =
   | CandidateTask
   | MaintenanceTask
   | BinanceProbeTask
+  | GeoDailyShardTask
+  | GeoWeeklyShardTask
   | BrowserShadowTask
   | PostCycleTask;
 
@@ -182,6 +207,26 @@ const BINANCE_STATUS_KEYS = {
   finishedAt: "cf_binance_last_finished_at",
   summary: "cf_binance_last_summary",
   error: "cf_binance_last_error",
+} as const;
+
+const GEO_DAILY_STATUS_KEYS = {
+  mode: "cf_geo_daily_mode",
+  task: "cf_geo_daily_last_task",
+  status: "cf_geo_daily_last_status",
+  startedAt: "cf_geo_daily_last_started_at",
+  finishedAt: "cf_geo_daily_last_finished_at",
+  summary: "cf_geo_daily_last_summary",
+  error: "cf_geo_daily_last_error",
+} as const;
+
+const GEO_WEEKLY_STATUS_KEYS = {
+  mode: "cf_geo_weekly_mode",
+  task: "cf_geo_weekly_last_task",
+  status: "cf_geo_weekly_last_status",
+  startedAt: "cf_geo_weekly_last_started_at",
+  finishedAt: "cf_geo_weekly_last_finished_at",
+  summary: "cf_geo_weekly_last_summary",
+  error: "cf_geo_weekly_last_error",
 } as const;
 
 function positiveInt(value: string | undefined, fallback: number): number {
@@ -250,7 +295,9 @@ export async function getMigrationAcceptanceStatus(env: QueueEnv): Promise<unkno
     Number(env.CLOUDFLARE_ACCEPTANCE_WINDOW_START) || Date.now() - 7 * 86_400_000,
   );
   const response = await acceptanceLedger(env).fetch(
-    `https://acceptance/status?windowStart=${windowStart}`,
+    `https://acceptance/status?windowStart=${windowStart}&stage6WindowStart=${
+      Math.max(0, Number(env.CLOUDFLARE_STAGE6_WINDOW_START) || 0)
+    }`,
   );
   if (!response.ok) throw new Error(`migration acceptance status HTTP ${response.status}`);
   return response.json();
@@ -295,7 +342,11 @@ function statusSummary(state: CoordinatorStats): string {
   return JSON.stringify(summary).slice(0, 4000);
 }
 
-function cycleAcceptanceRecord(state: CoordinatorStats): AcceptanceCycleRecord {
+function cycleAcceptanceRecord(
+  state: CoordinatorStats,
+  env: QueueEnv,
+): AcceptanceCycleRecord {
+  const flags = getCloudflareFeatureFlags(env);
   return {
     cycleId: state.cycleId,
     profile: state.profile,
@@ -317,6 +368,12 @@ function cycleAcceptanceRecord(state: CoordinatorStats): AcceptanceCycleRecord {
     insertedSourceDist: state.insertedSourceDist || {},
     dedupExisting: state.dedupExisting || 0,
     dedupConflicts: state.dedupConflicts || 0,
+    realtimeAlerts: state.realtimeAlerts || 0,
+    featureFlags: {
+      realtimeAlerts: flags.realtimeAlerts,
+      briefing: flags.briefing,
+      failureNotifications: flags.failureNotifications,
+    },
     sourceDiagnostics: state.sourceDiagnostics || {},
     fetchTelemetry: state.fetchTelemetry || {
       attempts: 0,
@@ -374,7 +431,7 @@ async function syncLegacyStatus(env: QueueEnv, state: CoordinatorStats): Promise
     db.setSysConfig(CF_STATUS_KEYS.error, error),
   ]);
   if (terminal) {
-    await recordAcceptance(env, "/record-cycle", cycleAcceptanceRecord(state));
+    await recordAcceptance(env, "/record-cycle", cycleAcceptanceRecord(state, env));
     await enqueuePostCycleIfEnabled(env, state);
   }
 }
@@ -730,6 +787,102 @@ export async function getBinanceProbeStatus(): Promise<Record<string, string | n
       await db.getSysConfig(key),
     ]),
   ));
+}
+
+export async function getGeoQueueStatus(): Promise<{
+  daily: Record<string, string | null>;
+  weekly: Record<string, string | null>;
+}> {
+  const read = async (keys: Record<string, string>) => Object.fromEntries(await Promise.all(
+    Object.entries(keys).map(async ([name, key]) => [name, await db.getSysConfig(key)]),
+  ));
+  return {
+    daily: await read(GEO_DAILY_STATUS_KEYS),
+    weekly: await read(GEO_WEEKLY_STATUS_KEYS),
+  };
+}
+
+async function runObservedGeoShard(
+  env: QueueEnv,
+  task: GeoDailyShardTask | GeoWeeklyShardTask,
+): Promise<void> {
+  const daily = task.kind === "geo_daily_shard";
+  const keys = daily ? GEO_DAILY_STATUS_KEYS : GEO_WEEKLY_STATUS_KEYS;
+  const name = daily ? "geo_daily_shard" : "geo_weekly_openrouter_shard";
+  const startedAt = Date.now();
+  await Promise.all([
+    db.setSysConfig(keys.mode, "queue"),
+    db.setSysConfig(keys.task, name),
+    db.setSysConfig(keys.status, "running"),
+    db.setSysConfig(keys.startedAt, String(startedAt)),
+    db.setSysConfig(keys.error, ""),
+  ]);
+  try {
+    const result = daily
+      ? await runCloudflareGeoDailyShard({
+          maxCells: positiveInt(env.CLOUDFLARE_GEO_DAILY_MAX_CELLS, 4),
+          concurrency: positiveInt(env.CLOUDFLARE_GEO_DAILY_CONCURRENCY, 2),
+          timestamp: task.scheduledTime,
+        })
+      : await runCloudflareGeoWeeklyShard({
+          maxCells: positiveInt(env.CLOUDFLARE_GEO_WEEKLY_MAX_CELLS, 6),
+          concurrency: positiveInt(env.CLOUDFLARE_GEO_WEEKLY_CONCURRENCY, 3),
+          timestamp: task.scheduledTime,
+          allPlatforms: env.CLOUDFLARE_GEO_WEEKLY_ALL_PLATFORMS === "true",
+        });
+    await recordAcceptance(env, "/record-geo", {
+      runId: `${name}:${task.scheduledTime}`,
+      cadence: daily ? "daily" : "weekly",
+      period: daily ? result.day : result.week,
+      status: result.failed > 0 ? "partial_failure" : "success",
+      batchId: result.batchId,
+      totalCells: result.totalCells,
+      cursorBefore: result.cursorBefore,
+      cursorAfter: result.cursorAfter,
+      attempted: result.attempted,
+      completed: result.completed,
+      failed: result.failed,
+      remaining: result.remaining,
+      done: result.done,
+      provider: result.provider,
+      finishedAt: Date.now(),
+    } satisfies GeoAcceptanceRecord);
+    await Promise.all([
+      db.setSysConfig(keys.status, result.failed > 0 ? "partial_failure" : "success"),
+      db.setSysConfig(keys.finishedAt, String(Date.now())),
+      db.setSysConfig(keys.summary, JSON.stringify(result).slice(0, 4000)),
+      db.setSysConfig(
+        keys.error,
+        result.failed > 0 ? `${result.failed} GEO cells failed` : "",
+      ),
+    ]);
+  } catch (error) {
+    const message = String(error).slice(0, 1000);
+    await recordAcceptance(env, "/record-geo", {
+      runId: `${name}:${task.scheduledTime}`,
+      cadence: daily ? "daily" : "weekly",
+      period: "",
+      status: "failed",
+      batchId: null,
+      totalCells: 0,
+      cursorBefore: 0,
+      cursorAfter: 0,
+      attempted: 0,
+      completed: 0,
+      failed: 1,
+      remaining: 0,
+      done: false,
+      provider: daily ? "routed" : "openrouter",
+      error: message,
+      finishedAt: Date.now(),
+    } satisfies GeoAcceptanceRecord);
+    await Promise.all([
+      db.setSysConfig(keys.status, "failed"),
+      db.setSysConfig(keys.finishedAt, String(Date.now())),
+      db.setSysConfig(keys.error, message),
+    ]);
+    throw error;
+  }
 }
 
 async function binanceProbe(task: BinanceProbeTask, env: QueueEnv): Promise<void> {
@@ -1155,7 +1308,7 @@ async function candidate(task: CandidateTask, env: QueueEnv): Promise<void> {
     getCloudflareFeatureFlags(env).browserFullTextShadow
   ) {
     try {
-      await env.MONITOR_QUEUE.send({
+      await env.BROWSER_SHADOW_QUEUE.send({
         kind: "browser_shadow",
         urlHash: task.urlHash,
         url: post.url,
@@ -1194,6 +1347,7 @@ async function browserShadow(task: BrowserShadowTask, env: QueueEnv): Promise<vo
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
+      requestKey: task.urlHash,
       maxPages: positiveInt(env.CLOUDFLARE_BROWSER_FULLTEXT_MAX_PAGES_PER_DAY, 4),
       maxBrowserMs: positiveInt(env.CLOUDFLARE_BROWSER_FULLTEXT_MAX_MS_PER_DAY, 480_000),
     }),
@@ -1349,6 +1503,9 @@ async function processTask(task: QueueTask, env: QueueEnv): Promise<void> {
   if (task.kind === "discovery") return discover(task, env);
   if (task.kind === "candidate") return candidate(task, env);
   if (task.kind === "binance_probe") return binanceProbe(task, env);
+  if (task.kind === "geo_daily_shard" || task.kind === "geo_weekly_shard") {
+    return runObservedGeoShard(env, task);
+  }
   if (task.kind === "browser_shadow") return browserShadow(task, env);
   if (task.kind === "post_cycle") return postCycle(task, env);
   return maintenance(task);
@@ -1461,6 +1618,18 @@ export async function enqueueScheduledMonitor(
         scheduledTime,
       },
     });
+  }
+  if (local.minute === 40) {
+    const dailyStartHour = Math.min(
+      23,
+      positiveInt(env.CLOUDFLARE_GEO_DAILY_START_HOUR, 9),
+    );
+    if (flags.geoDaily && local.hour >= dailyStartHour) {
+      messages.push({ body: { kind: "geo_daily_shard", scheduledTime } });
+    }
+    if (flags.geoWeekly) {
+      messages.push({ body: { kind: "geo_weekly_shard", scheduledTime } });
+    }
   }
   if (local.hour === 3 && local.minute === 40) {
     if (flags.cleanup) {

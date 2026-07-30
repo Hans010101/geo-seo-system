@@ -2020,6 +2020,129 @@ function shanghaiWeekKey(timestamp: number): string {
   ].join("-");
 }
 
+function shanghaiDayKey(timestamp: number): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date(timestamp));
+}
+
+export type CloudflareGeoDailyShardResult = {
+  day: string;
+  batchId: string | null;
+  questions: number;
+  platforms: number;
+  totalCells: number;
+  cursorBefore: number;
+  cursorAfter: number;
+  attempted: number;
+  completed: number;
+  failed: number;
+  remaining: number;
+  done: boolean;
+  provider: "routed";
+};
+
+// Daily GEO work is split into idempotent Queue-sized shards. A failed shard
+// keeps its cursor and reuses its collection rows; successful cells are skipped
+// on retry, so at-least-once Queue delivery cannot duplicate production data.
+export async function runCloudflareGeoDailyShard(options?: {
+  maxCells?: number;
+  concurrency?: number;
+  timestamp?: number;
+}): Promise<CloudflareGeoDailyShardResult> {
+  const timestamp = options?.timestamp ?? Date.now();
+  const maxCells = Math.min(10, Math.max(1, options?.maxCells ?? 4));
+  const concurrency = Math.min(4, Math.max(1, options?.concurrency ?? 2));
+  const day = shanghaiDayKey(timestamp);
+  const dayKey = "cf_geo_daily_day";
+  const cursorKey = "cf_geo_daily_cursor";
+  const completedAtKey = "cf_geo_daily_completed_at";
+
+  const [questionsList, platformConfigsList, savedDay, savedCursor] = await Promise.all([
+    db.listQuestions({ status: "active" }),
+    db.listPlatformConfigs(),
+    db.getSysConfig(dayKey),
+    db.getSysConfig(cursorKey),
+  ]);
+  const enabledPlatforms = platformConfigsList
+    .filter((platform: any) => platform.isEnabled && PLATFORMS.includes(platform.platform as Platform))
+    .map((platform: any) => platform.platform as Platform);
+  const cells = questionsList.flatMap((question) =>
+    enabledPlatforms.map((platform) => ({ question, platform })),
+  );
+
+  let cursor = savedDay === day ? Math.max(0, parseInt(savedCursor || "0", 10) || 0) : 0;
+  if (savedDay !== day) {
+    await db.setSysConfig(dayKey, day);
+    await db.setSysConfig(cursorKey, "0");
+    await db.setSysConfig(completedAtKey, "");
+  }
+  cursor = Math.min(cursor, cells.length);
+  if (cursor >= cells.length) {
+    return {
+      day,
+      batchId: null,
+      questions: questionsList.length,
+      platforms: enabledPlatforms.length,
+      totalCells: cells.length,
+      cursorBefore: cursor,
+      cursorAfter: cursor,
+      attempted: 0,
+      completed: 0,
+      failed: 0,
+      remaining: 0,
+      done: true,
+      provider: "routed",
+    };
+  }
+
+  const shardCells = cells.slice(cursor, cursor + maxCells);
+  const batchId = `cf-daily-${day}-${cursor}`;
+  const existing = await db.listCollections({ batchId, limit: maxCells });
+  const existingByCell = new Map(
+    existing.data.map((collection: any) => [`${collection.questionId}:${collection.platform}`, collection]),
+  );
+  const tasks: { collectionId: number; question: any; platform: string }[] = [];
+  for (const cell of shardCells) {
+    const key = `${cell.question.questionId}:${cell.platform}`;
+    const prior = existingByCell.get(key);
+    if (prior?.status === "success") continue;
+    const collectionId = prior?.id || await db.createCollection({
+      questionId: cell.question.questionId,
+      questionText: cell.question.text,
+      platform: cell.platform,
+      language: cell.question.language,
+      timestamp,
+      status: "pending",
+      batchId,
+    });
+    if (collectionId) tasks.push({ collectionId, question: cell.question, platform: cell.platform });
+  }
+
+  const result = await runCollectionsConcurrently(tasks, concurrency);
+  const cursorAfter = result.failed === 0 ? cursor + shardCells.length : cursor;
+  await db.setSysConfig(cursorKey, String(cursorAfter));
+  if (cursorAfter >= cells.length) await db.setSysConfig(completedAtKey, String(Date.now()));
+  return {
+    day,
+    batchId,
+    questions: questionsList.length,
+    platforms: enabledPlatforms.length,
+    totalCells: cells.length,
+    cursorBefore: cursor,
+    cursorAfter,
+    attempted: tasks.length,
+    completed: result.completed,
+    failed: result.failed,
+    remaining: Math.max(0, cells.length - cursorAfter),
+    done: cursorAfter >= cells.length,
+    provider: "routed",
+  };
+}
+
 export type CloudflareGeoWeeklyShardResult = {
   week: string;
   batchId: string | null;
@@ -2202,7 +2325,7 @@ const notificationsRouter = router({
   testEmailAlert: developerProcedure.mutation(async () => {
     const html = buildAlertEmailHtml({
       title: "测试预警 — 若收到此邮件即代表邮件通道正常", domain: "example.com", threat: "中", sentiment: 2,
-      stance: "hostile", summary: "这是一条来自波场舆情监控的测试预警邮件。", url: "https://geo-system-kwm3xu534q-an.a.run.app/sentiment-monitor",
+      stance: "hostile", summary: "这是一条来自波场舆情监控的测试预警邮件。", url: "https://geo-seo-system.pages.dev/sentiment-monitor",
     });
     const r = await sendEmailAlert("【测试】波场舆情预警邮件", html);
     return { success: r.sent, error: r.error };
@@ -2213,7 +2336,7 @@ const notificationsRouter = router({
     .input(z.object({ channel: z.enum(["telegram", "email"]) }))
     .mutation(async ({ input }) => {
       if (input.channel === "email") {
-        const html = buildAlertEmailHtml({ title: "测试预警邮件", domain: "example.com", threat: "中", sentiment: 2, summary: "测试", url: "https://geo-system-kwm3xu534q-an.a.run.app" });
+        const html = buildAlertEmailHtml({ title: "测试预警邮件", domain: "example.com", threat: "中", sentiment: 2, summary: "测试", url: "https://geo-seo-system.pages.dev" });
         const r = await sendEmailAlert("【测试】波场舆情预警邮件", html);
         return { success: r.sent, error: r.error };
       }

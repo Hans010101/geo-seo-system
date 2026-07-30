@@ -25,6 +25,12 @@ export type AcceptanceCycleRecord = {
   insertedSourceDist: Record<string, number>;
   dedupExisting: number;
   dedupConflicts: number;
+  realtimeAlerts: number;
+  featureFlags?: {
+    realtimeAlerts: boolean;
+    briefing: boolean;
+    failureNotifications: boolean;
+  };
   sourceDiagnostics: Record<string, SourceDiagnostic>;
   fetchTelemetry: FetchTelemetryStats;
 };
@@ -74,6 +80,25 @@ export type NotificationAcceptanceRecord = {
   finishedAt: number;
 };
 
+export type GeoAcceptanceRecord = {
+  runId: string;
+  cadence: "daily" | "weekly";
+  period: string;
+  status: "success" | "partial_failure" | "failed";
+  batchId: string | null;
+  totalCells: number;
+  cursorBefore: number;
+  cursorAfter: number;
+  attempted: number;
+  completed: number;
+  failed: number;
+  remaining: number;
+  done: boolean;
+  provider: "routed" | "openrouter";
+  error?: string;
+  finishedAt: number;
+};
+
 function sum(values: number[]): number {
   return values.reduce((total, value) => total + (Number(value) || 0), 0);
 }
@@ -102,11 +127,14 @@ export function summarizeMigrationAcceptance(input: {
   binance: BinanceAcceptanceRecord[];
   browser: BrowserAcceptanceRecord[];
   notifications: NotificationAcceptanceRecord[];
+  geo?: GeoAcceptanceRecord[];
+  stage6WindowStart?: number;
 }) {
   const cycles = input.cycles.filter((item) => item.finishedAt >= input.windowStart);
   const binance = input.binance.filter((item) => item.finishedAt >= input.windowStart);
   const browser = input.browser.filter((item) => item.finishedAt >= input.windowStart);
   const notifications = input.notifications.filter((item) => item.finishedAt >= input.windowStart);
+  const geo = (input.geo || []).filter((item) => item.finishedAt >= input.windowStart);
   const elapsedMs = Math.max(0, input.now - input.windowStart);
   const stage3TimeGatePassed = elapsedMs >= 7 * 86_400_000;
   const operationalSuccesses = binance.filter(
@@ -134,6 +162,42 @@ export function summarizeMigrationAcceptance(input: {
   for (const item of binance) {
     providerDist[item.provider] = (providerDist[item.provider] || 0) + 1;
   }
+  const realtimeEnabledCycles = cycles.filter(
+    (item) => item.featureFlags?.realtimeAlerts,
+  ).length;
+  const briefingEnabledCycles = cycles.filter(
+    (item) => item.featureFlags?.briefing,
+  ).length;
+  const failureNotificationEnabledCycles = cycles.filter(
+    (item) => item.featureFlags?.failureNotifications,
+  ).length;
+  const dailyGeoDone = geo.some((item) => item.cadence === "daily" && item.done);
+  const weeklyGeoDone = geo.some((item) => item.cadence === "weekly" && item.done);
+  const stage6BlockingReasons = [
+    ...(stage3Verdict !== "pass" ? ["stage3_binance_not_passed"] : []),
+    ...(writeCycles.length < 2 ? ["stage4_write_observation_incomplete"] : []),
+    ...(browser.length === 0 ? ["browser_shadow_no_evidence"] : []),
+    ...(realtimeEnabledCycles < 2 ? ["realtime_alert_observation_incomplete"] : []),
+    ...(briefingEnabledCycles < 2 ? ["briefing_observation_incomplete"] : []),
+    ...(failureNotificationEnabledCycles < 2
+      ? ["failure_notification_observation_incomplete"]
+      : []),
+    ...(!dailyGeoDone ? ["daily_geo_not_completed"] : []),
+    ...(!weeklyGeoDone ? ["weekly_geo_not_completed"] : []),
+  ];
+  const stage6StartedAt = Math.max(0, Number(input.stage6WindowStart) || 0);
+  const stage6ElapsedMs = stage6StartedAt > 0
+    ? Math.max(0, input.now - stage6StartedAt)
+    : 0;
+  const stage6TimeGatePassed = stage6ElapsedMs >= 14 * 86_400_000;
+  const stage6Verdict =
+    stage6StartedAt === 0
+      ? "not_started"
+      : !stage6TimeGatePassed
+        ? "observing"
+        : stage6BlockingReasons.length > 0
+          ? "fail"
+          : "pass";
 
   return {
     windowStart: input.windowStart,
@@ -188,6 +252,10 @@ export function summarizeMigrationAcceptance(input: {
           : 0,
     },
     stage5Notifications: {
+      realtimeAlertsCreated: sum(cycles.map((item) => item.realtimeAlerts || 0)),
+      realtimeEnabledCycles,
+      briefingEnabledCycles,
+      failureNotificationEnabledCycles,
       records: notifications.length,
       briefingsAttempted: notifications.filter((item) => item.briefingAttempted).length,
       briefingsSent: notifications.filter((item) => item.briefingSent).length,
@@ -198,10 +266,28 @@ export function summarizeMigrationAcceptance(input: {
         (item) => item.failureNotificationSent,
       ).length,
     },
+    stage5Geo: {
+      daily: {
+        runs: geo.filter((item) => item.cadence === "daily").length,
+        completed: sum(geo.filter((item) => item.cadence === "daily").map((item) => item.completed)),
+        failed: sum(geo.filter((item) => item.cadence === "daily").map((item) => item.failed)),
+        done: geo.some((item) => item.cadence === "daily" && item.done),
+      },
+      weekly: {
+        runs: geo.filter((item) => item.cadence === "weekly").length,
+        completed: sum(geo.filter((item) => item.cadence === "weekly").map((item) => item.completed)),
+        failed: sum(geo.filter((item) => item.cadence === "weekly").map((item) => item.failed)),
+        done: geo.some((item) => item.cadence === "weekly" && item.done),
+      },
+    },
     stage6Parallel: {
       requiredDays: 14,
-      startedAt: null,
-      verdict: "not_started",
+      startedAt: stage6StartedAt || null,
+      elapsedHours: Math.round((stage6ElapsedMs / 3_600_000) * 10) / 10,
+      timeGatePassed: stage6TimeGatePassed,
+      verdict: stage6Verdict,
+      startEligible: stage6BlockingReasons.length === 0,
+      blockingReasons: stage6BlockingReasons,
     },
   } as const;
 }

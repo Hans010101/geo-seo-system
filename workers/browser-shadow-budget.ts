@@ -18,6 +18,7 @@ export type BrowserShadowResultSummary = {
 };
 
 export type BrowserShadowBudgetState = {
+  schemaVersion: 2;
   day: string;
   reserved: number;
   completed: number;
@@ -35,6 +36,7 @@ function dayUtc(): string {
 
 function emptyState(): BrowserShadowBudgetState {
   return {
+    schemaVersion: 2,
     day: dayUtc(),
     reserved: 0,
     completed: 0,
@@ -47,10 +49,23 @@ function emptyState(): BrowserShadowBudgetState {
 
 export class BrowserShadowBudget extends DurableObject<BrowserShadowBudgetEnv> {
   private async state(): Promise<BrowserShadowBudgetState> {
-    const state = (await this.ctx.storage.get<BrowserShadowBudgetState>("state")) || emptyState();
+    const stored = await this.ctx.storage.get<Partial<BrowserShadowBudgetState>>("state");
+    const state: BrowserShadowBudgetState = {
+      ...emptyState(),
+      ...stored,
+      schemaVersion: 2,
+    };
     if (state.day !== dayUtc()) {
       await this.ctx.storage.deleteAll();
-      return emptyState();
+      const reset = emptyState();
+      await this.save(reset);
+      return reset;
+    }
+    if (state.completed > state.reserved) {
+      // Older deployments accepted record callbacks after a daily reset. Keep
+      // the completed evidence but restore the budget invariant during upgrade.
+      state.reserved = state.completed;
+      await this.save(state);
     }
     return state;
   }
@@ -72,6 +87,21 @@ export class BrowserShadowBudget extends DurableObject<BrowserShadowBudgetEnv> {
     if (path === "/reserve") {
       const maxPages = Math.max(1, Math.min(20, Number(body.maxPages) || 4));
       const maxBrowserMs = Math.max(60_000, Math.min(600_000, Number(body.maxBrowserMs) || 480_000));
+      const requestKey = String(body.requestKey || "").slice(0, 128);
+      if (!requestKey) {
+        return Response.json({ error: "requestKey is required" }, { status: 400 });
+      }
+      const requestStorageKey = `request:${state.day}:${requestKey}`;
+      const existingToken = await this.ctx.storage.get<string>(requestStorageKey);
+      if (existingToken) {
+        const recorded = await this.ctx.storage.get<boolean>(`record:${existingToken}`);
+        return Response.json({
+          accepted: !recorded,
+          token: recorded ? undefined : existingToken,
+          reason: recorded ? "already_recorded" : "existing_reservation",
+          state,
+        });
+      }
       if (state.reserved >= maxPages || state.browserMs >= maxBrowserMs) {
         return Response.json({
           accepted: false,
@@ -81,13 +111,23 @@ export class BrowserShadowBudget extends DurableObject<BrowserShadowBudgetEnv> {
       }
       state.reserved++;
       const token = `${state.day}:${state.reserved}:${crypto.randomUUID()}`;
-      await this.save(state);
+      await this.ctx.storage.put({
+        [requestStorageKey]: token,
+        [`reservation:${token}`]: true,
+        state,
+      });
       return Response.json({ accepted: true, token, state });
     }
     if (path === "/record") {
       const result = body as unknown as BrowserShadowResultSummary;
       const recordKey = `record:${String(result.token || "").slice(0, 128)}`;
       if (!result.token) return Response.json({ error: "token is required" }, { status: 400 });
+      if (!result.token.startsWith(`${state.day}:`)) {
+        return Response.json({ error: "stale reservation token", state }, { status: 409 });
+      }
+      if (!(await this.ctx.storage.get<boolean>(`reservation:${result.token}`))) {
+        return Response.json({ error: "unknown reservation token", state }, { status: 409 });
+      }
       if (!(await this.ctx.storage.get<boolean>(recordKey))) {
         await this.ctx.storage.put(recordKey, true);
         state.completed++;

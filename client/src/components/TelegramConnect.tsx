@@ -48,7 +48,10 @@ export default function TelegramConnect() {
     onError: (e) => toast.error(e.message),
   });
   const setupHook = trpc.monitor.telegramSetupWebhook.useMutation({
-    onSuccess: (r) => toast[r.ok ? "success" : "error"](r.ok ? "Webhook 已注册" : r.error || "失败"),
+    onSuccess: (r) => {
+      toast[r.ok ? "success" : "error"](r.ok ? "Webhook 已注册" : r.error || "失败");
+      utils.monitor.telegramStatus.invalidate();
+    },
     onError: (e) => toast.error(e.message),
   });
   const sendTest = trpc.monitor.telegramSendTest.useMutation({
@@ -94,6 +97,12 @@ export default function TelegramConnect() {
     return (
       <div className="flex items-center gap-2 rounded-lg border px-3 py-1.5 text-xs flex-wrap">
         <Badge className="text-[10px] text-white border-0 bg-emerald-600"><Check className="h-3 w-3 mr-0.5" />Telegram 已连接</Badge>
+        <Badge
+          variant={st.webhookConfigured ? "secondary" : "destructive"}
+          className="text-[10px]"
+        >
+          {st.webhookConfigured ? "Webhook: Cloudflare" : "Webhook 待修复"}
+        </Badge>
         <span className="text-muted-foreground">
           {st.bound.chatTitle || st.bound.chatId}{st.bound.chatType ? `（${st.bound.chatType === "private" ? "私聊" : "群组"}）` : ""}
         </span>
@@ -104,7 +113,7 @@ export default function TelegramConnect() {
           <Unlink className="h-3 w-3 mr-1" />断开
         </Button>
         {isAdmin && (
-          <Button size="sm" variant="ghost" className="h-6 px-2 text-[11px] text-muted-foreground" onClick={() => setupHook.mutate({})} title="重新注册 webhook">
+          <Button size="sm" variant="ghost" className="h-6 px-2 text-[11px] text-muted-foreground" onClick={() => setupHook.mutate({})} title={st.webhookError || st.webhookUrl || "重新注册 webhook"}>
             {setupHook.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Settings2 className="h-3 w-3" />}
           </Button>
         )}

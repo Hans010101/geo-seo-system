@@ -16,8 +16,9 @@ const K = {
   secret: "telegram_webhook_secret",
 };
 const CODE_TTL_MS = 15 * 60 * 1000;
-// Prod URL for the webhook (Cloud Run). Overridable via the setup call if it ever changes.
-export const DEFAULT_BASE_URL = "https://geo-system-kwm3xu534q-an.a.run.app";
+// Canonical Cloudflare production URL. Keeping this independent from Cloud Run
+// means Telegram remains bindable after the parallel Cloud Run deployment ends.
+export const DEFAULT_BASE_URL = "https://geo-seo-system.pages.dev";
 const api = (token: string, method: string) => `https://api.telegram.org/bot${token}/${method}`;
 
 export async function getBotToken(): Promise<string | null> {
@@ -154,6 +155,8 @@ export async function getTelegramStatus(): Promise<{
   botConfigured: boolean;
   botUsername: string | null;
   webhookConfigured: boolean;
+  webhookUrl: string | null;
+  webhookError: string | null;
   bound: { chatId: string; chatTitle: string | null; chatType: string | null } | null;
   channelEnabled: boolean;
 }> {
@@ -172,10 +175,28 @@ export async function getTelegramStatus(): Promise<{
     }
     bound = { chatId: tg.chatId, chatTitle: title, chatType: type };
   }
+  let webhookUrl: string | null = null;
+  let webhookError: string | null = null;
+  if (token) {
+    try {
+      const info: any = await (await fetch(api(token, "getWebhookInfo"))).json();
+      if (info?.ok) {
+        webhookUrl = info.result?.url || null;
+        webhookError = info.result?.last_error_message || null;
+      } else {
+        webhookError = info?.description || "getWebhookInfo failed";
+      }
+    } catch (error) {
+      webhookError = String(error).slice(0, 160);
+    }
+  }
+  const expectedWebhookUrl = `${DEFAULT_BASE_URL}/api/telegram/webhook`;
   return {
     botConfigured: !!token,
     botUsername: username,
-    webhookConfigured: !!secret,
+    webhookConfigured: !!secret && webhookUrl === expectedWebhookUrl && !webhookError,
+    webhookUrl,
+    webhookError,
     bound,
     channelEnabled: !!tg?.isEnabled,
   };

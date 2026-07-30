@@ -75,4 +75,31 @@ describe("Cloudflare migration feature flags", () => {
       },
     ]);
   });
+
+  it("keeps GEO Queue shards off by default and gates daily start time", async () => {
+    const beforeStart = envWith({
+      CLOUDFLARE_MONITOR_SOCIAL_ENABLED: "false",
+      CLOUDFLARE_GEO_DAILY_ENABLED: "true",
+      CLOUDFLARE_GEO_WEEKLY_ENABLED: "true",
+      CLOUDFLARE_GEO_DAILY_START_HOUR: "9",
+    });
+    // 2026-07-30 07:40 Asia/Shanghai.
+    await enqueueScheduledMonitor(Date.UTC(2026, 6, 29, 23, 40), beforeStart.env);
+    expect(beforeStart.sendBatch).toHaveBeenCalledWith([
+      { body: expect.objectContaining({ kind: "geo_weekly_shard" }) },
+    ]);
+
+    const afterStart = envWith({
+      CLOUDFLARE_MONITOR_SOCIAL_ENABLED: "false",
+      CLOUDFLARE_GEO_DAILY_ENABLED: "true",
+      CLOUDFLARE_GEO_WEEKLY_ENABLED: "true",
+      CLOUDFLARE_GEO_DAILY_START_HOUR: "9",
+    });
+    // 2026-07-30 09:40 Asia/Shanghai.
+    await enqueueScheduledMonitor(Date.UTC(2026, 6, 30, 1, 40), afterStart.env);
+    expect(afterStart.sendBatch).toHaveBeenCalledWith([
+      { body: expect.objectContaining({ kind: "geo_daily_shard" }) },
+      { body: expect.objectContaining({ kind: "geo_weekly_shard" }) },
+    ]);
+  });
 });

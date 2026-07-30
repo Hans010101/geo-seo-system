@@ -60,4 +60,39 @@ describe("migration acceptance summary", () => {
     expect(result.stage3Binance.operationalSuccessRatePct).toBe(90);
     expect(result.stage3Binance.verdict).toBe("pass");
   });
+
+  it("summarizes gated GEO shards without starting stage six", () => {
+    const result = summarizeMigrationAcceptance({
+      windowStart: WINDOW_START,
+      now: WINDOW_START + 1_000,
+      cycles: [],
+      binance: [],
+      browser: [],
+      notifications: [],
+      geo: [{
+        runId: "geo_daily_shard:1",
+        cadence: "daily",
+        period: "2026-07-30",
+        status: "success",
+        batchId: "cf-daily-2026-07-30-0",
+        totalCells: 4,
+        cursorBefore: 0,
+        cursorAfter: 4,
+        attempted: 4,
+        completed: 4,
+        failed: 0,
+        remaining: 0,
+        done: true,
+        provider: "routed",
+        finishedAt: WINDOW_START + 500,
+      }],
+    });
+    expect(result.stage5Geo.daily).toMatchObject({
+      runs: 1,
+      completed: 4,
+      failed: 0,
+      done: true,
+    });
+    expect(result.stage6Parallel.verdict).toBe("not_started");
+  });
 });

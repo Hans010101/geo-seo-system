@@ -4,6 +4,7 @@ import {
   type AcceptanceCycleRecord,
   type BinanceAcceptanceRecord,
   type BrowserAcceptanceRecord,
+  type GeoAcceptanceRecord,
   type NotificationAcceptanceRecord,
 } from "./migration-acceptance-types";
 
@@ -48,16 +49,22 @@ export class MigrationAcceptanceLedger extends DurableObject<MigrationAcceptance
         0,
         Number(url.searchParams.get("windowStart")) || Date.now() - 7 * 86_400_000,
       );
-      const [cycleMap, binanceMap, browserMap, notificationMap] = await Promise.all([
+      const stage6WindowStart = Math.max(
+        0,
+        Number(url.searchParams.get("stage6WindowStart")) || 0,
+      );
+      const [cycleMap, binanceMap, browserMap, notificationMap, geoMap] = await Promise.all([
         this.ctx.storage.list<AcceptanceCycleRecord>({ prefix: "cycle:", limit: 500 }),
         this.ctx.storage.list<BinanceAcceptanceRecord>({ prefix: "binance:", limit: 500 }),
         this.ctx.storage.list<BrowserAcceptanceRecord>({ prefix: "browser:", limit: 500 }),
         this.ctx.storage.list<NotificationAcceptanceRecord>({ prefix: "notification:", limit: 500 }),
+        this.ctx.storage.list<GeoAcceptanceRecord>({ prefix: "geo:", limit: 500 }),
       ]);
       const cycles = Array.from(cycleMap.values());
       const binance = Array.from(binanceMap.values());
       const browser = Array.from(browserMap.values());
       const notifications = Array.from(notificationMap.values());
+      const geo = Array.from(geoMap.values());
       return json({
         summary: summarizeMigrationAcceptance({
           windowStart,
@@ -66,6 +73,8 @@ export class MigrationAcceptanceLedger extends DurableObject<MigrationAcceptance
           binance,
           browser,
           notifications,
+          geo,
+          stage6WindowStart,
         }),
         recent: {
           cycles: cycles.sort((a, b) => b.finishedAt - a.finishedAt).slice(0, 6),
@@ -74,6 +83,7 @@ export class MigrationAcceptanceLedger extends DurableObject<MigrationAcceptance
           notifications: notifications
             .sort((a, b) => b.finishedAt - a.finishedAt)
             .slice(0, 6),
+          geo: geo.sort((a, b) => b.finishedAt - a.finishedAt).slice(0, 12),
         },
       });
     }
@@ -109,6 +119,14 @@ export class MigrationAcceptanceLedger extends DurableObject<MigrationAcceptance
         return json({ error: "invalid notification record" }, 400);
       }
       await this.put("notification:", record.finishedAt, record.cycleId, record);
+      return json({ ok: true });
+    }
+    if (url.pathname === "/record-geo") {
+      const record = body as GeoAcceptanceRecord;
+      if (!record.runId || !Number.isFinite(record.finishedAt)) {
+        return json({ error: "invalid GEO record" }, 400);
+      }
+      await this.put("geo:", record.finishedAt, record.runId, record);
       return json({ ok: true });
     }
     return json({ error: "not found" }, 404);

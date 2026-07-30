@@ -9,7 +9,8 @@
 - Browser Shadow：跨日累计可用率、Browser 毫秒和正文增益。
 - AI：累计 Workers AI / OpenRouter provider 分布、neurons、fallback 和成本。
 - 阶段 5：记录简报与最终失败通知的尝试和结果。
-- 阶段 6：在前置功能通过后建立独立的 14 天并行窗口。
+- 阶段 5：记录日常 GEO 与周度 GEO 每个分片的游标、成功、失败、剩余数和完成状态。
+- 阶段 6：自动列出前置阻塞项；全部解除后通过 `CLOUDFLARE_STAGE6_WINDOW_START` 建立独立的 14 天并行窗口。
 
 ## 数据边界
 
@@ -37,3 +38,25 @@ CLOUDFLARE_FAILURE_NOTIFICATIONS_ENABLED=false
 ```
 
 因此当前不会新增告警行、发送简报或发送失败通知。通过前置验收后按既定顺序一次只开启一项，并观察 2–3 个自然周期。
+
+通知基础设施已提前完成但不会主动发送：Cron Worker 使用独立的 Sending-only `RESEND_API_KEY` Secret，发件人与收件人通过非敏感环境变量配置；Telegram Webhook 指向 Cloudflare Pages。开启任一生产通知开关前仍须通过前置验收。
+
+日常 GEO 与周度 GEO 同样保持关闭：
+
+```text
+CLOUDFLARE_GEO_DAILY_ENABLED=false
+CLOUDFLARE_GEO_WEEKLY_ENABLED=false
+```
+
+它们已进入正式 Queue 主链，但关闭状态不会创建 collection、调用平台模型或消耗 OpenRouter。周度 GEO 只有在确认 OpenRouter 余额恢复后才允许开启。
+
+## 阶段 6 门控
+
+`stage6Parallel.blockingReasons` 会持续检查：
+
+- 币安 7 天验收；
+- 币安写入观察和 Browser Shadow 证据；
+- 实时告警、简报、最终失败通知各至少 2 个启用周期；
+- 日常 GEO 与周度 GEO 各完成一轮。
+
+只有阻塞项清零后才设置非零的 `CLOUDFLARE_STAGE6_WINDOW_START`。时间窗必须真实运行满 14 天，不能用历史时间回填。
