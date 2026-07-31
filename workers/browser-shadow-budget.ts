@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import { browserCooldownRemainingMs } from "./browser-shadow-cooldown";
 
 export type BrowserShadowResultSummary = {
   token: string;
@@ -18,13 +19,14 @@ export type BrowserShadowResultSummary = {
 };
 
 export type BrowserShadowBudgetState = {
-  schemaVersion: 2;
+  schemaVersion: 3;
   day: string;
   reserved: number;
   completed: number;
   successes: number;
   failed: number;
   browserMs: number;
+  nextAllowedAt: number;
   lastResult: BrowserShadowResultSummary | null;
 };
 
@@ -36,13 +38,14 @@ function dayUtc(): string {
 
 function emptyState(): BrowserShadowBudgetState {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     day: dayUtc(),
     reserved: 0,
     completed: 0,
     successes: 0,
     failed: 0,
     browserMs: 0,
+    nextAllowedAt: 0,
     lastResult: null,
   };
 }
@@ -53,7 +56,7 @@ export class BrowserShadowBudget extends DurableObject<BrowserShadowBudgetEnv> {
     const state: BrowserShadowBudgetState = {
       ...emptyState(),
       ...stored,
-      schemaVersion: 2,
+      schemaVersion: 3,
     };
     if (state.day !== dayUtc()) {
       await this.ctx.storage.deleteAll();
@@ -87,6 +90,7 @@ export class BrowserShadowBudget extends DurableObject<BrowserShadowBudgetEnv> {
     if (path === "/reserve") {
       const maxPages = Math.max(1, Math.min(20, Number(body.maxPages) || 4));
       const maxBrowserMs = Math.max(60_000, Math.min(600_000, Number(body.maxBrowserMs) || 480_000));
+      const cooldownSeconds = Math.max(30, Math.min(300, Number(body.cooldownSeconds) || 75));
       const requestKey = String(body.requestKey || "").slice(0, 128);
       if (!requestKey) {
         return Response.json({ error: "requestKey is required" }, { status: 400 });
@@ -109,7 +113,17 @@ export class BrowserShadowBudget extends DurableObject<BrowserShadowBudgetEnv> {
           state,
         });
       }
+      const cooldownRemainingMs = browserCooldownRemainingMs(state.nextAllowedAt);
+      if (cooldownRemainingMs > 0) {
+        return Response.json({
+          accepted: false,
+          reason: "cooldown",
+          retryAfterSeconds: Math.max(1, Math.ceil(cooldownRemainingMs / 1_000)),
+          state,
+        });
+      }
       state.reserved++;
+      state.nextAllowedAt = Date.now() + cooldownSeconds * 1_000;
       const token = `${state.day}:${state.reserved}:${crypto.randomUUID()}`;
       await this.ctx.storage.put({
         [requestStorageKey]: token,

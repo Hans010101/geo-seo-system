@@ -6,7 +6,7 @@
 
 - 阶段 3：累计币安广场每次运行的 provider、状态、查询成功数、有效样本、错误和成功率。
 - 阶段 4：累计写入批次、候选数、实际插入数和被唯一键/哈希检查拦截的重复候选。
-- Browser Shadow：跨日累计可用率、Browser 毫秒和正文增益。
+- Browser Shadow：跨日累计可用率、Browser 毫秒和正文增益；全局冷却由预算 Durable Object 原子执行，冷却拒绝会携带延迟并由专用 Queue 重试，不计入 `reserved`。
 - AI：累计 Workers AI / OpenRouter provider 分布、neurons、fallback 和成本。
 - 阶段 5：记录简报与最终失败通知的尝试和结果。
 - 阶段 5：记录日常 GEO 与周度 GEO 每个分片的游标、成功、失败、剩余数和完成状态。
@@ -18,6 +18,13 @@
 - 每个批次以 `cycleId` 幂等覆盖，币安和 Browser 事件以运行时间及哈希幂等保存。
 - 任何台账写入失败只记录结构化警告，不会使正常采集任务失败。
 - 状态从 Cron Worker 的 `status.migrationAcceptance` 读取。
+
+## Gate 来源兜底
+
+- `CLOUDFLARE_GATE_FIRECRAWL_ENABLED=false` 时，Gate 两个 topic 不预留或调用 Firecrawl。
+- 每个 Gate topic 仅在自然社交批次到达时按需使用一次 Serper 站内检索，不扩大调度频率。
+- 只接纳规范化后属于 `gate.com/post/status/<数字 ID>` 且命中已配置关键词的结果；URL 哈希继续沿用候选队列去重。
+- 该路径只使用 Cloudflare Worker、Hyperdrive 和现有 Serper 配置，不以 Cloud Run 作为运行时兜底。
 
 ## 阶段 3 判定
 

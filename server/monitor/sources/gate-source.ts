@@ -18,7 +18,13 @@ const MAX_POSTS = 80; // safety cap on parsed posts per render
 type ParsedPost = { url: string; author: string | null; body: string; publishedAt: number | null };
 
 type GateCache = { at: number; posts: ParsedPost[]; renderCostUsd: number; costClaimed: boolean };
+export type GateRenderDiagnostic = {
+  attempted: number;
+  succeeded: number;
+  errors: string[];
+};
 const caches = new Map<string, GateCache>();
+const diagnostics = new Map<string, GateRenderDiagnostic>();
 
 async function firecrawlMarkdown(url: string): Promise<string> {
   const key = await db.getGlobalApiKeyByName("Firecrawl");
@@ -84,23 +90,34 @@ async function ensureFeed(opts?: SearchOpts): Promise<ParsedPost[]> {
   const all: ParsedPost[] = [];
   const seen = new Set<string>();
   let creditsUsed = 0;
+  let succeeded = 0;
+  const errors: string[] = [];
   const selected = opts?.shard && GATE_LIST_URLS.includes(opts.shard)
     ? [opts.shard]
     : GATE_LIST_URLS;
   for (const url of selected) {
     if (!opts?.budgetReserved && (!budget.hasFirecrawlBudget() || !budget.tryConsumeFirecrawl())) {
       log.warn("gate_square: Firecrawl budget exhausted — stopping feed render early");
+      errors.push("firecrawl budget unavailable");
       break;
     }
     creditsUsed++;
     try {
       const md = await firecrawlMarkdown(url);
+      succeeded++;
       for (const p of parseGateFeed(md)) if (!seen.has(p.url)) { seen.add(p.url); all.push(p); }
     } catch (e: any) {
-      log.error(`gate_square: render failed ${url}: ${String(e?.message || e).slice(0, 120)}`);
+      const message = String(e?.message || e).slice(0, 120);
+      errors.push(message);
+      log.error(`gate_square: render failed ${url}: ${message}`);
       // credit already consumed (Firecrawl bills per call) — keep going to the next feed
     }
   }
+  diagnostics.set(cacheKey, {
+    attempted: creditsUsed,
+    succeeded,
+    errors,
+  });
   if (creditsUsed === 0) return cache?.posts || []; // no budget at all → reuse stale cache if present
   caches.set(cacheKey, { at: Date.now(), posts: all, renderCostUsd: budget.FIRECRAWL_USD_PER_CREDIT * creditsUsed, costClaimed: false });
   log.info(`gate_square: rendered ${creditsUsed} topic feed(s) (${creditsUsed} credits) → ${all.length} UGC posts parsed`);
@@ -136,4 +153,11 @@ export const gateSquareSource: SocialSource = {
 };
 
 // test-only: reset the module cache between runs
-export function __resetGateCache() { caches.clear(); }
+export function getGateRenderDiagnostic(shard?: string): GateRenderDiagnostic {
+  return diagnostics.get(shard || "*") || { attempted: 0, succeeded: 0, errors: [] };
+}
+
+export function __resetGateCache() {
+  caches.clear();
+  diagnostics.clear();
+}

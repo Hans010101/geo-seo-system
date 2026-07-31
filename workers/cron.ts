@@ -88,11 +88,16 @@ async function status(env: Env) {
         features.binanceWrite ? "write" : "shadow",
       intervalHours: Number(env.CLOUDFLARE_BINANCE_INTERVAL_HOURS || 6),
     },
+    gate: {
+      firecrawlEnabled: env.CLOUDFLARE_GATE_FIRECRAWL_ENABLED !== "false",
+      fallbackProvider: "serper",
+    },
     browserFulltext: {
       ...browserFulltext,
       enabled: features.browserFullTextShadow,
       configuredMaxPagesPerDay: Number(env.CLOUDFLARE_BROWSER_FULLTEXT_MAX_PAGES_PER_DAY || 4),
       configuredMaxBrowserMsPerDay: Number(env.CLOUDFLARE_BROWSER_FULLTEXT_MAX_MS_PER_DAY || 480_000),
+      configuredCooldownSeconds: Number(env.CLOUDFLARE_BROWSER_FULLTEXT_COOLDOWN_SECONDS || 75),
     },
     migrationAcceptance,
     profiles: {

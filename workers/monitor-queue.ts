@@ -11,7 +11,10 @@ import { dispatchNotification } from "../server/_core/notification";
 import * as budget from "../server/monitor/budget";
 import { enabledSources } from "../server/monitor/sources/registry";
 import { RSS_FEEDS } from "../server/monitor/sources/rss-source";
-import { GATE_LIST_URLS } from "../server/monitor/sources/gate-source";
+import {
+  GATE_LIST_URLS,
+  getGateRenderDiagnostic,
+} from "../server/monitor/sources/gate-source";
 import { TELEGRAM_CHANNELS } from "../server/monitor/sources/telegram-source";
 import type { DiscoveredPost } from "../server/monitor/sources/types";
 import { searchWeb } from "../server/monitor/search";
@@ -86,6 +89,8 @@ export type QueueEnv = CloudflareRuntimeEnv & CronBindings & CloudflareFeatureEn
   CLOUDFLARE_BROWSER_FULLTEXT_MAX_PAGES_PER_DAY?: string;
   CLOUDFLARE_BROWSER_FULLTEXT_MAX_MS_PER_DAY?: string;
   CLOUDFLARE_BROWSER_FULLTEXT_TIMEOUT_MS?: string;
+  CLOUDFLARE_BROWSER_FULLTEXT_COOLDOWN_SECONDS?: string;
+  CLOUDFLARE_GATE_FIRECRAWL_ENABLED?: string;
   CLOUDFLARE_ACCEPTANCE_WINDOW_START?: string;
   CLOUDFLARE_GEO_DAILY_MAX_CELLS?: string;
   CLOUDFLARE_GEO_DAILY_CONCURRENCY?: string;
@@ -114,6 +119,7 @@ type DiscoveryTask = {
   shard?: string;
   keywords: Keyword[];
   budgetReserved?: boolean;
+  fallbackOnly?: boolean;
 };
 
 type CandidateTask = {
@@ -465,13 +471,14 @@ function buildDiscoveryTasks(
     return [...serper, ...rss];
   }
 
-  const gate = GATE_LIST_URLS.slice(0, budgetGrant.firecrawl).map((shard, index) => ({
+  const gate = GATE_LIST_URLS.map((shard, index) => ({
     ...base,
     taskId: `gate_square:${index}`,
     sourceName: "gate_square",
     shard,
     keywords,
-    budgetReserved: true,
+    budgetReserved: index < budgetGrant.firecrawl,
+    fallbackOnly: env.CLOUDFLARE_GATE_FIRECRAWL_ENABLED === "false",
   }));
   const telegram = TELEGRAM_CHANNELS.map((shard, index) => ({
     ...base,
@@ -512,9 +519,10 @@ async function bootstrap(task: BootstrapTask, env: QueueEnv): Promise<void> {
   }));
   const isNews = task.profile === "monitor_primary_news";
   const runBinance = binanceDue(task, env);
+  const gateFirecrawlEnabled = env.CLOUDFLARE_GATE_FIRECRAWL_ENABLED !== "false";
   const budgetGrant = await budget.reserveQueuedBudget({
     serper: isNews ? keywords.length : runBinance ? 1 : 0,
-    firecrawl: isNews ? 0 : GATE_LIST_URLS.length,
+    firecrawl: isNews || !gateFirecrawlEnabled ? 0 : GATE_LIST_URLS.length,
   });
   const discoveryTasks = buildDiscoveryTasks(task, keywords, budgetGrant, env);
   const maxArticles = isNews
@@ -1043,9 +1051,179 @@ async function discoverBinance(task: DiscoveryTask, env: QueueEnv): Promise<void
   });
 }
 
+type GateSerperItem = {
+  url: string;
+  title: string;
+  snippet: string;
+  date: string | null;
+  source: string | null;
+};
+
+export function mapGateSerperFallback(
+  items: GateSerperItem[],
+  keywords: Array<{ keyword: string }>,
+): Array<{ post: DiscoveredPost; normalizedUrl: string; matchedKeywords: string[] }> {
+  const matches = new Map<string, {
+    post: DiscoveredPost;
+    normalizedUrl: string;
+    matchedKeywords: Set<string>;
+  }>();
+  for (const item of items) {
+    let url: URL;
+    try {
+      url = new URL(item.url);
+    } catch {
+      continue;
+    }
+    if (
+      !/(^|\.)gate\.com$/i.test(url.hostname) ||
+      !/^\/post\/status\/\d+/.test(url.pathname)
+    ) continue;
+    const text = `${item.title || ""} ${item.snippet || ""}`.trim();
+    const matchedKeywords = keywords
+      .map((keyword) => keyword.keyword.trim())
+      .filter((keyword) => keyword && keywordMatchesText(keyword, text));
+    if (matchedKeywords.length === 0) continue;
+    const normalizedUrl = normalizeUrl(item.url);
+    const urlHash = sha256(normalizedUrl);
+    const existing = matches.get(urlHash);
+    if (existing) {
+      for (const keyword of matchedKeywords) existing.matchedKeywords.add(keyword);
+      continue;
+    }
+    matches.set(urlHash, {
+      normalizedUrl,
+      matchedKeywords: new Set(matchedKeywords),
+      post: {
+        url: normalizedUrl,
+        title: (item.title || item.snippet || "Gate Square post").slice(0, 512),
+        contentSnippet: (item.snippet || item.title || "").slice(0, 4000),
+        author: item.source || null,
+        publishedAt: parseSerperDate(item.date),
+        sourceName: "gate_square",
+        sourcePlatform: "gate_square",
+      },
+    });
+  }
+  return Array.from(matches.values()).map((value) => ({
+    post: value.post,
+    normalizedUrl: value.normalizedUrl,
+    matchedKeywords: Array.from(value.matchedKeywords),
+  }));
+}
+
+async function discoverGateViaSerper(
+  task: DiscoveryTask,
+  env: QueueEnv,
+  upstreamErrors: string[],
+): Promise<void> {
+  const startedAt = Date.now();
+  const grant = await budget.reserveQueuedBudget({ serper: 1 });
+  if (grant.serper < 1) {
+    const errors = [...upstreamErrors, "Serper monthly budget unavailable"];
+    await finishDiscovery(task, env, {
+      discovered: 0,
+      enqueued: 0,
+      failed: true,
+      sourceName: "gate_square",
+      diagnostic: {
+        status: "failed",
+        provider: "serper",
+        discovered: 0,
+        enqueued: 0,
+        durationMs: Date.now() - startedAt,
+        queriesAttempted: 0,
+        queriesSucceeded: 0,
+        errors,
+        updatedAt: Date.now(),
+      },
+    });
+    return;
+  }
+  const topic = task.shard?.split("/").filter(Boolean).pop() || "TRON";
+  try {
+    const items = await searchWeb(`site:gate.com/post/status ${topic}`, {
+      tbs: "qdr:w",
+      num: 10,
+      gl: "us",
+      hl: "en",
+    });
+    const found = mapGateSerperFallback(items, task.keywords);
+    const selected = found.slice(0, SOURCE_LIMITS.gate_square);
+    if (selected.length > 0) {
+      await env.MONITOR_QUEUE.sendBatch(selected.map((value) => ({
+        body: {
+          kind: "candidate",
+          cycleId: task.cycleId,
+          profile: task.profile,
+          deliveryId: `${task.taskId}:${sha256(value.normalizedUrl)}`,
+          urlHash: sha256(value.normalizedUrl),
+          normalizedUrl: value.normalizedUrl,
+          post: value.post,
+          matchedKeywords: value.matchedKeywords,
+        },
+      })));
+    }
+    const diagnostic: SourceDiagnostic = {
+      status: found.length > 0 ? "success" : "empty",
+      provider: "serper",
+      discovered: found.length,
+      enqueued: selected.length,
+      durationMs: Date.now() - startedAt,
+      queriesAttempted: 1,
+      queriesSucceeded: 1,
+      errors: upstreamErrors.slice(0, 4),
+      updatedAt: Date.now(),
+    };
+    console.log(JSON.stringify({
+      event: "gate_square.discovery",
+      cycleId: task.cycleId,
+      provider: "serper",
+      topic,
+      rawResults: items.length,
+      matchedPosts: found.length,
+      enqueued: selected.length,
+      upstreamErrors,
+    }));
+    await finishDiscovery(task, env, {
+      discovered: found.length,
+      enqueued: selected.length,
+      failed: false,
+      sourceName: "gate_square",
+      diagnostic,
+    });
+  } catch (error) {
+    const errors = [
+      ...upstreamErrors,
+      `Serper fallback: ${String(error).slice(0, 240)}`,
+    ];
+    await finishDiscovery(task, env, {
+      discovered: 0,
+      enqueued: 0,
+      failed: true,
+      sourceName: "gate_square",
+      diagnostic: {
+        status: "failed",
+        provider: "serper",
+        discovered: 0,
+        enqueued: 0,
+        durationMs: Date.now() - startedAt,
+        queriesAttempted: 1,
+        queriesSucceeded: 0,
+        errors,
+        updatedAt: Date.now(),
+      },
+    });
+  }
+}
+
 async function discover(task: DiscoveryTask, env: QueueEnv): Promise<void> {
   if (task.sourceName === BINANCE_BROWSER_SOURCE) {
     await discoverBinance(task, env);
+    return;
+  }
+  if (task.sourceName === "gate_square" && task.fallbackOnly) {
+    await discoverGateViaSerper(task, env, ["Firecrawl disabled after HTTP 402"]);
     return;
   }
   const source = enabledSources().find((candidate) => candidate.name === task.sourceName);
@@ -1076,6 +1254,13 @@ async function discover(task: DiscoveryTask, env: QueueEnv): Promise<void> {
         normalizedUrl,
         matched: new Set([keyword.keyword]),
       });
+    }
+  }
+  if (task.sourceName === "gate_square" && posts.size === 0) {
+    const gateDiagnostic = getGateRenderDiagnostic(task.shard);
+    if (gateDiagnostic.errors.length > 0) {
+      await discoverGateViaSerper(task, env, gateDiagnostic.errors);
+      return;
     }
   }
   const selected = Array.from(posts.entries()).slice(0, SOURCE_LIMITS[task.sourceName] || 3);
@@ -1340,6 +1525,13 @@ function browserShadowGain(originalChars: number, browserChars: number): {
   };
 }
 
+class BrowserShadowCooldownError extends Error {
+  constructor(readonly delaySeconds: number) {
+    super(`browser shadow cooldown (${delaySeconds}s)`);
+    this.name = "BrowserShadowCooldownError";
+  }
+}
+
 async function browserShadow(task: BrowserShadowTask, env: QueueEnv): Promise<void> {
   if (!getCloudflareFeatureFlags(env).browserFullTextShadow) return;
   const budgetStub = browserShadowBudget(env);
@@ -1350,14 +1542,21 @@ async function browserShadow(task: BrowserShadowTask, env: QueueEnv): Promise<vo
       requestKey: task.urlHash,
       maxPages: positiveInt(env.CLOUDFLARE_BROWSER_FULLTEXT_MAX_PAGES_PER_DAY, 4),
       maxBrowserMs: positiveInt(env.CLOUDFLARE_BROWSER_FULLTEXT_MAX_MS_PER_DAY, 480_000),
+      cooldownSeconds: positiveInt(env.CLOUDFLARE_BROWSER_FULLTEXT_COOLDOWN_SECONDS, 75),
     }),
   });
   const reservation = await reservationResponse.json<{
     accepted: boolean;
     token?: string;
     reason?: string;
+    retryAfterSeconds?: number;
   }>();
   if (!reservation.accepted || !reservation.token) {
+    if (reservation.reason === "cooldown") {
+      throw new BrowserShadowCooldownError(
+        Math.max(1, Math.min(300, Number(reservation.retryAfterSeconds) || 75)),
+      );
+    }
     console.log(JSON.stringify({
       event: "browser_fulltext_shadow.skipped",
       urlHash: task.urlHash,
@@ -1529,6 +1728,10 @@ export async function processMonitorQueue(
       message.ack();
     } catch (error) {
       console.error(`[Monitor Queue] ${task.kind}: ${String(error).slice(0, 500)}`);
+      if (task.kind === "browser_shadow" && error instanceof BrowserShadowCooldownError) {
+        message.retry({ delaySeconds: error.delaySeconds });
+        continue;
+      }
       const finalAttempt = (message.attempts || 1) >= 4;
       if (!finalAttempt) {
         message.retry({ delaySeconds: 30 });

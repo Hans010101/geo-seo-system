@@ -1,6 +1,6 @@
 # Cloudflare 独立运行迁移底账
 
-更新日期：2026-07-30
+更新日期：2026-07-31
 适用仓库：`Hans010101/geo-seo-system`
 
 ## 边界
@@ -16,12 +16,12 @@
 |---|---|---|---|---|
 | Web 新闻发现 | Serper，监控周期内运行 | Queue 分片，奇数小时 `:15` | 已运行，需持续对比新增率 | `CLOUDFLARE_MONITOR_NEWS_ENABLED` |
 | RSS 新闻 | 6 个 RSS feed | Queue 按 feed 分片 | 已运行 | 同新闻开关；阶段 6 对比覆盖 |
-| Gate 广场 | Firecrawl 抓取 2 个 topic | Queue 按 URL 分片 | 已运行 | `CLOUDFLARE_MONITOR_SOCIAL_ENABLED` |
+| Gate 广场 | Firecrawl 抓取 2 个 topic | Queue 按 topic 分片；Firecrawl 402 后改用 Cloudflare 内部 Serper 站内检索 | 兜底已部署，等待自然社交批次验证 | `CLOUDFLARE_MONITOR_SOCIAL_ENABLED`；`CLOUDFLARE_GATE_FIRECRAWL_ENABLED=false` |
 | Telegram | 5 个公开频道 | Queue 按频道分片 | 已运行 | 同社交开关 |
 | X/Twitter | twitterapi.io，月预算控制 | Queue 独立发现任务，沿用预算 | 已运行 | 同社交开关；核对用量 |
 | 币安广场 | Cookie/WAF 方式 | 私有 Browser Worker；403 时由 Cloudflare 内部 Serper 回退 | 已进入写入阶段，7 天验收未完成 | `CLOUDFLARE_BINANCE_*`；阶段 3/4 |
 | 正文抓取 | self → Firecrawl → snippet | 复用同一抓取路由 | 功能已有，缺逐次尝试可观测性 | `CLOUDFLARE_FETCH_OBSERVABILITY_ENABLED`；阶段 1 |
-| Browser 正文兜底 | 无 Cloudflare Browser | 独立私有 Browser Worker，snippet 后进入串行专用 Queue | 已部署影子链路，不写生产正文；预算 token 日内幂等校验 | `CLOUDFLARE_BROWSER_FULLTEXT_SHADOW_ENABLED`；阶段 2 |
+| Browser 正文兜底 | 无 Cloudflare Browser | 独立私有 Browser Worker，snippet 后进入串行专用 Queue | 已部署影子链路，不写生产正文；预算 token 日内幂等校验；全局 75 秒冷却并延迟重试 | `CLOUDFLARE_BROWSER_FULLTEXT_SHADOW_ENABLED`；阶段 2 |
 | AI 舆情分析 | OpenRouter | Workers AI 优先，失败时 OpenRouter | 已运行；当天无新增时不会产生 AI 调用 | `CLOUDFLARE_OPENROUTER_FALLBACK_ENABLED` |
 | 高威胁实时预警 | pipeline 内建，按配置推送 | Queue 候选链已接入，生产开关关闭 | 代码就绪，未启用 | `CLOUDFLARE_REALTIME_ALERTS_ENABLED`；阶段 5 |
 | 每轮舆情简报 | pipeline 周期结束后生成/推送 | Coordinator 收集素材，幂等 Post-cycle Queue 已接入 | 代码就绪，未启用 | `CLOUDFLARE_BRIEFING_ENABLED`；阶段 5 |
@@ -43,7 +43,7 @@
 |---|---|---|---|
 | MySQL / Cloud SQL | Hyperdrive `HYPERDRIVE` | 仅关闭 Cloud Run 应用无影响 | 迁移数据库并更新 Hyperdrive origin |
 | Serper | 数据库 API Key；新闻与币安回退 | 无 | 确认额度与告警 |
-| Firecrawl | 数据库 API Key；Gate/正文兜底 | 无 | 保留月预算 |
+| Firecrawl | 数据库 API Key；仅保留普通正文兜底；Gate 调用因 402 暂停 | 无 | 恢复额度前 Gate 使用按需 Serper 站内检索 |
 | twitterapi.io | 数据库 API Key | 无 | 保留月预算 |
 | Workers AI | `AI` binding | 无 | 每日 neurons 监控 |
 | OpenRouter | Worker secret，Workers AI 失败兜底；周度 GEO 专用 | 无 | 余额恢复后才开启周度 GEO |
@@ -65,7 +65,8 @@
 
 - 阶段 0：本文件与独立 Feature Flag 已完成。
 - 阶段 1：已上线；正常批次可读取逐次抓取与域名聚合统计。
-- 阶段 2：已实现；Browser Shadow 已从主采集 Queue 拆到 `geo-seo-browser-shadow` 串行 Queue，预算预留/回写增加日内 token 校验，等待自然样本验证 429 是否消失。
+- 阶段 2：已实现；Browser Shadow 已从主采集 Queue 拆到 `geo-seo-browser-shadow` 串行 Queue，预算预留/回写增加日内 token 校验，并由 Durable Object 强制全局 75 秒冷却；冷却中的消息延迟重试且不占每日额度，等待下一自然日样本验证 429 是否消失。
+- Gate 来源：2026-07-31 连续 Firecrawl 402 后已暂停 Gate 的 Firecrawl 预留与调用，改为每个 Gate topic 运行时按需预留一次 Serper 查询；只接受 `gate.com/post/status/<id>` 且命中监控关键词的结果。该兜底完全运行在 Cloudflare，不依赖 Cloud Run。
 - 阶段 3：自 2026-07-30 10:12（北京）起进行 7 天计时观察，最早 2026-08-06 验收，不能提前宣告通过。
 - 阶段 4：已开启小流量写入；插入来源、候选去重和唯一冲突指标已进入验收台账，等待自然批次。
 - 阶段 5：实时告警、简报、日常 GEO、周度 GEO 和最终失败通知的 Queue 链路均已准备；生产开关保持关闭，待阶段 3/4 通过后逐项启用。
