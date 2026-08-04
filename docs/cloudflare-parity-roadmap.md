@@ -27,7 +27,7 @@
 | 每轮舆情简报 | pipeline 周期结束后生成/推送 | Coordinator 收集素材，幂等 Post-cycle Queue 已接入 | 代码就绪，未启用 | `CLOUDFLARE_BRIEFING_ENABLED`；阶段 5 |
 | 舆情周报 | 周一 08:30（北京） | 周一 03:40 Queue | 已运行；共享库 upsert 幂等，推送需防双发 | `CLOUDFLARE_WEEKLY_REPORT_ENABLED` |
 | 舆情月报 | 每月 1 日 08:40（北京） | 每月 1 日 03:40 Queue | 已运行；共享库 upsert 幂等，推送需防双发 | `CLOUDFLARE_MONTHLY_REPORT_ENABLED` |
-| 35 天正文清理 | 每日 04:30（北京） | 每日 03:40 Queue | 已运行；操作幂等 | `CLOUDFLARE_CLEANUP_ENABLED` |
+| 30 天信源滚动保留 | 每日 04:30（北京） | 每日 Queue | 已运行；删除超期/无有效发布日期记录，操作幂等 | `CLOUDFLARE_CLEANUP_ENABLED` |
 | GEO 日常采集 | DB 动态 Cron，全部启用问题 × 平台 | 已接入幂等 Queue 分片，默认 4 cells/片、并发 2 | 代码与调度就绪，生产开关关闭 | `CLOUDFLARE_GEO_DAILY_ENABLED`；阶段 5 |
 | GEO 每周 15 平台覆盖 | Cloud Run 可运行完整批次 | 已接入幂等 Queue 分片，默认 6 cells/片、并发 3 | 代码与调度就绪，待 OpenRouter 余额恢复后启用 | `CLOUDFLARE_GEO_WEEKLY_ENABLED`；阶段 5 |
 | Queue 重试 | 进程内任务错误处理 | 最多 4 次，30 秒退避，终态写 Coordinator | 技术重试已有 | Queue 配置 |

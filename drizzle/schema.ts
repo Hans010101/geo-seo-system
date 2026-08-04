@@ -418,7 +418,7 @@ export const monitorArticles = mysqlTable(
     completionTokens: int("completionTokens"),
     costUsd: decimal("costUsd", { precision: 10, scale: 6 }), // analysis (LLM) cost
     fetchCostUsd: decimal("fetchCostUsd", { precision: 10, scale: 6 }).default("0"), // fetch cost: L1=0, L4=firecrawl credit折算
-    // 35天数据保鲜: 超期文章 contentMd 被清空(降存储), 轻量元数据保留供趋势/穿透分析。
+    // 30-day rolling retention; cleanup physically removes expired source records.
     archived: boolean("archived").default(false).notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },

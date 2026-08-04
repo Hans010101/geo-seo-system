@@ -8,8 +8,8 @@ import type { SocialSource, DiscoveredPost, SearchOpts } from "./types";
 
 // Two tiers: (A) TRON/Justin-Sun-DEDICATED tag feeds — nearly 100% on-topic, the real signal (validated
 // 2026-07-04, density 10-36/feed); (B) general crypto feeds — ~0 TRON density but zero marginal cost and
-// occasionally catch a mainstream TRON story before it's tagged. TRON news is sparse, so most tag-feed
-// items are weeks old (why the RSS collect window is widened to 30d in the pipeline, RSS-only).
+// occasionally catch a mainstream TRON story before it's tagged. The central pipeline applies the same
+// strict seven-day publication window to RSS and every other source.
 export const RSS_FEEDS = [
   // (A) TRON / Justin Sun dedicated
   "https://cointelegraph.com/rss/tag/tron",

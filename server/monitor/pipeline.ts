@@ -8,7 +8,16 @@ import * as budget from "./budget";
 import { enabledSources } from "./sources/registry";
 import type { DiscoveredPost } from "./sources/types";
 import { dispatchHighThreatAlert, sendBriefing, alertThresholdMet, type BriefingItem } from "./notify";
-import { normalizeUrl, sha256, domainOf, hasCJK, detectContentLang, log } from "./util";
+import {
+  normalizeUrl,
+  sha256,
+  monitorContentHash,
+  monitorPublishedAtFreshness,
+  domainOf,
+  hasCJK,
+  detectContentLang,
+  log,
+} from "./util";
 
 const CONCURRENCY = 3;
 const PER_DOMAIN_MS = 2000;
@@ -108,26 +117,18 @@ export async function runMonitorCycle(opts?: MonitorCycleOptions): Promise<Monit
   }
   log.info(`Search done: ${keywords.length} keywords × ${srcs.length} sources → ${discovered.size} unique posts (serperCalls ${serperCalls})`);
 
-  // 2) Drop already-stored (dedup vs DB) + stale (published outside the collect window, e.g. RSS/Serper
-  //    历史条目) + non-中英文 (多语言广场混入阿拉伯语/日语), cap the batch.
-  // Age filter: only drop when publishedAt is PRESENT and older than the window. Missing publishedAt
-  // (null/0 — Gate topic posts, some Serper results) is KEPT conservatively (can't date ⇒ don't discard).
-  const windowDays = Math.max(1, parseInt((await db.getSysConfig("monitor_collect_window_days")) || "7", 10) || 7);
-  // RSS is a zero-cost discovery feed for a SPARSE topic: TRON/Justin-Sun dedicated tag feeds are ~100%
-  // on-topic but publish infrequently, so the current storyline (孙宇晨/WLFI/HTX) sits weeks back and a
-  // 7d window can't see it. Widen the window for RSS ONLY (default 30d, configurable); all other sources
-  // (Serper/Gate/币安 realtime feeds) keep the tight global window. Never narrower than the global.
-  const rssWindowDays = Math.max(windowDays, parseInt((await db.getSysConfig("monitor_collect_window_days_rss")) || "30", 10) || 30);
+  // 2) Drop already-stored URLs, unverifiable/missing dates, items outside the strict seven-day
+  // publication window, and non-中英文 content before spending fetch/AI resources.
   const now = Date.now();
-  const ageCutoffFor = (platform: string) => now - (platform === "rss" ? rssWindowDays : windowDays) * 86_400_000;
   const fresh: FreshItem[] = [];
   const langSkips: Record<string, number> = {};
-  let ageSkips = 0;
+  const freshnessSkips: Record<string, number> = {};
   for (const [h, v] of Array.from(discovered)) {
     if (await db.getMonitorArticleByUrlHash(h)) continue;
     const p = v.post;
-    if (p.publishedAt && p.publishedAt > 0 && p.publishedAt < ageCutoffFor(p.sourcePlatform)) {
-      ageSkips++;
+    const freshness = monitorPublishedAtFreshness(p.publishedAt, now);
+    if (freshness !== "fresh") {
+      freshnessSkips[freshness] = (freshnessSkips[freshness] || 0) + 1;
       continue;
     }
     const { lang, allowed } = detectContentLang(`${p.title || ""} ${p.fullContent || p.contentSnippet || ""}`);
@@ -141,7 +142,10 @@ export async function runMonitorCycle(opts?: MonitorCycleOptions): Promise<Monit
       break;
     }
   }
-  if (ageSkips > 0) log.info(`Age filter: skipped ${ageSkips} posts (RSS >${rssWindowDays}d / others >${windowDays}d)`);
+  const freshnessSkipTotal = Object.values(freshnessSkips).reduce((a, b) => a + b, 0);
+  if (freshnessSkipTotal > 0) {
+    log.info(`Freshness filter: skipped ${freshnessSkipTotal} posts ${JSON.stringify(freshnessSkips)}`);
+  }
   const langSkipTotal = Object.values(langSkips).reduce((a, b) => a + b, 0);
   if (langSkipTotal > 0) log.info(`Language filter: skipped ${langSkipTotal} non-中英文 posts ${JSON.stringify(langSkips)}`);
   log.info(`Dedup done: ${fresh.length} new posts to process (cap ${maxPerCycle})`);
@@ -201,6 +205,19 @@ export async function runMonitorCycle(opts?: MonitorCycleOptions): Promise<Monit
         stats.sourceDist[p.sourcePlatform] = (stats.sourceDist[p.sourcePlatform] || 0) + 1;
         stats.fetchCostUsd += fetchCostUsd;
 
+        const rawContentHash = contentMd ? sha256(contentMd) : "";
+        const contentHash = contentMd ? monitorContentHash(contentMd) : "";
+        if (
+          contentMd &&
+          await db.getRecentMonitorArticleDuplicate({
+            contentHashes: [rawContentHash, contentHash],
+            title,
+          })
+        ) {
+          log.info(`Content dedup: skipped duplicate ${p.url}`);
+          continue;
+        }
+
         let analysis = null;
         if (contentMd.length > 0) {
           stats.analysisAttempted++;
@@ -220,7 +237,7 @@ export async function runMonitorCycle(opts?: MonitorCycleOptions): Promise<Monit
           domain: domain ? domain.slice(0, 128) : null,
           title: (title || "").slice(0, 512) || null,
           contentMd: contentMd || null,
-          contentHash: contentMd ? sha256(contentMd) : null,
+          contentHash: contentHash || null,
           publishedAt: p.publishedAt ?? null,
           firstSeenAt: Date.now(),
           fetchEngine,

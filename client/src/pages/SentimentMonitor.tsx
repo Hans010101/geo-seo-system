@@ -35,7 +35,7 @@ export default function SentimentMonitor() {
   const [threat, setThreat] = useState<string>("all");
   const [stance, setStance] = useState<string>("all");
   const [relevance, setRelevance] = useState<string>("focus"); // default: 高+中 only
-  const [range, setRange] = useState<string>("24h"); // default: 近24小时(可切 3d/7d/全部)
+  const [range, setRange] = useState<string>("24h"); // default: 近24小时(可切 3d/7d/30d)
   const [sort, setSort] = useState<string>("time"); // default: 时间倒序,最新在上
   const [source, setSource] = useState<string>("all");
   const [detailId, setDetailId] = useState<number | null>(null);
@@ -186,7 +186,7 @@ export default function SentimentMonitor() {
       <div className="grid gap-4 md:grid-cols-3">
         <Card>
           <CardContent className="p-4">
-            <p className="text-xs font-medium text-muted-foreground mb-3">信源分布(累计)</p>
+            <p className="text-xs font-medium text-muted-foreground mb-3">信源分布(近 30 天)</p>
             {(() => {
               const sd = stats?.sourceDistribution || {};
               const tot = Object.values(sd).reduce((a, b) => a + b, 0) || 1;
@@ -212,7 +212,7 @@ export default function SentimentMonitor() {
         </Card>
         <Card>
           <CardContent className="p-4">
-            <p className="text-xs font-medium text-muted-foreground mb-3">抓取引擎分布(累计)</p>
+            <p className="text-xs font-medium text-muted-foreground mb-3">抓取引擎分布(近 30 天)</p>
             {(() => {
               const ed = stats?.engineDistribution || {};
               const tot = Object.values(ed).reduce((a, b) => a + b, 0) || 1;
@@ -309,7 +309,7 @@ export default function SentimentMonitor() {
         <FilterSelect value={relevance} onChange={(v) => { setRelevance(v); resetPage(); }} placeholder="相关性"
           options={[["focus", "重点(高+中)"], ["all", "全部相关性"], ["high", "高相关"], ["medium", "中相关"], ["low", "低相关"], ["irrelevant", "无关"]]} />
         <FilterSelect value={range} onChange={(v) => { setRange(v); resetPage(); }} placeholder="时间范围"
-          options={[["24h", "近 24 小时"], ["3d", "近 3 天"], ["7d", "近 7 天"], ["all", "全部时间"]]} />
+          options={[["24h", "近 24 小时"], ["3d", "近 3 天"], ["7d", "近 7 天"], ["all", "近 30 天"]]} />
         <FilterSelect value={source} onChange={(v) => { setSource(v); resetPage(); }} placeholder="来源平台"
           options={[["all", "全部来源"], ["web", "Web/新闻"], ["binance_square", "币安广场"], ["gate_square", "Gate广场"], ["rss", "RSS媒体"], ["telegram", "Telegram"]]} />
         <FilterSelect value={sort} onChange={(v) => { setSort(v); resetPage(); }} placeholder="排序"

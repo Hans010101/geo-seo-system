@@ -35,6 +35,35 @@ export function sha256(input: string): string {
   return createHash("sha256").update(input).digest("hex");
 }
 
+export const MONITOR_COLLECT_MAX_AGE_DAYS = 7;
+export const MONITOR_RETENTION_DAYS = 30;
+const MONITOR_MAX_FUTURE_SKEW_MS = 24 * 60 * 60 * 1000;
+
+export type MonitorFreshnessReason = "fresh" | "missing" | "stale" | "future";
+
+export function monitorPublishedAtFreshness(
+  publishedAt: number | null | undefined,
+  now = Date.now(),
+  maxAgeDays = MONITOR_COLLECT_MAX_AGE_DAYS,
+): MonitorFreshnessReason {
+  if (!Number.isFinite(publishedAt) || Number(publishedAt) <= 0) return "missing";
+  const timestamp = Number(publishedAt);
+  if (timestamp > now + MONITOR_MAX_FUTURE_SKEW_MS) return "future";
+  if (timestamp < now - Math.max(1, maxAgeDays) * 86_400_000) return "stale";
+  return "fresh";
+}
+
+// Stable duplicate fingerprint across harmless casing/spacing/Unicode differences.
+export function monitorContentHash(content: string): string {
+  return sha256(
+    content
+      .normalize("NFKC")
+      .toLocaleLowerCase("en-US")
+      .replace(/\s+/g, " ")
+      .trim(),
+  );
+}
+
 // Normalize a URL for dedup: drop protocol-insignificant bits, tracking params, fragment, trailing slash.
 export function normalizeUrl(raw: string): string {
   try {
@@ -153,6 +182,7 @@ export function normalizeDomain(raw: string | null | undefined): string {
 // Best-effort parse of a Serper date string ("3 hours ago", "Mar 6, 2026", "2 days ago") → epoch ms.
 export function parseSerperDate(s: string | null | undefined, now = Date.now()): number | null {
   if (!s) return null;
+  if (/^(just now|now|刚刚)$/i.test(s.trim())) return now;
   const rel = s.match(/(\d+)\s*(minute|hour|day|week|month|year)s?\s*ago/i);
   if (rel) {
     const n = parseInt(rel[1], 10);
@@ -166,6 +196,20 @@ export function parseSerperDate(s: string | null | undefined, now = Date.now()):
     };
     const ms = unitMs[rel[2].toLowerCase()] || 0;
     return now - n * ms;
+  }
+  const zhRel = s.match(/(\d+)\s*(分钟|小时|天|周|个月|月|年)\s*前/);
+  if (zhRel) {
+    const n = parseInt(zhRel[1], 10);
+    const unitMs: Record<string, number> = {
+      分钟: 60_000,
+      小时: 3_600_000,
+      天: 86_400_000,
+      周: 604_800_000,
+      个月: 2_592_000_000,
+      月: 2_592_000_000,
+      年: 31_536_000_000,
+    };
+    return now - n * (unitMs[zhRel[2]] || 0);
   }
   const abs = Date.parse(s);
   return Number.isNaN(abs) ? null : abs;

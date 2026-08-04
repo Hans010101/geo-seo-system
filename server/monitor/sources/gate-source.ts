@@ -52,7 +52,13 @@ export function parseGateFeed(md: string): ParsedPost[] {
   const anchors: { i: number; url: string; age: string | null }[] = [];
   lines.forEach((l, i) => {
     const m = l.match(/\[([^\]]*)\]\((https?:\/\/[^)]*?\/post\/status\/\d+)\)/);
-    if (m) anchors.push({ i, url: m[2].split("?")[0], age: /\bago\b|刚刚|分钟|小时|now/i.test(m[1]) ? m[1] : null });
+    if (m) anchors.push({
+      i,
+      url: m[2].split("?")[0],
+      age: /\bago\b|刚刚|分钟|小时|天前|周前|个月前|月前|年前|now/i.test(m[1])
+        ? m[1]
+        : null,
+    });
   });
   const out: ParsedPost[] = [];
   const seen = new Set<string>();

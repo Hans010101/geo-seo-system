@@ -8,6 +8,7 @@ import {
   enqueueScheduledMonitor,
   getBinanceProbeStatus,
   getBrowserShadowStatus,
+  getCleanupStatus,
   getCoordinatorStatus,
   getGeoQueueStatus,
   getMigrationAcceptanceStatus,
@@ -61,6 +62,7 @@ async function status(env: Env) {
     social,
     geoQueue,
     openRouter,
+    cleanup,
   ] = await Promise.all([
     readKeys(STATUS_KEYS),
     readKeys(WEEKLY_KEYS),
@@ -71,6 +73,7 @@ async function status(env: Env) {
     getCoordinatorStatus(env, "monitor_primary_social"),
     getGeoQueueStatus(),
     getOpenRouterPreflightStatus(),
+    getCleanupStatus(),
   ]);
   const features = getCloudflareFeatureFlags(env);
   return {
@@ -104,6 +107,7 @@ async function status(env: Env) {
         Date.now() - Number(openRouter.checkedAt || 0) <=
           Number(env.CLOUDFLARE_OPENROUTER_PREFLIGHT_MAX_AGE_HOURS || 26) * 3_600_000,
     },
+    cleanup,
     browserFulltext: {
       ...browserFulltext,
       enabled: features.browserFullTextShadow,
@@ -187,6 +191,14 @@ export default {
           }],
         });
         return Response.json({ ok: true, queued: "notification_probe", scheduledTime });
+      }
+      if (url.pathname === "/operator/maintenance/cleanup") {
+        await env.MONITOR_QUEUE.send({
+          kind: "maintenance",
+          task: "cleanup",
+          scheduledTime,
+        });
+        return Response.json({ ok: true, queued: "cleanup", scheduledTime });
       }
       return Response.json({ error: "not found" }, { status: 404 });
     }

@@ -78,8 +78,9 @@ export function parsePeriod(reportType: ReportType, period: string): ReportPerio
 
 const fmtDate = (ms: number) => new Date(ms + TZ_MS).toISOString().slice(0, 10);
 
-// Effective time of an article = firstSeenAt (bigint ms), falling back to createdAt.
-const SEEN = "COALESCE(firstSeenAt, UNIX_TIMESTAMP(createdAt) * 1000)";
+// Reports follow the source publication time. Discovery time must never make recirculated
+// historical content appear in the current week/month.
+const SEEN = "publishedAt";
 
 export interface MonitorReportData {
   periodLabel: string; // 'YYYY-MM-DD ~ YYYY-MM-DD'

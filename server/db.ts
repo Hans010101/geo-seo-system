@@ -1,4 +1,4 @@
-import { eq, desc, asc, and, gte, lte, sql, inArray, like, count, avg } from "drizzle-orm";
+import { eq, desc, asc, and, or, gte, lte, sql, inArray, like, count, avg } from "drizzle-orm";
 import { drizzle, type MySql2Database } from "drizzle-orm/mysql2";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createConnection } from "mysql2/promise";
@@ -43,6 +43,7 @@ import {
   type InsertMonitorArticle,
   type InsertMonitorReport,
 } from "../drizzle/schema";
+import { MONITOR_RETENTION_DAYS } from "./monitor/util";
 
 
 type Database = MySql2Database<any>;
@@ -1316,11 +1317,61 @@ export async function getMonitorArticleByUrlHash(urlHash: string) {
   return rows[0];
 }
 
+export async function getRecentMonitorArticleDuplicate(input: {
+  contentHashes: string[];
+  title?: string | null;
+}) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const hashes = Array.from(new Set(input.contentHashes.filter(Boolean)));
+  const duplicateConditions = [];
+  if (hashes.length > 0) duplicateConditions.push(inArray(monitorArticles.contentHash, hashes));
+  const title = input.title?.trim();
+  if (title) duplicateConditions.push(eq(monitorArticles.title, title.slice(0, 512)));
+  if (duplicateConditions.length === 0) return undefined;
+  const retentionCutoff = Date.now() - MONITOR_RETENTION_DAYS * 86_400_000;
+  const rows = await db
+    .select({ id: monitorArticles.id, url: monitorArticles.url })
+    .from(monitorArticles)
+    .where(and(
+      gte(monitorArticles.publishedAt, retentionCutoff),
+      or(...duplicateConditions),
+    ))
+    .limit(1);
+  return rows[0];
+}
+
 export async function createMonitorArticle(data: InsertMonitorArticle) {
   const db = await getDb();
   if (!db) return null;
-  const result = await db.insert(monitorArticles).values(data);
-  return result[0].insertId;
+  const contentHash = data.contentHash?.trim();
+  if (!contentHash) {
+    const result = await db.insert(monitorArticles).values(data);
+    return result[0].insertId;
+  }
+
+  // Cross-URL content dedup must remain race-safe across concurrent Queue consumers.
+  // MySQL named locks are scoped to this Hyperdrive origin connection and released
+  // explicitly below; the URL UNIQUE constraint remains the final URL-level guard.
+  const lockName = `monitor-content:${contentHash.slice(0, 44)}`;
+  const lockResult: any = await db.execute(sql`SELECT GET_LOCK(${lockName}, 5) AS acquired`);
+  const lockRows = Array.isArray(lockResult) && Array.isArray(lockResult[0])
+    ? lockResult[0]
+    : lockResult;
+  if (Number(lockRows?.[0]?.acquired) !== 1) {
+    throw new Error("monitor content dedup lock timeout");
+  }
+  try {
+    const duplicate = await getRecentMonitorArticleDuplicate({
+      contentHashes: [contentHash],
+      title: data.title,
+    });
+    if (duplicate) return null;
+    const result = await db.insert(monitorArticles).values(data);
+    return result[0].insertId;
+  } finally {
+    await db.execute(sql`SELECT RELEASE_LOCK(${lockName})`).catch(() => {});
+  }
 }
 
 export async function updateMonitorArticle(id: number, data: Partial<InsertMonitorArticle>) {
@@ -1355,13 +1406,18 @@ export async function listMonitorArticles(filters?: {
 }) {
   const db = await getDb();
   if (!db) return { data: [], total: 0 };
-  const conditions = [];
+  const now = Date.now();
+  const retentionCutoff = now - MONITOR_RETENTION_DAYS * 86_400_000;
+  const conditions = [
+    gte(monitorArticles.publishedAt, retentionCutoff),
+    lte(monitorArticles.publishedAt, now + 86_400_000),
+  ];
   if (filters?.threatLevel) conditions.push(eq(monitorArticles.threatLevel, filters.threatLevel as any));
   if (filters?.sourcePlatform) conditions.push(eq(monitorArticles.sourcePlatform, filters.sourcePlatform));
   if (filters?.relevance) conditions.push(eq(monitorArticles.relevance, filters.relevance as any));
   else if (filters?.focus) conditions.push(inArray(monitorArticles.relevance, ["high", "medium"] as any));
-  if (filters?.startTime) conditions.push(gte(monitorArticles.firstSeenAt, filters.startTime));
-  if (filters?.endTime) conditions.push(lte(monitorArticles.firstSeenAt, filters.endTime));
+  if (filters?.startTime) conditions.push(gte(monitorArticles.publishedAt, filters.startTime));
+  if (filters?.endTime) conditions.push(lte(monitorArticles.publishedAt, filters.endTime));
   if (filters?.stance) conditions.push(eq(monitorSourceRules.stance, filters.stance as any));
   const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
@@ -1394,11 +1450,11 @@ export async function listMonitorArticles(filters?: {
       ? [
           sql`${monitorArticles.threatLevel} IS NULL`, // unanalyzed last (FIELD(NULL)=0 would float them first)
           sql`FIELD(${monitorArticles.threatLevel}, 'high', 'medium', 'low', 'none')`,
-          desc(monitorArticles.firstSeenAt),
+          desc(monitorArticles.publishedAt),
         ]
       : filters?.sort === "sentiment"
-        ? [sql`${monitorArticles.sentimentScore} IS NULL`, asc(monitorArticles.sentimentScore), desc(monitorArticles.firstSeenAt)]
-        : [desc(monitorArticles.firstSeenAt)];
+        ? [sql`${monitorArticles.sentimentScore} IS NULL`, asc(monitorArticles.sentimentScore), desc(monitorArticles.publishedAt)]
+        : [desc(monitorArticles.publishedAt)];
   const [data, totalResult] = await Promise.all([
     db
       .select(listSelect)
@@ -1425,22 +1481,29 @@ export async function getMonitorStats() {
   const weekStart = now - 7 * 24 * 60 * 60 * 1000;
   const monthStart = now - 30 * 24 * 60 * 60 * 1000;
 
-  const [totalRow] = await db.select({ c: count() }).from(monitorArticles);
+  const [totalRow] = await db
+    .select({ c: count() })
+    .from(monitorArticles)
+    .where(gte(monitorArticles.publishedAt, monthStart));
   const [todayRow] = await db
     .select({ c: count() })
     .from(monitorArticles)
-    .where(gte(monitorArticles.firstSeenAt, dayStart));
+    .where(gte(monitorArticles.publishedAt, dayStart));
   const [weekRow] = await db
     .select({ c: count() })
     .from(monitorArticles)
-    .where(gte(monitorArticles.firstSeenAt, weekStart));
+    .where(gte(monitorArticles.publishedAt, weekStart));
   const [highThreatRow] = await db
     .select({ c: count() })
     .from(monitorArticles)
-    .where(eq(monitorArticles.threatLevel, "high"));
+    .where(and(
+      gte(monitorArticles.publishedAt, monthStart),
+      eq(monitorArticles.threatLevel, "high"),
+    ));
   const threatDist = await db
     .select({ threatLevel: monitorArticles.threatLevel, c: count() })
     .from(monitorArticles)
+    .where(gte(monitorArticles.publishedAt, monthStart))
     .groupBy(monitorArticles.threatLevel);
   const [costRow] = await db
     .select({
@@ -1448,16 +1511,18 @@ export async function getMonitorStats() {
       fetch: sql<string>`COALESCE(SUM(${monitorArticles.fetchCostUsd}), 0)`,
     })
     .from(monitorArticles)
-    .where(gte(monitorArticles.firstSeenAt, monthStart));
+    .where(gte(monitorArticles.publishedAt, monthStart));
 
   // Engine distribution (all-time) — shows how much the free L1 path absorbs vs paid L4.
   const engineRows = await db
     .select({ engine: monitorArticles.fetchEngine, c: count() })
     .from(monitorArticles)
+    .where(gte(monitorArticles.publishedAt, monthStart))
     .groupBy(monitorArticles.fetchEngine);
   const sourceRows = await db
     .select({ src: monitorArticles.sourcePlatform, c: count() })
     .from(monitorArticles)
+    .where(gte(monitorArticles.publishedAt, monthStart))
     .groupBy(monitorArticles.sourcePlatform);
 
   const threatDistribution: Record<string, number> = {};

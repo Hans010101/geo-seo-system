@@ -2519,7 +2519,7 @@ initGuard("monitor-scheduler-boot", async () => {
 });
 
 // Monitor maintenance crons (always-on infrastructure, independent of the monitorEnabled toggle):
-//  · 04:30 daily — 35天数据保鲜: clear contentMd of over-retention articles (cleanup.ts, idempotent)
+//  · 04:30 daily — 30-day rolling retention: delete expired/unverifiable source records
 //  · 08:30 Monday — 舆情周报 for LAST week;  08:40 on the 1st — 舆情月报 for LAST month.
 // Report push (飞书/TG) is separately gated by sysConfigs monitor_report_push_enabled (default OFF).
 initGuard("monitor-maintenance-crons", async () => {
@@ -2723,7 +2723,7 @@ const monitorRouter = router({
     .input(z.object({ limit: z.number().min(1).max(200).optional() }).optional())
     .query(async ({ input }) => getCitationSourceActivity({ limit: input?.limit })),
 
-  // ===== 数据保鲜: 35天清正文(保守分层, 不物理删) =====
+  // ===== 数据保鲜: 30 天滚动保留，物理删除超期/无有效发布日期记录 =====
   runCleanup: adminProcedure.mutation(async () => {
     const res = await cleanupOldArticles();
     return { success: true, retentionDays: CLEANUP_DAYS, ...res };

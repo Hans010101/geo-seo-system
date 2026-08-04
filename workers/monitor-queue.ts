@@ -25,6 +25,8 @@ import {
   domainOf,
   hasCJK,
   keywordMatchesText,
+  monitorContentHash,
+  monitorPublishedAtFreshness,
   normalizeUrl,
   parseSerperDate,
   sha256,
@@ -267,6 +269,14 @@ const OPENROUTER_PREFLIGHT_STATUS_KEYS = {
   checkedAt: "cf_openrouter_preflight_checked_at",
   summary: "cf_openrouter_preflight_summary",
   error: "cf_openrouter_preflight_error",
+} as const;
+
+const CLEANUP_STATUS_KEYS = {
+  status: "cf_cleanup_last_status",
+  startedAt: "cf_cleanup_last_started_at",
+  finishedAt: "cf_cleanup_last_finished_at",
+  summary: "cf_cleanup_last_summary",
+  error: "cf_cleanup_last_error",
 } as const;
 
 function positiveInt(value: string | undefined, fallback: number): number {
@@ -869,6 +879,15 @@ export async function getOpenRouterPreflightStatus(): Promise<{
     summary: await db.getSysConfig(OPENROUTER_PREFLIGHT_STATUS_KEYS.summary),
     error: await db.getSysConfig(OPENROUTER_PREFLIGHT_STATUS_KEYS.error),
   };
+}
+
+export async function getCleanupStatus(): Promise<Record<string, string | null>> {
+  return Object.fromEntries(await Promise.all(
+    Object.entries(CLEANUP_STATUS_KEYS).map(async ([name, key]) => [
+      name,
+      await db.getSysConfig(key),
+    ]),
+  ));
 }
 
 async function readOpenRouterPreflightResult(): Promise<OpenRouterPreflightResult | null> {
@@ -1587,16 +1606,15 @@ async function candidate(task: CandidateTask, env: QueueEnv): Promise<void> {
   }
 
   const post = task.post;
-  const windowDays = Math.max(
-    1,
-    Number(await db.getSysConfig("monitor_collect_window_days")) || 7,
-  );
-  const rssWindowDays = Math.max(
-    windowDays,
-    Number(await db.getSysConfig("monitor_collect_window_days_rss")) || 30,
-  );
-  const ageWindow = post.sourcePlatform === "rss" ? rssWindowDays : windowDays;
-  if (post.publishedAt && post.publishedAt < Date.now() - ageWindow * 86_400_000) {
+  const freshness = monitorPublishedAtFreshness(post.publishedAt);
+  if (freshness !== "fresh") {
+    console.log(JSON.stringify({
+      event: "monitor_candidate.freshness_rejected",
+      sourcePlatform: post.sourcePlatform,
+      urlHash: task.urlHash,
+      freshness,
+      publishedAt: post.publishedAt ?? null,
+    }));
     await completeCandidate(env, task, {});
     return;
   }
@@ -1607,6 +1625,21 @@ async function candidate(task: CandidateTask, env: QueueEnv): Promise<void> {
 
   const contentMd = (post.fullContent || post.contentSnippet || "").slice(0, 20_000);
   const title = (post.title || contentMd.slice(0, 80)).slice(0, 512);
+  const rawContentHash = contentMd ? sha256(contentMd) : "";
+  const contentHash = contentMd ? monitorContentHash(contentMd) : "";
+  if (
+    contentMd &&
+    await db.getRecentMonitorArticleDuplicate({
+      contentHashes: [rawContentHash, contentHash],
+      title,
+    })
+  ) {
+    await completeCandidate(env, task, {
+      dedupExisting: true,
+      sourcePlatform: post.sourcePlatform,
+    });
+    return;
+  }
   const fetchEngine = post.fullContent
     ? (post.fetchEngineHint || "source_api")
     : "snippet";
@@ -1647,7 +1680,7 @@ async function candidate(task: CandidateTask, env: QueueEnv): Promise<void> {
       domain: domain ? domain.slice(0, 128) : null,
       title: title || null,
       contentMd: contentMd || null,
-      contentHash: contentMd ? sha256(contentMd) : null,
+      contentHash: contentHash || null,
       publishedAt: post.publishedAt ?? null,
       firstSeenAt: Date.now(),
       fetchEngine,
@@ -1666,6 +1699,7 @@ async function candidate(task: CandidateTask, env: QueueEnv): Promise<void> {
       completionTokens: analysis?.completionTokens ?? null,
       costUsd: analysis?.costUsd != null ? String(analysis.costUsd) : null,
     }));
+    if (!inserted) dedupConflict = true;
   } catch (error) {
     // A concurrent shard can win the unique URL race. Treat that as a clean
     // dedup outcome; unexpected database failures still retry the queue message.
@@ -1703,7 +1737,7 @@ async function candidate(task: CandidateTask, env: QueueEnv): Promise<void> {
   }
 
   const briefingItem =
-    analysis?.relevance === "high" || analysis?.relevance === "medium"
+    inserted && (analysis?.relevance === "high" || analysis?.relevance === "medium")
       ? {
           title,
           url: post.url,
@@ -1944,7 +1978,27 @@ async function postCycle(task: PostCycleTask, env: QueueEnv): Promise<void> {
 
 async function maintenance(task: MaintenanceTask): Promise<void> {
   if (task.task === "cleanup") {
-    await cleanupOldArticles();
+    const startedAt = Date.now();
+    await Promise.all([
+      db.setSysConfig(CLEANUP_STATUS_KEYS.status, "running"),
+      db.setSysConfig(CLEANUP_STATUS_KEYS.startedAt, String(startedAt)),
+      db.setSysConfig(CLEANUP_STATUS_KEYS.error, ""),
+    ]);
+    try {
+      const result = await cleanupOldArticles();
+      await Promise.all([
+        db.setSysConfig(CLEANUP_STATUS_KEYS.status, "success"),
+        db.setSysConfig(CLEANUP_STATUS_KEYS.finishedAt, String(Date.now())),
+        db.setSysConfig(CLEANUP_STATUS_KEYS.summary, JSON.stringify(result)),
+      ]);
+    } catch (error) {
+      await Promise.all([
+        db.setSysConfig(CLEANUP_STATUS_KEYS.status, "failed"),
+        db.setSysConfig(CLEANUP_STATUS_KEYS.finishedAt, String(Date.now())),
+        db.setSysConfig(CLEANUP_STATUS_KEYS.error, String(error).slice(0, 1000)),
+      ]);
+      throw error;
+    }
     return;
   }
   if (task.task === "weekly_report") {

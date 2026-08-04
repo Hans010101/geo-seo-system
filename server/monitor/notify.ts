@@ -100,7 +100,7 @@ export function buildBriefing(
     L.push("✅ 本轮未发现新增负面");
   }
   L.push("━━━━━━━━━━━━━━");
-  L.push(`本月成本 $${stats.monthCostUsd.toFixed(4)} | 累计文章 ${stats.total}`);
+  L.push(`本月成本 $${stats.monthCostUsd.toFixed(4)} | 近30天文章 ${stats.total}`);
   return { title: `舆情简报 · 新增${cycle.newArticles}/负面${neg}/高威胁${high}`, content: L.join("\n") };
 }
 

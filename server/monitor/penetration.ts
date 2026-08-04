@@ -84,7 +84,7 @@ export async function getSourcePenetration(opts?: { days?: number }): Promise<So
   const days = opts?.days;
   const windowClause =
     days && Number.isInteger(days) && days > 0
-      ? `AND createdAt >= (NOW() - INTERVAL ${days} DAY)`
+      ? `AND publishedAt >= (UNIX_TIMESTAMP(NOW() - INTERVAL ${days} DAY) * 1000)`
       : "";
   const query = sql.raw(`
     SELECT m.domain AS domain, m.articles AS articles, m.negatives AS negatives,
