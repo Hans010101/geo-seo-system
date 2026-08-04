@@ -129,19 +129,30 @@ export async function sendBriefing(
   const msg = buildBriefing(items, cycle, { monthCostUsd: stats?.monthCostUsd || 0, total: stats?.total || 0 }, aiReach);
   if (!deliveryEnabled) return { sent: false, reason: "briefing disabled", content: msg.content };
   if (mode === "negative_only" && negOrHigh === 0) return { sent: false, reason: "negative_only mode, nothing to report", content: msg.content };
-  const delivery = await dispatchNotification({
-    messageType: "batch_summary",
-    title: msg.title,
-    content: msg.content,
-    dedupKey: options?.dedupKey,
-  });
-  const sent = delivery.sent > 0;
+  const briefingHtml = `<pre style="white-space:pre-wrap;font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;line-height:1.6">${
+    msg.content
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+  }</pre>`;
+  const [delivery, email] = await Promise.all([
+    dispatchNotification({
+      messageType: "batch_summary",
+      title: msg.title,
+      content: msg.content,
+      dedupKey: options?.dedupKey,
+    }),
+    sendEmailAlert(`【Cloudflare 舆情简报】${msg.title}`, briefingHtml),
+  ]);
+  const sent = delivery.sent > 0 || email.sent;
   log.info(
-    `Briefing dispatch completed (sent ${delivery.sent}/${delivery.attempted}, high/medium items ${items.length}, neg/high ${negOrHigh})`,
+    `Briefing dispatch completed (telegram ${delivery.sent}/${delivery.attempted}, email ${email.sent}, high/medium items ${items.length}, neg/high ${negOrHigh})`,
   );
   return {
     sent,
-    ...(sent ? {} : { reason: "no notification channel delivered" }),
+    ...(sent ? {} : {
+      reason: `no notification channel delivered${email.error ? `; email: ${email.error}` : ""}`,
+    }),
     content: msg.content,
   };
 }

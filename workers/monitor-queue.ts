@@ -15,6 +15,7 @@ import { RSS_FEEDS } from "../server/monitor/sources/rss-source";
 import {
   GATE_LIST_URLS,
   getGateRenderDiagnostic,
+  parseGateFeed,
 } from "../server/monitor/sources/gate-source";
 import { TELEGRAM_CHANNELS } from "../server/monitor/sources/telegram-source";
 import type { DiscoveredPost } from "../server/monitor/sources/types";
@@ -97,8 +98,10 @@ export type QueueEnv = CloudflareRuntimeEnv & CronBindings & CloudflareFeatureEn
   CLOUDFLARE_BROWSER_FULLTEXT_TIMEOUT_MS?: string;
   CLOUDFLARE_BROWSER_FULLTEXT_COOLDOWN_SECONDS?: string;
   CLOUDFLARE_GATE_FIRECRAWL_ENABLED?: string;
+  CLOUDFLARE_GATE_BROWSER_INTERVAL_HOURS?: string;
   CLOUDFLARE_GATE_SERPER_QUERY_TERMS?: string;
   CLOUDFLARE_ACCEPTANCE_WINDOW_START?: string;
+  CLOUDFLARE_STAGE3_REQUIRED_DAYS?: string;
   CLOUDFLARE_GEO_DAILY_MAX_CELLS?: string;
   CLOUDFLARE_GEO_DAILY_TOTAL_CELLS?: string;
   CLOUDFLARE_GEO_DAILY_CONCURRENCY?: string;
@@ -107,11 +110,14 @@ export type QueueEnv = CloudflareRuntimeEnv & CronBindings & CloudflareFeatureEn
   CLOUDFLARE_GEO_WEEKLY_ALL_PLATFORMS?: string;
   CLOUDFLARE_GEO_WEEKLY_MAX_CELLS?: string;
   CLOUDFLARE_GEO_WEEKLY_CONCURRENCY?: string;
+  CLOUDFLARE_GEO_WEEKLY_MAX_TOKENS?: string;
   CLOUDFLARE_GEO_WEEKLY_START_HOUR?: string;
   CLOUDFLARE_OPENROUTER_PREFLIGHT_MODEL?: string;
   CLOUDFLARE_OPENROUTER_PREFLIGHT_MAX_AGE_HOURS?: string;
   CLOUDFLARE_BRIEFING_MODE?: string;
   CLOUDFLARE_STAGE6_WINDOW_START?: string;
+  CLOUDFLARE_STAGE6_REQUIRED_DAYS?: string;
+  CLOUDFLARE_GEO_CATCHUP_DELAY_SECONDS?: string;
 };
 
 type Keyword = { keyword: string; priority: number };
@@ -160,11 +166,13 @@ type BinanceProbeTask = {
 type GeoDailyShardTask = {
   kind: "geo_daily_shard";
   scheduledTime: number;
+  catchUp?: boolean;
 };
 
 type GeoWeeklyShardTask = {
   kind: "geo_weekly_shard";
   scheduledTime: number;
+  catchUp?: boolean;
 };
 
 type OpenRouterPreflightTask = {
@@ -329,6 +337,10 @@ export async function getMigrationAcceptanceStatus(env: QueueEnv): Promise<unkno
   const response = await acceptanceLedger(env).fetch(
     `https://acceptance/status?windowStart=${windowStart}&stage6WindowStart=${
       Math.max(0, Number(env.CLOUDFLARE_STAGE6_WINDOW_START) || 0)
+    }&stage3RequiredDays=${
+      Math.max(0, Number(env.CLOUDFLARE_STAGE3_REQUIRED_DAYS ?? "7") || 0)
+    }&stage6RequiredDays=${
+      Math.max(0, Number(env.CLOUDFLARE_STAGE6_REQUIRED_DAYS ?? "14") || 0)
     }`,
   );
   if (!response.ok) throw new Error(`migration acceptance status HTTP ${response.status}`);
@@ -944,6 +956,7 @@ async function runObservedGeoShard(
       : await runCloudflareGeoWeeklyShard({
           maxCells: positiveInt(env.CLOUDFLARE_GEO_WEEKLY_MAX_CELLS, 6),
           concurrency: positiveInt(env.CLOUDFLARE_GEO_WEEKLY_CONCURRENCY, 3),
+          maxTokens: positiveInt(env.CLOUDFLARE_GEO_WEEKLY_MAX_TOKENS, 1536),
           timestamp: task.scheduledTime,
           allPlatforms: env.CLOUDFLARE_GEO_WEEKLY_ALL_PLATFORMS === "true",
         });
@@ -973,6 +986,17 @@ async function runObservedGeoShard(
         result.failed > 0 ? `${result.failed} GEO cells failed` : "",
       ),
     ]);
+    if (task.catchUp && result.failed === 0 && result.remaining > 0) {
+      await env.MONITOR_QUEUE.send(
+        { ...task },
+        {
+          delaySeconds: Math.min(
+            60,
+            Math.max(1, positiveInt(env.CLOUDFLARE_GEO_CATCHUP_DELAY_SECONDS, 5)),
+          ),
+        },
+      );
+    }
   } catch (error) {
     const message = String(error).slice(0, 1000);
     await recordAcceptance(env, "/record-geo", {
@@ -1335,13 +1359,113 @@ async function discoverGateViaSerper(
   }
 }
 
+const GATE_BROWSER_LAST_AT_KEY = "cf_gate_browser_last_at";
+
+async function discoverGateViaCloudflareBrowser(
+  task: DiscoveryTask,
+  env: QueueEnv,
+  upstreamErrors: string[],
+): Promise<void> {
+  const startedAt = Date.now();
+  const intervalHours = Math.min(
+    24,
+    Math.max(1, positiveInt(env.CLOUDFLARE_GATE_BROWSER_INTERVAL_HOURS, 6)),
+  );
+  const lastAt = Number(await db.getSysConfig(GATE_BROWSER_LAST_AT_KEY)) || 0;
+  if (startedAt - lastAt < intervalHours * 3_600_000) {
+    await discoverGateViaSerper(task, env, [
+      ...upstreamErrors,
+      `Cloudflare Browser cooldown (${intervalHours}h)`,
+    ]);
+    return;
+  }
+  await db.setSysConfig(GATE_BROWSER_LAST_AT_KEY, String(startedAt));
+  const errors = [...upstreamErrors];
+  try {
+    const response = await env.FULLTEXT_BROWSER.fetch("https://fulltext-browser/extract", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        url: GATE_LIST_URLS[0],
+        maxChars: 25_000,
+        timeoutMs: 30_000,
+      }),
+    });
+    const result = await response.json<FulltextBrowserResult>();
+    if (!response.ok || !result.ok || !result.contentMd) {
+      errors.push(`Cloudflare Browser: ${result.error || result.status || response.status}`);
+      await discoverGateViaSerper(task, env, errors);
+      return;
+    }
+    const parsed = parseGateFeed(result.contentMd);
+    const found = parsed.flatMap((post) => {
+      const matchedKeywords = task.keywords
+        .filter((keyword) => keywordMatchesText(keyword.keyword, post.body))
+        .map((keyword) => keyword.keyword);
+      if (matchedKeywords.length === 0) return [];
+      const normalizedUrl = normalizeUrl(post.url);
+      return [{
+        post: {
+          url: normalizedUrl,
+          title: post.body.replace(/\s+/g, " ").slice(0, 80),
+          fullContent: post.body,
+          author: post.author,
+          publishedAt: post.publishedAt,
+          sourceName: "gate_square",
+          sourcePlatform: "gate_square",
+          fetchEngineHint: "gate_cloudflare_browser",
+        } satisfies DiscoveredPost,
+        normalizedUrl,
+        matchedKeywords,
+      }];
+    });
+    const selected = found.slice(0, SOURCE_LIMITS.gate_square);
+    if (selected.length > 0) {
+      await env.MONITOR_QUEUE.sendBatch(selected.map((value) => ({
+        body: {
+          kind: "candidate",
+          cycleId: task.cycleId,
+          profile: task.profile,
+          deliveryId: `${task.taskId}:${sha256(value.normalizedUrl)}`,
+          urlHash: sha256(value.normalizedUrl),
+          normalizedUrl: value.normalizedUrl,
+          post: value.post,
+          matchedKeywords: value.matchedKeywords,
+        },
+      })));
+    }
+    await finishDiscovery(task, env, {
+      discovered: found.length,
+      enqueued: selected.length,
+      failed: false,
+      sourceName: "gate_square",
+      diagnostic: {
+        status: found.length > 0 ? "success" : "empty",
+        provider: "browser",
+        discovered: found.length,
+        enqueued: selected.length,
+        durationMs: Date.now() - startedAt,
+        queriesAttempted: 1,
+        queriesSucceeded: 1,
+        errors: errors.slice(0, 4),
+        updatedAt: Date.now(),
+      },
+    });
+  } catch (error) {
+    errors.push(`Cloudflare Browser: ${String(error).slice(0, 240)}`);
+    await discoverGateViaSerper(task, env, errors);
+  }
+}
+
 async function discover(task: DiscoveryTask, env: QueueEnv): Promise<void> {
   if (task.sourceName === BINANCE_BROWSER_SOURCE) {
     await discoverBinance(task, env);
     return;
   }
   if (task.sourceName === "gate_square" && task.fallbackOnly) {
-    await discoverGateViaSerper(task, env, ["Firecrawl disabled after HTTP 402"]);
+    await discoverGateViaCloudflareBrowser(task, env, [
+      "Firecrawl disabled after HTTP 402",
+    ]);
     return;
   }
   const source = enabledSources().find((candidate) => candidate.name === task.sourceName);

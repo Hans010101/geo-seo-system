@@ -129,6 +129,8 @@ export function summarizeMigrationAcceptance(input: {
   notifications: NotificationAcceptanceRecord[];
   geo?: GeoAcceptanceRecord[];
   stage6WindowStart?: number;
+  stage3RequiredDays?: number;
+  stage6RequiredDays?: number;
 }) {
   const cycles = input.cycles.filter((item) => item.finishedAt >= input.windowStart);
   const binance = input.binance.filter((item) => item.finishedAt >= input.windowStart);
@@ -136,7 +138,9 @@ export function summarizeMigrationAcceptance(input: {
   const notifications = input.notifications.filter((item) => item.finishedAt >= input.windowStart);
   const geo = (input.geo || []).filter((item) => item.finishedAt >= input.windowStart);
   const elapsedMs = Math.max(0, input.now - input.windowStart);
-  const stage3TimeGatePassed = elapsedMs >= 7 * 86_400_000;
+  const stage3RequiredDays = Math.max(0, Number(input.stage3RequiredDays ?? 7) || 0);
+  const stage6RequiredDays = Math.max(0, Number(input.stage6RequiredDays ?? 14) || 0);
+  const stage3TimeGatePassed = elapsedMs >= stage3RequiredDays * 86_400_000;
   const operationalSuccesses = binance.filter(
     (item) => item.status !== "failed" && item.queriesSucceeded > 0,
   ).length;
@@ -189,7 +193,9 @@ export function summarizeMigrationAcceptance(input: {
   const stage6ElapsedMs = stage6StartedAt > 0
     ? Math.max(0, input.now - stage6StartedAt)
     : 0;
-  const stage6TimeGatePassed = stage6ElapsedMs >= 14 * 86_400_000;
+  const stage6TimeGatePassed =
+    stage6StartedAt > 0 &&
+    stage6ElapsedMs >= stage6RequiredDays * 86_400_000;
   const stage6Verdict =
     stage6StartedAt === 0
       ? "not_started"
@@ -217,7 +223,8 @@ export function summarizeMigrationAcceptance(input: {
       analysisProviderDist: distribution(cycles.map((item) => item.analysisProviderDist)),
     },
     stage3Binance: {
-      requiredDays: 7,
+      requiredDays: stage3RequiredDays,
+      durationWaived: stage3RequiredDays === 0,
       timeGatePassed: stage3TimeGatePassed,
       verdict: stage3Verdict,
       runs: binance.length,
@@ -281,7 +288,8 @@ export function summarizeMigrationAcceptance(input: {
       },
     },
     stage6Parallel: {
-      requiredDays: 14,
+      requiredDays: stage6RequiredDays,
+      durationWaived: stage6RequiredDays === 0,
       startedAt: stage6StartedAt || null,
       elapsedHours: Math.round((stage6ElapsedMs / 3_600_000) * 10) / 10,
       timeGatePassed: stage6TimeGatePassed,

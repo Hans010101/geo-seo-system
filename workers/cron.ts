@@ -21,6 +21,7 @@ export { BrowserShadowBudget, MigrationAcceptanceLedger, MonitorCoordinator };
 
 type Env = QueueEnv & {
   CLOUDFLARE_GEO_WEEKLY_ENABLED?: string;
+  CLOUDFLARE_OPERATOR_TOKEN?: string;
 };
 
 const STATUS_KEYS = {
@@ -119,7 +120,76 @@ async function status(env: Env) {
 }
 
 export default {
-  async fetch(_request: Request, env: Env) {
+  async fetch(request: Request, env: Env) {
+    const url = new URL(request.url);
+    if (request.method === "POST" && url.pathname.startsWith("/operator/")) {
+      const token =
+        request.headers.get("x-operator-token") ||
+        request.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
+      if (!env.CLOUDFLARE_OPERATOR_TOKEN || token !== env.CLOUDFLARE_OPERATOR_TOKEN) {
+        return Response.json({ error: "unauthorized" }, { status: 401 });
+      }
+      const scheduledTime = Date.now();
+      if (url.pathname === "/operator/catch-up/daily") {
+        await env.MONITOR_QUEUE.send({
+          kind: "geo_daily_shard",
+          scheduledTime,
+          catchUp: true,
+        });
+        return Response.json({ ok: true, queued: "daily", scheduledTime });
+      }
+      if (url.pathname === "/operator/catch-up/weekly") {
+        await env.MONITOR_QUEUE.send({
+          kind: "geo_weekly_shard",
+          scheduledTime,
+          catchUp: true,
+        });
+        return Response.json({ ok: true, queued: "weekly", scheduledTime });
+      }
+      if (url.pathname === "/operator/validation-cycles") {
+        await env.MONITOR_QUEUE.sendBatch([
+          {
+            body: {
+              kind: "bootstrap",
+              cycleId: `operator_validation_news:${scheduledTime}`,
+              profile: "monitor_primary_news",
+              scheduledTime,
+            },
+          },
+          {
+            body: {
+              kind: "bootstrap",
+              cycleId: `operator_validation_social:${scheduledTime}`,
+              profile: "monitor_primary_social",
+              scheduledTime,
+            },
+          },
+        ]);
+        return Response.json({ ok: true, queued: "validation_cycles", scheduledTime });
+      }
+      if (url.pathname === "/operator/notification-probe") {
+        await env.MONITOR_QUEUE.send({
+          kind: "post_cycle",
+          cycleId: `operator_notification_probe:${scheduledTime}`,
+          profile: "monitor_primary_social",
+          status: "partial_failure",
+          keywords: 1,
+          sourceCount: 1,
+          inserted: 1,
+          briefingItems: [{
+            title: "Cloudflare 迁移验收通知测试",
+            url: "https://geo-seo-system.pages.dev",
+            sourcePlatform: "system",
+            domain: "geo-seo-system.pages.dev",
+            relevance: "high",
+            sentimentScore: -1,
+            threatLevel: "medium",
+          }],
+        });
+        return Response.json({ ok: true, queued: "notification_probe", scheduledTime });
+      }
+      return Response.json({ error: "not found" }, { status: 404 });
+    }
     const base = {
       ok: true,
       service: "geo-seo-system-cron",

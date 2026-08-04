@@ -61,6 +61,47 @@ describe("migration acceptance summary", () => {
     expect(result.stage3Binance.verdict).toBe("pass");
   });
 
+  it("supports an explicit operator waiver without bypassing quality metrics", () => {
+    const result = summarizeMigrationAcceptance({
+      windowStart: WINDOW_START,
+      now: WINDOW_START + 1_000,
+      stage3RequiredDays: 0,
+      stage6RequiredDays: 0,
+      stage6WindowStart: WINDOW_START,
+      cycles: [],
+      browser: [],
+      notifications: [],
+      binance: [{
+        runId: "operator-approved",
+        mode: "write",
+        provider: "serper",
+        status: "success",
+        startedAt: WINDOW_START,
+        finishedAt: WINDOW_START + 500,
+        rawPosts: 3,
+        matchedPosts: 3,
+        enqueued: 2,
+        queriesAttempted: 1,
+        queriesSucceeded: 1,
+        validSampleUrls: 3,
+        invalidSampleUrls: 0,
+        errors: [],
+      }],
+    });
+    expect(result.stage3Binance).toMatchObject({
+      requiredDays: 0,
+      durationWaived: true,
+      timeGatePassed: true,
+      verdict: "pass",
+    });
+    expect(result.stage6Parallel).toMatchObject({
+      requiredDays: 0,
+      durationWaived: true,
+      timeGatePassed: true,
+      verdict: "fail",
+    });
+  });
+
   it("summarizes gated GEO shards without starting stage six", () => {
     const result = summarizeMigrationAcceptance({
       windowStart: WINDOW_START,

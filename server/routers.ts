@@ -347,6 +347,7 @@ async function callExternalLLM(
   messages: { role: string; content: string }[],
   traceId: string,
   providerOverride?: "openrouter",
+  maxTokens = 4096,
 ): Promise<LLMCallTelemetry> {
   const config = await resolveApiConfig(platform, providerOverride);
 
@@ -388,7 +389,7 @@ async function callExternalLLM(
         body: JSON.stringify({
           model: config.model,
           messages,
-          max_tokens: 4096,
+          max_tokens: Math.min(4096, Math.max(256, maxTokens)),
         }),
         signal: controller.signal,
       });
@@ -455,6 +456,7 @@ async function executeCollection(
   question: { questionId: string; text: string; language: string },
   platform: string,
   providerOverride?: "openrouter",
+  maxTokens?: number,
 ): Promise<{ success: boolean; error?: string }> {
   const traceId = `col-${collectionId}-${nanoid(6)}`;
 
@@ -483,6 +485,7 @@ async function executeCollection(
       ],
       traceId,
       providerOverride,
+      maxTokens,
     );
     const responseText = telemetry.content;
     const apiSource = telemetry.source;
@@ -864,13 +867,22 @@ async function runCollectionsConcurrently(
   tasks: { collectionId: number; question: { questionId: string; text: string; language: string }; platform: string }[],
   concurrency: number,
   providerOverride?: "openrouter",
+  maxTokens?: number,
 ): Promise<{ completed: number; failed: number }> {
   const pLimit = (await import("p-limit")).default;
   const limit = pLimit(concurrency);
 
   const results = await Promise.allSettled(
     tasks.map((task) =>
-      limit(async () => executeCollection(task.collectionId, task.question, task.platform, providerOverride))
+      limit(async () =>
+        executeCollection(
+          task.collectionId,
+          task.question,
+          task.platform,
+          providerOverride,
+          maxTokens,
+        )
+      )
     )
   );
 
@@ -2184,6 +2196,7 @@ export type CloudflareGeoWeeklyShardResult = {
 export async function runCloudflareGeoWeeklyShard(options?: {
   maxCells?: number;
   concurrency?: number;
+  maxTokens?: number;
   timestamp?: number;
   allPlatforms?: boolean;
 }): Promise<CloudflareGeoWeeklyShardResult> {
@@ -2263,7 +2276,12 @@ export async function runCloudflareGeoWeeklyShard(options?: {
     if (collectionId) tasks.push({ collectionId, question: cell.question, platform: cell.platform });
   }
 
-  const result = await runCollectionsConcurrently(tasks, concurrency, "openrouter");
+  const result = await runCollectionsConcurrently(
+    tasks,
+    concurrency,
+    "openrouter",
+    Math.min(4096, Math.max(256, options?.maxTokens ?? 1536)),
+  );
   // Keep the cursor on a partial/failed shard. Successful cells are skipped on
   // retry while failed/pending rows reuse their existing collection ids.
   const cursorAfter = result.failed === 0 ? cursor + shardCells.length : cursor;

@@ -53,6 +53,14 @@ export class MigrationAcceptanceLedger extends DurableObject<MigrationAcceptance
         0,
         Number(url.searchParams.get("stage6WindowStart")) || 0,
       );
+      const stage3RequiredDays = Math.max(
+        0,
+        Number(url.searchParams.get("stage3RequiredDays") ?? "7") || 0,
+      );
+      const stage6RequiredDays = Math.max(
+        0,
+        Number(url.searchParams.get("stage6RequiredDays") ?? "14") || 0,
+      );
       const [cycleMap, binanceMap, browserMap, notificationMap, geoMap] = await Promise.all([
         this.ctx.storage.list<AcceptanceCycleRecord>({ prefix: "cycle:", limit: 500 }),
         this.ctx.storage.list<BinanceAcceptanceRecord>({ prefix: "binance:", limit: 500 }),
@@ -75,6 +83,8 @@ export class MigrationAcceptanceLedger extends DurableObject<MigrationAcceptance
           notifications,
           geo,
           stage6WindowStart,
+          stage3RequiredDays,
+          stage6RequiredDays,
         }),
         recent: {
           cycles: cycles.sort((a, b) => b.finishedAt - a.finishedAt).slice(0, 6),
