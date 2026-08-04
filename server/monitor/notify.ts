@@ -105,8 +105,18 @@ export function buildBriefing(
 }
 
 // Returns whether it was actually dispatched (for reporting).
-export async function sendBriefing(items: BriefingItem[], cycle: { keywords: number; sourceCount: number; newArticles: number }): Promise<{ sent: boolean; reason?: string; content?: string }> {
+export async function sendBriefing(
+  items: BriefingItem[],
+  cycle: { keywords: number; sourceCount: number; newArticles: number },
+  options?: {
+    deliveryEnabledOverride?: boolean;
+    modeOverride?: "every" | "negative_only";
+    dedupKey?: string;
+  },
+): Promise<{ sent: boolean; reason?: string; content?: string }> {
   const cfg = await getPushConfig();
+  const deliveryEnabled = options?.deliveryEnabledOverride ?? cfg.briefingEnabled;
+  const mode = options?.modeOverride ?? cfg.briefingMode;
   const negOrHigh = items.filter((i) => (i.sentimentScore ?? 3) <= 2 || i.threatLevel === "high").length;
   const stats = await db.getMonitorStats();
   // Phase 3: one query → map of monitored domain → # AI platforms already citing it, to flag amplified sources.
@@ -117,13 +127,14 @@ export async function sendBriefing(items: BriefingItem[], cycle: { keywords: num
     log.warn(`Briefing penetration lookup failed: ${e?.message || e}`);
   }
   const msg = buildBriefing(items, cycle, { monthCostUsd: stats?.monthCostUsd || 0, total: stats?.total || 0 }, aiReach);
-  if (!cfg.briefingEnabled) return { sent: false, reason: "briefing disabled", content: msg.content };
-  if (cfg.briefingMode === "negative_only" && negOrHigh === 0) return { sent: false, reason: "negative_only mode, nothing to report", content: msg.content };
+  if (!deliveryEnabled) return { sent: false, reason: "briefing disabled", content: msg.content };
+  if (mode === "negative_only" && negOrHigh === 0) return { sent: false, reason: "negative_only mode, nothing to report", content: msg.content };
   const delivery = await dispatchNotification({
     messageType: "batch_summary",
     title: msg.title,
     content: msg.content,
-  }); // no dedupKey (intentional per-cycle), no severity gating
+    dedupKey: options?.dedupKey,
+  });
   const sent = delivery.sent > 0;
   log.info(
     `Briefing dispatch completed (sent ${delivery.sent}/${delivery.attempted}, high/medium items ${items.length}, neg/high ${negOrHigh})`,
@@ -145,8 +156,11 @@ export async function dispatchHighThreatAlert(a: {
   sentimentScore: number | null;
   summary: string | null;
   threatLevel?: string | null; // actual threat of THIS article (may be medium now that threshold is configurable)
+}, options?: {
+  deliveryEnabledOverride?: boolean;
 }): Promise<{ created: boolean; content?: string }> {
   const cfg = await getPushConfig();
+  const deliveryEnabled = options?.deliveryEnabledOverride ?? cfg.realtimeEnabled;
   const dedupKey = `negative_article:${a.urlHash}`;
   const recent = await db.findRecentAlertByDedupKey(dedupKey, 24);
   if (recent) {
@@ -182,7 +196,7 @@ export async function dispatchHighThreatAlert(a: {
     dedupKey,
   } as any);
 
-  if (cfg.realtimeEnabled) {
+  if (deliveryEnabled) {
     const notifyTitle = `【${amplified ? "危·已入AI" : threat}】负面舆情 - ${a.domain || ""}`;
     // Queue/Worker invocations can end immediately after this function returns,
     // so both independent notification paths are explicitly awaited.

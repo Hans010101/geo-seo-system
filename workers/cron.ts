@@ -11,6 +11,7 @@ import {
   getCoordinatorStatus,
   getGeoQueueStatus,
   getMigrationAcceptanceStatus,
+  getOpenRouterPreflightStatus,
   processMonitorQueue,
   type QueueEnv,
   type QueueTask,
@@ -58,6 +59,7 @@ async function status(env: Env) {
     news,
     social,
     geoQueue,
+    openRouter,
   ] = await Promise.all([
     readKeys(STATUS_KEYS),
     readKeys(WEEKLY_KEYS),
@@ -67,6 +69,7 @@ async function status(env: Env) {
     getCoordinatorStatus(env, "monitor_primary_news"),
     getCoordinatorStatus(env, "monitor_primary_social"),
     getGeoQueueStatus(),
+    getOpenRouterPreflightStatus(),
   ]);
   const features = getCloudflareFeatureFlags(env);
   return {
@@ -91,6 +94,14 @@ async function status(env: Env) {
     gate: {
       firecrawlEnabled: env.CLOUDFLARE_GATE_FIRECRAWL_ENABLED !== "false",
       fallbackProvider: "serper",
+    },
+    openRouter: {
+      ...openRouter,
+      preflightEnabled: features.openRouterPreflight,
+      weeklyGateHealthy:
+        openRouter.status === "healthy" &&
+        Date.now() - Number(openRouter.checkedAt || 0) <=
+          Number(env.CLOUDFLARE_OPENROUTER_PREFLIGHT_MAX_AGE_HOURS || 26) * 3_600_000,
     },
     browserFulltext: {
       ...browserFulltext,

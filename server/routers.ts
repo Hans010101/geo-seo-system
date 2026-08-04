@@ -2034,6 +2034,7 @@ export type CloudflareGeoDailyShardResult = {
   batchId: string | null;
   questions: number;
   platforms: number;
+  populationCells: number;
   totalCells: number;
   cursorBefore: number;
   cursorAfter: number;
@@ -2050,6 +2051,7 @@ export type CloudflareGeoDailyShardResult = {
 // on retry, so at-least-once Queue delivery cannot duplicate production data.
 export async function runCloudflareGeoDailyShard(options?: {
   maxCells?: number;
+  maxTotalCells?: number;
   concurrency?: number;
   timestamp?: number;
 }): Promise<CloudflareGeoDailyShardResult> {
@@ -2070,8 +2072,22 @@ export async function runCloudflareGeoDailyShard(options?: {
   const enabledPlatforms = platformConfigsList
     .filter((platform: any) => platform.isEnabled && PLATFORMS.includes(platform.platform as Platform))
     .map((platform: any) => platform.platform as Platform);
-  const cells = questionsList.flatMap((question) =>
+  const population = questionsList.flatMap((question) =>
     enabledPlatforms.map((platform) => ({ question, platform })),
+  );
+  // The disabled legacy scheduler represented a 31×12=372-cell daily run.
+  // Running that matrix every day would duplicate the full weekly coverage and
+  // spend OpenRouter credit without adding useful migration evidence. Instead,
+  // daily GEO takes a deterministic rotating sample; the weekly job remains the
+  // authoritative all-question/all-platform matrix.
+  const maxTotalCells = Math.max(1, options?.maxTotalCells ?? 24);
+  const sampleSize = Math.min(maxTotalCells, population.length);
+  const dayNumber = Math.floor(timestamp / 86_400_000);
+  const sampleOffset = population.length > 0
+    ? (dayNumber * sampleSize) % population.length
+    : 0;
+  const cells = Array.from({ length: sampleSize }, (_, index) =>
+    population[(sampleOffset + index) % population.length],
   );
 
   let cursor = savedDay === day ? Math.max(0, parseInt(savedCursor || "0", 10) || 0) : 0;
@@ -2087,6 +2103,7 @@ export async function runCloudflareGeoDailyShard(options?: {
       batchId: null,
       questions: questionsList.length,
       platforms: enabledPlatforms.length,
+      populationCells: population.length,
       totalCells: cells.length,
       cursorBefore: cursor,
       cursorAfter: cursor,
@@ -2131,6 +2148,7 @@ export async function runCloudflareGeoDailyShard(options?: {
     batchId,
     questions: questionsList.length,
     platforms: enabledPlatforms.length,
+    populationCells: population.length,
     totalCells: cells.length,
     cursorBefore: cursor,
     cursorAfter,

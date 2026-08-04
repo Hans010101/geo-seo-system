@@ -7,6 +7,7 @@ import {
   dispatchHighThreatAlert,
   sendBriefing,
 } from "../server/monitor/notify";
+import { sendEmailAlert } from "../server/monitor/email-alert";
 import { dispatchNotification } from "../server/_core/notification";
 import * as budget from "../server/monitor/budget";
 import { enabledSources } from "../server/monitor/sources/registry";
@@ -62,6 +63,11 @@ import {
   runCloudflareGeoDailyShard,
   runCloudflareGeoWeeklyShard,
 } from "../server/routers";
+import {
+  isFreshHealthyOpenRouter,
+  probeOpenRouter,
+  type OpenRouterPreflightResult,
+} from "./openrouter-preflight";
 
 type CronBindings = Pick<
   CronWorkerEnv,
@@ -91,13 +97,20 @@ export type QueueEnv = CloudflareRuntimeEnv & CronBindings & CloudflareFeatureEn
   CLOUDFLARE_BROWSER_FULLTEXT_TIMEOUT_MS?: string;
   CLOUDFLARE_BROWSER_FULLTEXT_COOLDOWN_SECONDS?: string;
   CLOUDFLARE_GATE_FIRECRAWL_ENABLED?: string;
+  CLOUDFLARE_GATE_SERPER_QUERY_TERMS?: string;
   CLOUDFLARE_ACCEPTANCE_WINDOW_START?: string;
   CLOUDFLARE_GEO_DAILY_MAX_CELLS?: string;
+  CLOUDFLARE_GEO_DAILY_TOTAL_CELLS?: string;
   CLOUDFLARE_GEO_DAILY_CONCURRENCY?: string;
   CLOUDFLARE_GEO_DAILY_START_HOUR?: string;
+  CLOUDFLARE_GEO_DAILY_REQUIRE_OPENROUTER_PREFLIGHT?: string;
   CLOUDFLARE_GEO_WEEKLY_ALL_PLATFORMS?: string;
   CLOUDFLARE_GEO_WEEKLY_MAX_CELLS?: string;
   CLOUDFLARE_GEO_WEEKLY_CONCURRENCY?: string;
+  CLOUDFLARE_GEO_WEEKLY_START_HOUR?: string;
+  CLOUDFLARE_OPENROUTER_PREFLIGHT_MODEL?: string;
+  CLOUDFLARE_OPENROUTER_PREFLIGHT_MAX_AGE_HOURS?: string;
+  CLOUDFLARE_BRIEFING_MODE?: string;
   CLOUDFLARE_STAGE6_WINDOW_START?: string;
 };
 
@@ -154,6 +167,11 @@ type GeoWeeklyShardTask = {
   scheduledTime: number;
 };
 
+type OpenRouterPreflightTask = {
+  kind: "openrouter_preflight";
+  scheduledTime: number;
+};
+
 export type BrowserShadowTask = {
   kind: "browser_shadow";
   urlHash: string;
@@ -181,6 +199,7 @@ export type QueueTask =
   | BinanceProbeTask
   | GeoDailyShardTask
   | GeoWeeklyShardTask
+  | OpenRouterPreflightTask
   | BrowserShadowTask
   | PostCycleTask;
 
@@ -233,6 +252,13 @@ const GEO_WEEKLY_STATUS_KEYS = {
   finishedAt: "cf_geo_weekly_last_finished_at",
   summary: "cf_geo_weekly_last_summary",
   error: "cf_geo_weekly_last_error",
+} as const;
+
+const OPENROUTER_PREFLIGHT_STATUS_KEYS = {
+  status: "cf_openrouter_preflight_status",
+  checkedAt: "cf_openrouter_preflight_checked_at",
+  summary: "cf_openrouter_preflight_summary",
+  error: "cf_openrouter_preflight_error",
 } as const;
 
 function positiveInt(value: string | undefined, fallback: number): number {
@@ -471,15 +497,24 @@ function buildDiscoveryTasks(
     return [...serper, ...rss];
   }
 
-  const gate = GATE_LIST_URLS.map((shard, index) => ({
-    ...base,
-    taskId: `gate_square:${index}`,
-    sourceName: "gate_square",
-    shard,
-    keywords,
-    budgetReserved: index < budgetGrant.firecrawl,
-    fallbackOnly: env.CLOUDFLARE_GATE_FIRECRAWL_ENABLED === "false",
-  }));
+  const gateFirecrawlEnabled = env.CLOUDFLARE_GATE_FIRECRAWL_ENABLED !== "false";
+  const gate = gateFirecrawlEnabled
+    ? GATE_LIST_URLS.map((shard, index) => ({
+        ...base,
+        taskId: `gate_square:${index}`,
+        sourceName: "gate_square",
+        shard,
+        keywords,
+        budgetReserved: index < budgetGrant.firecrawl,
+        fallbackOnly: false,
+      }))
+    : [{
+        ...base,
+        taskId: "gate_square:serper",
+        sourceName: "gate_square",
+        keywords,
+        fallbackOnly: true,
+      }];
   const telegram = TELEGRAM_CHANNELS.map((shard, index) => ({
     ...base,
     taskId: `telegram:${index}`,
@@ -810,6 +845,49 @@ export async function getGeoQueueStatus(): Promise<{
   };
 }
 
+export async function getOpenRouterPreflightStatus(): Promise<{
+  status: string | null;
+  checkedAt: string | null;
+  summary: string | null;
+  error: string | null;
+}> {
+  return {
+    status: await db.getSysConfig(OPENROUTER_PREFLIGHT_STATUS_KEYS.status),
+    checkedAt: await db.getSysConfig(OPENROUTER_PREFLIGHT_STATUS_KEYS.checkedAt),
+    summary: await db.getSysConfig(OPENROUTER_PREFLIGHT_STATUS_KEYS.summary),
+    error: await db.getSysConfig(OPENROUTER_PREFLIGHT_STATUS_KEYS.error),
+  };
+}
+
+async function readOpenRouterPreflightResult(): Promise<OpenRouterPreflightResult | null> {
+  const summary = await db.getSysConfig(OPENROUTER_PREFLIGHT_STATUS_KEYS.summary);
+  if (!summary) return null;
+  try {
+    return JSON.parse(summary) as OpenRouterPreflightResult;
+  } catch {
+    return null;
+  }
+}
+
+async function runOpenRouterPreflight(
+  task: OpenRouterPreflightTask,
+  env: QueueEnv,
+): Promise<void> {
+  const result = await probeOpenRouter({
+    apiKey: env.OPENROUTER_API_KEY,
+    baseUrl: env.OPENROUTER_BASE_URL,
+    model: env.CLOUDFLARE_OPENROUTER_PREFLIGHT_MODEL,
+    checkedAt: task.scheduledTime,
+  });
+  await Promise.all([
+    db.setSysConfig(OPENROUTER_PREFLIGHT_STATUS_KEYS.status, result.status),
+    db.setSysConfig(OPENROUTER_PREFLIGHT_STATUS_KEYS.checkedAt, String(result.checkedAt)),
+    db.setSysConfig(OPENROUTER_PREFLIGHT_STATUS_KEYS.summary, JSON.stringify(result).slice(0, 2000)),
+    db.setSysConfig(OPENROUTER_PREFLIGHT_STATUS_KEYS.error, result.error || ""),
+  ]);
+  console.log(JSON.stringify({ event: "openrouter_preflight.result", ...result }));
+}
+
 async function runObservedGeoShard(
   env: QueueEnv,
   task: GeoDailyShardTask | GeoWeeklyShardTask,
@@ -818,6 +896,36 @@ async function runObservedGeoShard(
   const keys = daily ? GEO_DAILY_STATUS_KEYS : GEO_WEEKLY_STATUS_KEYS;
   const name = daily ? "geo_daily_shard" : "geo_weekly_openrouter_shard";
   const startedAt = Date.now();
+  if (
+    !daily ||
+    env.CLOUDFLARE_GEO_DAILY_REQUIRE_OPENROUTER_PREFLIGHT === "true"
+  ) {
+    const preflight = await readOpenRouterPreflightResult();
+    const maxAgeHours = positiveInt(
+      env.CLOUDFLARE_OPENROUTER_PREFLIGHT_MAX_AGE_HOURS,
+      26,
+    );
+    if (!isFreshHealthyOpenRouter(preflight, startedAt, maxAgeHours)) {
+      const cadence = daily ? "daily" : "weekly";
+      const reason = preflight
+        ? `OpenRouter preflight ${preflight.status}; ${cadence} GEO paused`
+        : "OpenRouter preflight missing; GEO collection paused";
+      await Promise.all([
+        db.setSysConfig(keys.mode, "queue"),
+        db.setSysConfig(keys.task, name),
+        db.setSysConfig(keys.status, "blocked"),
+        db.setSysConfig(keys.startedAt, String(startedAt)),
+        db.setSysConfig(keys.finishedAt, String(Date.now())),
+        db.setSysConfig(keys.summary, JSON.stringify({ preflight }).slice(0, 4000)),
+        db.setSysConfig(keys.error, reason),
+      ]);
+      console.warn(JSON.stringify({
+        event: `${daily ? "geo_daily" : "geo_weekly"}.blocked_by_openrouter_preflight`,
+        reason,
+      }));
+      return;
+    }
+  }
   await Promise.all([
     db.setSysConfig(keys.mode, "queue"),
     db.setSysConfig(keys.task, name),
@@ -829,6 +937,7 @@ async function runObservedGeoShard(
     const result = daily
       ? await runCloudflareGeoDailyShard({
           maxCells: positiveInt(env.CLOUDFLARE_GEO_DAILY_MAX_CELLS, 4),
+          maxTotalCells: positiveInt(env.CLOUDFLARE_GEO_DAILY_TOTAL_CELLS, 24),
           concurrency: positiveInt(env.CLOUDFLARE_GEO_DAILY_CONCURRENCY, 2),
           timestamp: task.scheduledTime,
         })
@@ -1141,8 +1250,17 @@ async function discoverGateViaSerper(
     return;
   }
   const topic = task.shard?.split("/").filter(Boolean).pop() || "TRON";
+  const configuredTerms = (env.CLOUDFLARE_GATE_SERPER_QUERY_TERMS ||
+    "TRON,TRX,孙宇晨,Justin Sun")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .slice(0, 6);
+  const queryTerms = configuredTerms.length > 0
+    ? configuredTerms.map((value) => `"${value.replace(/"/g, "")}"`).join(" OR ")
+    : `"${topic.replace(/"/g, "")}"`;
   try {
-    const items = await searchWeb(`site:gate.com/post/status ${topic}`, {
+    const items = await searchWeb(`site:gate.com/post/status (${queryTerms})`, {
       tbs: "qdr:w",
       num: 10,
       gl: "us",
@@ -1447,6 +1565,8 @@ async function candidate(task: CandidateTask, env: QueueEnv): Promise<void> {
         sentimentScore: analysis.sentimentScore,
         summary: analysis.summary,
         threatLevel: analysis.threatLevel,
+      }, {
+        deliveryEnabledOverride: true,
       });
       realtimeAlertCreated = alert.created;
     } catch (error) {
@@ -1652,6 +1772,13 @@ async function postCycle(task: PostCycleTask, env: QueueEnv): Promise<void> {
         keywords: task.keywords,
         sourceCount: task.sourceCount,
         newArticles: task.inserted,
+      }, {
+        deliveryEnabledOverride: true,
+        modeOverride:
+          env.CLOUDFLARE_BRIEFING_MODE === "every"
+            ? "every"
+            : "negative_only",
+        dedupKey: `cloudflare_briefing:${task.cycleId}`,
       });
       record.briefingSent = result.sent;
       record.briefingReason = result.reason;
@@ -1662,14 +1789,22 @@ async function postCycle(task: PostCycleTask, env: QueueEnv): Promise<void> {
   if (flags.failureNotifications && task.status === "partial_failure") {
     record.failureNotificationAttempted = true;
     try {
-      const result = await dispatchNotification({
-        messageType: "alert",
-        title: `Cloudflare 舆情批次异常 · ${task.profile}`,
-        content: `批次 ${task.cycleId} 以 partial_failure 结束，请检查 Worker 状态与日志。`,
-        severity: "high",
-        dedupKey: `cloudflare_cycle_failure:${task.cycleId}`,
-      });
-      record.failureNotificationSent = result.sent > 0;
+      const title = `Cloudflare 舆情批次异常 · ${task.profile}`;
+      const content = `批次 ${task.cycleId} 以 partial_failure 结束，请检查 Worker 状态与日志。`;
+      const [telegram, email] = await Promise.all([
+        dispatchNotification({
+          messageType: "alert",
+          title,
+          content,
+          severity: "high",
+          dedupKey: `cloudflare_cycle_failure:${task.cycleId}`,
+        }),
+        sendEmailAlert(
+          title,
+          `<p>${content}</p><p>该通知来自 Cloudflare 独立运行版本。</p>`,
+        ),
+      ]);
+      record.failureNotificationSent = telegram.sent > 0 || email.sent;
     } catch (error) {
       errors.push(`failure notification: ${String(error).slice(0, 200)}`);
     }
@@ -1705,6 +1840,7 @@ async function processTask(task: QueueTask, env: QueueEnv): Promise<void> {
   if (task.kind === "geo_daily_shard" || task.kind === "geo_weekly_shard") {
     return runObservedGeoShard(env, task);
   }
+  if (task.kind === "openrouter_preflight") return runOpenRouterPreflight(task, env);
   if (task.kind === "browser_shadow") return browserShadow(task, env);
   if (task.kind === "post_cycle") return postCycle(task, env);
   return maintenance(task);
@@ -1830,7 +1966,17 @@ export async function enqueueScheduledMonitor(
     if (flags.geoDaily && local.hour >= dailyStartHour) {
       messages.push({ body: { kind: "geo_daily_shard", scheduledTime } });
     }
-    if (flags.geoWeekly) {
+    const weeklyStartHour = Math.min(
+      23,
+      positiveInt(env.CLOUDFLARE_GEO_WEEKLY_START_HOUR, 3),
+    );
+    if (
+      flags.openRouterPreflight &&
+      (local.hour === 1 || local.hour === 9)
+    ) {
+      messages.push({ body: { kind: "openrouter_preflight", scheduledTime } });
+    }
+    if (flags.geoWeekly && local.hour >= weeklyStartHour) {
       messages.push({ body: { kind: "geo_weekly_shard", scheduledTime } });
     }
   }

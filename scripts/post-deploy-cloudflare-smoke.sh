@@ -52,8 +52,11 @@ CRON_BODY="$(curl -sS -m 30 "${CRON_URL}/" || true)"
 CRON_CODE="$(http_code "${CRON_URL}/")"
 if [ "$CRON_CODE" = "200" ] \
   && printf '%s' "$CRON_BODY" | grep -q '"standby":false' \
-  && printf '%s' "$CRON_BODY" | grep -q '"mode":"canary"'; then
-  ok "Cron Worker 可达且处于免费套餐金丝雀并行模式"
+  && printf '%s' "$CRON_BODY" | grep -q '"mode":"primary"' \
+  && printf '%s' "$CRON_BODY" | grep -q '"geoDaily":true' \
+  && printf '%s' "$CRON_BODY" | grep -q '"geoWeekly":true' \
+  && printf '%s' "$CRON_BODY" | grep -q '"openRouterPreflight":true'; then
+  ok "Cron Worker 可达，主运行模式与迁移模块开关正常"
 else
   bad "Cron Worker 状态异常：HTTP ${CRON_CODE} $(printf '%s' "$CRON_BODY" | head -c 300)"
 fi

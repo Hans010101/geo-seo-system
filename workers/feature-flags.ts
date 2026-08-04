@@ -15,6 +15,7 @@ export type CloudflareFeatureEnv = {
   CLOUDFLARE_FETCH_OBSERVABILITY_ENABLED?: string;
   CLOUDFLARE_BROWSER_FULLTEXT_SHADOW_ENABLED?: string;
   CLOUDFLARE_OPENROUTER_FALLBACK_ENABLED?: string;
+  CLOUDFLARE_OPENROUTER_PREFLIGHT_ENABLED?: string;
 };
 
 function enabled(value: string | undefined, fallback = false): boolean {
@@ -47,5 +48,6 @@ export function getCloudflareFeatureFlags(env: CloudflareFeatureEnv) {
     fetchObservability: enabled(env.CLOUDFLARE_FETCH_OBSERVABILITY_ENABLED),
     browserFullTextShadow: enabled(env.CLOUDFLARE_BROWSER_FULLTEXT_SHADOW_ENABLED),
     openRouterFallback: enabled(env.CLOUDFLARE_OPENROUTER_FALLBACK_ENABLED),
+    openRouterPreflight: enabled(env.CLOUDFLARE_OPENROUTER_PREFLIGHT_ENABLED),
   } as const;
 }

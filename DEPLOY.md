@@ -7,21 +7,21 @@ Cloudflare 已部署完整版本，Cloud Run 暂时保持不动：
 ```text
 用户 ──→ Cloudflare Pages + Functions ──→ Hyperdrive ──→ Cloud SQL MySQL
 
-Cloudflare Cron Worker（免费套餐金丝雀并行模式）
-Cloud Run（继续运行，并继续执行原有后台任务）
+Cloudflare Cron Worker（Queue 分片主运行版本）
+Cloud Run（保持原样，仅用于平行对比）
 ```
 
-Cloudflare Cron 当前开启 `canary` 模式：
+Cloudflare Cron 当前开启 `primary` 模式：
 
-- 每天 11:35（Asia/Shanghai）使用最高优先级的 1 个关键词和 Serper 单一来源执行真实监控链路；
-- 每轮最多处理 2 篇新文章，不发送实时提醒或简报，也不覆盖 Cloud Run 的生产调度时间；
-- 清理、周报、月报比 Cloud Run 错峰 15 分钟运行，相关写入均为幂等操作；
-- 只占用 1 个每 5 分钟触发的 Cron，由代码内部按时间分发任务，兼容免费账户的触发器配额；
-- Cloud Run 的完整生产调度保持不变。
+- 北京时间奇数小时 `:15` 运行新闻批次，`:40` 运行社交批次；
+- Workers AI 为文章分析主路由，OpenRouter 只作故障降级和 GEO 平台采集；
+- 币安广场通过 Browser/Serper 在 Cloudflare 内独立采集，不允许调用 Cloud Run 兜底；
+- Browser Shadow 使用独立串行 Queue、每日 4 页和 8 分钟硬预算；
+- 实时告警、负面简报和最终失败通知有独立开关与幂等键；
+- 每日 GEO 是 24 单元的轮转抽样，每周 GEO 是 31 问题 × 全部 15 平台的完整矩阵；
+- OpenRouter 每日先做低成本预检，402、鉴权失败或状态过期时只暂停 GEO，不影响舆情主链。
 
-这个模式用于在 Workers 免费套餐下获得真实运行数据，同时控制 CPU、子请求和第三方 API
-消耗。要运行完整任务，必须先基于金丝雀指标确认资源上限，再把
-`CLOUDFLARE_CRON_MODE` 切为 `"full"`。
+Cloud Run 不参与 Cloudflare 的运行时降级链，且在迁移验收完成前不得停止、修改或删除。
 
 ## Cloudflare 资源
 
@@ -40,7 +40,11 @@ Cloudflare Pages Secret（只记录名称，不记录值）：
 - `GOOGLE_CLIENT_SECRET`
 - `RESEND_API_KEY`
 
-Cron Worker 当前业务密钥均从共享数据库的全局配置读取，不额外复制登录密钥。
+Cron Worker Secret：
+
+- `OPENROUTER_API_KEY`
+- `RESEND_API_KEY`
+
 数据库连接信息由 Hyperdrive 保存，不应另设明文 `DATABASE_URL`。
 
 ## 标准 Cloudflare 部署
@@ -97,8 +101,8 @@ bash scripts/post-deploy-smoke.sh \
 
 1. 先冻结会创建后台任务的管理操作，并确认 Cloud Run 当前任务已结束。
 2. 确认 Cloudflare 金丝雀任务已有足够的成功运行记录。
-3. 停止 Cloud Run 的后台调度能力后，将 `CLOUDFLARE_CRON_MODE` 从 `"canary"` 改为 `"full"`。
-4. 观察至少一个完整采集/监控周期，确认没有重复任务、失败积压或异常写入。
+3. 确认 OpenRouter 预检健康、每日 GEO 完成、每周 465 单元在窗口内完成。
+4. 所有 Stage 5 模块至少观察 2–3 个自然周期，并完成真实 14 天平行窗口。
 5. 将正式域名和全部用户流量切到 Cloudflare Pages。
 6. 保留 Cloud Run 作为只读回退一段观察期。
 7. 经确认后再删除 Cloud Run；删除前另行备份数据库与配置。

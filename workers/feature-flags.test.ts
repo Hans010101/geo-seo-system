@@ -36,6 +36,7 @@ describe("Cloudflare migration feature flags", () => {
       fetchObservability: false,
       browserFullTextShadow: false,
       openRouterFallback: false,
+      openRouterPreflight: false,
     });
   });
 
@@ -100,6 +101,20 @@ describe("Cloudflare migration feature flags", () => {
     expect(afterStart.sendBatch).toHaveBeenCalledWith([
       { body: expect.objectContaining({ kind: "geo_daily_shard" }) },
       { body: expect.objectContaining({ kind: "geo_weekly_shard" }) },
+    ]);
+  });
+
+  it("runs the OpenRouter preflight before the first weekly GEO window", async () => {
+    const preflight = envWith({
+      CLOUDFLARE_MONITOR_SOCIAL_ENABLED: "false",
+      CLOUDFLARE_OPENROUTER_PREFLIGHT_ENABLED: "true",
+      CLOUDFLARE_GEO_WEEKLY_ENABLED: "true",
+      CLOUDFLARE_GEO_WEEKLY_START_HOUR: "3",
+    });
+    // 2026-07-30 01:40 Asia/Shanghai.
+    await enqueueScheduledMonitor(Date.UTC(2026, 6, 29, 17, 40), preflight.env);
+    expect(preflight.sendBatch).toHaveBeenCalledWith([
+      { body: expect.objectContaining({ kind: "openrouter_preflight" }) },
     ]);
   });
 });

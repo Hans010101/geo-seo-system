@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 完整部署 Cloudflare Pages 与待命 Cron Worker，并执行线上验收。
+# 完整部署 Cloudflare Pages 与主运行 Cron Worker，并执行线上验收。
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
