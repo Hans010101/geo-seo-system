@@ -32,7 +32,7 @@ describe("Gate Square Serper fallback", () => {
       normalizedUrl: "https://gate.com/post/status/123456",
       matchedKeywords: ["TRON", "TRX"],
       post: {
-        sourceName: "gate_square",
+        sourceName: "gate_square_serper",
         sourcePlatform: "gate_square",
       },
     });

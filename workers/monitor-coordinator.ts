@@ -71,6 +71,9 @@ export type CoordinatorStats = {
   insertedSourceDist: Record<string, number>;
   dedupExisting: number;
   dedupConflicts: number;
+  rejected: number;
+  rejectionReasons: Record<string, number>;
+  rejectedSourceDist: Record<string, number>;
   realtimeAlerts: number;
   sourceDiagnostics: Record<string, SourceDiagnostic>;
   fetchTelemetry: FetchTelemetryStats;
@@ -130,6 +133,9 @@ function emptyState(body: {
     insertedSourceDist: {},
     dedupExisting: 0,
     dedupConflicts: 0,
+    rejected: 0,
+    rejectionReasons: {},
+    rejectedSourceDist: {},
     realtimeAlerts: 0,
     sourceDiagnostics: {},
     fetchTelemetry: emptyFetchTelemetry(),
@@ -238,6 +244,21 @@ export class MonitorCoordinator extends DurableObject<CoordinatorEnv> {
       if (!(await this.ctx.storage.get<boolean>(settleKey))) {
         await this.ctx.storage.put(settleKey, true);
         state.candidateSettled++;
+        if (body.rejectionReason) {
+          state.rejected = (state.rejected || 0) + 1;
+          state.rejectionReasons ||= {};
+          const reason = String(body.rejectionReason).slice(0, 64);
+          state.rejectionReasons[reason] =
+            (state.rejectionReasons[reason] || 0) + 1;
+          state.rejectedSourceDist ||= {};
+          const source = String(body.sourcePlatform || "").slice(0, 64);
+          if (source) {
+            state.rejectedSourceDist[source] =
+              (state.rejectedSourceDist[source] || 0) + 1;
+          }
+        }
+        state.dedupExisting =
+          (state.dedupExisting || 0) + (body.dedupExisting ? 1 : 0);
         this.finalize(state);
         await this.save(state);
       }

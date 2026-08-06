@@ -32,6 +32,7 @@ import {
   sha256,
 } from "../server/monitor/util";
 import {
+  isSearchIntermediaryUrl,
   sourceDateFreshness,
   verifySourcePublishedAt,
   type SourceDateVerification,
@@ -232,10 +233,10 @@ export type QueueTask =
   | PostCycleTask;
 
 const SOURCE_LIMITS: Record<string, number> = {
-  serper: 3,
-  rss: 3,
-  gate_square: 5,
-  telegram: 3,
+  serper: 5,
+  rss: 5,
+  gate_square: 8,
+  telegram: 5,
   x: 20,
   binance_square_browser: 5,
 };
@@ -1287,7 +1288,7 @@ export function mapGateSerperFallback(
         contentSnippet: (item.snippet || item.title || "").slice(0, 4000),
         author: item.source || null,
         publishedAt: parseSerperDate(item.date),
-        sourceName: "gate_square",
+        sourceName: "gate_square_serper",
         sourcePlatform: "gate_square",
       },
     });
@@ -1305,7 +1306,14 @@ async function discoverGateViaSerper(
   upstreamErrors: string[],
 ): Promise<void> {
   const startedAt = Date.now();
-  const grant = await budget.reserveQueuedBudget({ serper: 1 });
+  const configuredTerms = (env.CLOUDFLARE_GATE_SERPER_QUERY_TERMS ||
+    "TRON,TRX,孙宇晨,Justin Sun")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .slice(0, 4);
+  const queryTerms = configuredTerms.length > 0 ? configuredTerms : ["TRON"];
+  const grant = await budget.reserveQueuedBudget({ serper: queryTerms.length });
   if (grant.serper < 1) {
     const errors = [...upstreamErrors, "Serper monthly budget unavailable"];
     await finishDiscovery(task, env, {
@@ -1327,22 +1335,26 @@ async function discoverGateViaSerper(
     });
     return;
   }
-  const topic = task.shard?.split("/").filter(Boolean).pop() || "TRON";
-  const configuredTerms = (env.CLOUDFLARE_GATE_SERPER_QUERY_TERMS ||
-    "TRON,TRX,孙宇晨,Justin Sun")
-    .split(",")
-    .map((value) => value.trim())
-    .filter(Boolean)
-    .slice(0, 6);
-  const queryTerms = configuredTerms.length > 0
-    ? configuredTerms.map((value) => `"${value.replace(/"/g, "")}"`).join(" OR ")
-    : `"${topic.replace(/"/g, "")}"`;
+  const activeTerms = queryTerms.slice(0, grant.serper);
   try {
-    const items = await searchWeb(`site:gate.com/post/status (${queryTerms})`, {
-      tbs: "qdr:w",
-      num: 10,
-      gl: "us",
-      hl: "en",
+    const results = await Promise.allSettled(activeTerms.map((term) =>
+      searchWeb(
+        `site:gate.com/post/status "${term.replace(/"/g, "")}"`,
+        {
+          tbs: "qdr:w",
+          num: 10,
+          gl: hasCJK(term) ? "cn" : "us",
+          hl: hasCJK(term) ? "zh-cn" : "en",
+        },
+      )
+    ));
+    const searchErrors: string[] = [];
+    const items = results.flatMap((result, index) => {
+      if (result.status === "fulfilled") return result.value;
+      searchErrors.push(
+        `${activeTerms[index]}: ${String(result.reason).slice(0, 160)}`,
+      );
+      return [];
     });
     const found = mapGateSerperFallback(items, task.keywords);
     const selected = found.slice(0, SOURCE_LIMITS.gate_square);
@@ -1361,30 +1373,33 @@ async function discoverGateViaSerper(
       })));
     }
     const diagnostic: SourceDiagnostic = {
-      status: found.length > 0 ? "success" : "empty",
+      status:
+        searchErrors.length > 0
+          ? found.length > 0 ? "partial" : "failed"
+          : found.length > 0 ? "success" : "empty",
       provider: "serper",
       discovered: found.length,
       enqueued: selected.length,
       durationMs: Date.now() - startedAt,
-      queriesAttempted: 1,
-      queriesSucceeded: 1,
-      errors: upstreamErrors.slice(0, 4),
+      queriesAttempted: activeTerms.length,
+      queriesSucceeded: results.length - searchErrors.length,
+      errors: [...upstreamErrors, ...searchErrors].slice(0, 6),
       updatedAt: Date.now(),
     };
     console.log(JSON.stringify({
       event: "gate_square.discovery",
       cycleId: task.cycleId,
       provider: "serper",
-      topic,
+      queryTerms: activeTerms,
       rawResults: items.length,
       matchedPosts: found.length,
       enqueued: selected.length,
-      upstreamErrors,
+      upstreamErrors: [...upstreamErrors, ...searchErrors],
     }));
     await finishDiscovery(task, env, {
       discovered: found.length,
       enqueued: selected.length,
-      failed: false,
+      failed: searchErrors.length === results.length,
       sourceName: "gate_square",
       diagnostic,
     });
@@ -1540,7 +1555,7 @@ async function discover(task: DiscoveryTask, env: QueueEnv): Promise<void> {
       budgetReserved: task.budgetReserved,
     });
     for (const post of found) {
-      if (!post.url) continue;
+      if (!post.url || isSearchIntermediaryUrl(post.url)) continue;
       const normalizedUrl = normalizeUrl(post.url);
       const urlHash = sha256(normalizedUrl);
       const current = posts.get(urlHash);
@@ -1559,7 +1574,18 @@ async function discover(task: DiscoveryTask, env: QueueEnv): Promise<void> {
       return;
     }
   }
-  const selected = Array.from(posts.entries()).slice(0, SOURCE_LIMITS[task.sourceName] || 3);
+  const selected = Array.from(posts.entries())
+    .sort(([, a], [, b]) => {
+      const freshnessRank = (post: DiscoveredPost) => {
+        const freshness = monitorPublishedAtFreshness(post.publishedAt);
+        return freshness === "fresh" ? 0 : freshness === "missing" ? 1 : 2;
+      };
+      return (
+        freshnessRank(a.post) - freshnessRank(b.post) ||
+        (b.post.publishedAt || 0) - (a.post.publishedAt || 0)
+      );
+    })
+    .slice(0, SOURCE_LIMITS[task.sourceName] || 3);
   if (selected.length > 0) {
     await env.MONITOR_QUEUE.sendBatch(selected.map(([urlHash, value]) => ({
       body: {
@@ -1601,41 +1627,33 @@ async function completeCandidate(
   }
 }
 
-async function candidate(task: CandidateTask, env: QueueEnv): Promise<void> {
-  const claim = await coordinatorPost<{
-    accepted: boolean;
-    inFlight?: boolean;
-  }>(
+async function settleCandidate(
+  env: QueueEnv,
+  task: CandidateTask,
+  rejectionReason: string,
+  patch: Record<string, unknown> = {},
+): Promise<void> {
+  const state = await coordinatorPost<CoordinatorStats>(
     env,
     task.profile,
-    "/claim",
+    "/settle",
     {
       cycleId: task.cycleId,
-      urlHash: task.urlHash,
       deliveryId: task.deliveryId,
+      rejectionReason,
+      sourcePlatform: task.post.sourcePlatform,
+      ...patch,
     },
   );
-  if (claim.inFlight) return;
-  if (!claim.accepted) {
-    const state = await coordinatorPost<CoordinatorStats>(
-      env,
-      task.profile,
-      "/settle",
-      {
-        cycleId: task.cycleId,
-        deliveryId: task.deliveryId,
-      },
-    );
-    if (state.status === "success" || state.status === "partial_failure") {
-      await syncLegacyStatus(env, state);
-    }
-    return;
+  if (state.status === "success" || state.status === "partial_failure") {
+    await syncLegacyStatus(env, state);
   }
+}
 
+async function candidate(task: CandidateTask, env: QueueEnv): Promise<void> {
   if (await db.getMonitorArticleByUrlHash(task.urlHash)) {
-    await completeCandidate(env, task, {
+    await settleCandidate(env, task, "duplicate_url", {
       dedupExisting: true,
-      sourcePlatform: task.post.sourcePlatform,
     });
     return;
   }
@@ -1656,7 +1674,7 @@ async function candidate(task: CandidateTask, env: QueueEnv): Promise<void> {
         status: sourceDate.status,
         error: sourceDate.error || "",
       }));
-      await completeCandidate(env, task, {});
+      await settleCandidate(env, task, `source_date_${sourceDate.status}`);
       return;
     }
     effectivePublishedAt = sourceDate.publishedAt;
@@ -1675,11 +1693,11 @@ async function candidate(task: CandidateTask, env: QueueEnv): Promise<void> {
       sourcePublishedAt: effectivePublishedAt,
       sourceDateEvidence: sourceDate?.evidence || "",
     }));
-    await completeCandidate(env, task, {});
+    await settleCandidate(env, task, `freshness_${freshness}`);
     return;
   }
   if (!detectContentLang(`${post.title || ""} ${post.fullContent || post.contentSnippet || ""}`).allowed) {
-    await completeCandidate(env, task, {});
+    await settleCandidate(env, task, "language");
     return;
   }
 
@@ -1694,10 +1712,37 @@ async function candidate(task: CandidateTask, env: QueueEnv): Promise<void> {
       title,
     })
   ) {
-    await completeCandidate(env, task, {
+    await settleCandidate(env, task, "duplicate_content", {
       dedupExisting: true,
-      sourcePlatform: post.sourcePlatform,
     });
+    return;
+  }
+
+  // Only verified, fresh, non-duplicate candidates consume the per-cycle AI
+  // capacity. Previously the first queued items took all slots before these
+  // checks, so stale results could starve later fresh sources.
+  const claim = await coordinatorPost<{
+    accepted: boolean;
+    inFlight?: boolean;
+    capped?: boolean;
+    duplicate?: boolean;
+  }>(
+    env,
+    task.profile,
+    "/claim",
+    {
+      cycleId: task.cycleId,
+      urlHash: task.urlHash,
+      deliveryId: task.deliveryId,
+    },
+  );
+  if (claim.inFlight) return;
+  if (!claim.accepted) {
+    await settleCandidate(
+      env,
+      task,
+      claim.capped ? "capacity" : claim.duplicate ? "duplicate_candidate" : "not_accepted",
+    );
     return;
   }
   const fetchEngine = post.fullContent

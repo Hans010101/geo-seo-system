@@ -19,11 +19,17 @@ export const RSS_FEEDS = [
   "https://cryptopotato.com/tag/tron/feed/",
   "https://coingape.com/tag/tron/feed/",
   "https://cryptoslate.com/tag/justin-sun/feed/",
+  "https://crypto.news/tag/tron/feed/",
+  "https://crypto.news/tag/justin-sun/feed/",
+  "https://news.bitcoin.com/tag/justin-sun/feed/",
   // (B) general (low TRON density, kept for recall at zero cost)
   "https://cointelegraph.com/rss",
   "https://www.coindesk.com/arc/outboundfeeds/rss/",
   "https://decrypt.co/feed",
   "https://blockworks.co/feed",
+  "https://www.theblock.co/rss.xml",
+  "https://www.dlnews.com/arc/outboundfeeds/rss/",
+  "https://thedefiant.io/feed",
 ];
 const CACHE_TTL_MS = 8 * 60 * 1000; // one monitor cycle shares one pull of all feeds
 const MAX_ITEMS_PER_FEED = 40;

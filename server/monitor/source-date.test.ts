@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   extractSourcePublishedAt,
+  isSearchIntermediaryUrl,
   sourceDateFreshness,
   verifySourcePublishedAt,
 } from "./source-date";
@@ -77,6 +78,8 @@ describe("source publication date verification", () => {
   });
 
   it("does not treat search intermediaries as original publishers", async () => {
+    expect(isSearchIntermediaryUrl("https://www.google.com/search?q=tron")).toBe(true);
+    expect(isSearchIntermediaryUrl("https://example.com/2026/08/06/tron")).toBe(false);
     await expect(
       verifySourcePublishedAt("https://news.google.com/articles/example"),
     ).resolves.toMatchObject({
@@ -84,6 +87,25 @@ describe("source publication date verification", () => {
       publishedAt: null,
       error: "search intermediary is not an original source",
     });
+  });
+
+  it("uses an immutable origin URL date when the publisher blocks Cloudflare", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("blocked", { status: 403 }),
+    );
+    try {
+      await expect(
+        verifySourcePublishedAt(
+          "https://www.binance.com/zh-CN/square/post/08-06-2026-tron-update-123",
+        ),
+      ).resolves.toEqual({
+        status: "verified",
+        publishedAt: Date.parse("2026-08-06T00:00:00Z"),
+        evidence: "url_path",
+      });
+    } finally {
+      fetchSpy.mockRestore();
+    }
   });
 
   it("holds generic render-time metadata until it is stable", async () => {

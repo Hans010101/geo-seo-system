@@ -75,6 +75,14 @@ function isSearchIntermediary(url: URL): boolean {
   );
 }
 
+export function isSearchIntermediaryUrl(rawUrl: string): boolean {
+  try {
+    return isSearchIntermediary(publicHttpUrl(rawUrl));
+  } catch {
+    return true;
+  }
+}
+
 function timestamp(value: string | number | null | undefined): number | null {
   if (value == null || value === "") return null;
   const numeric = Number(value);
@@ -95,11 +103,30 @@ function tagAttributes(tag: string): Record<string, string> {
 }
 
 function urlDate(url: URL): number | null {
-  const match = url.pathname.match(
+  const yearFirst = url.pathname.match(
     /(?:^|\/)(20\d{2})[\/_-](0?[1-9]|1[0-2])[\/_-](0?[1-9]|[12]\d|3[01])(?:\/|$)/,
   );
-  if (!match) return null;
-  return timestamp(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+  if (yearFirst) {
+    return timestamp(
+      Date.UTC(
+        Number(yearFirst[1]),
+        Number(yearFirst[2]) - 1,
+        Number(yearFirst[3]),
+      ),
+    );
+  }
+  // Binance Square slugs use MM-DD-YYYY at the start of the post slug.
+  const monthFirst = url.pathname.match(
+    /(?:^|\/)(0?[1-9]|1[0-2])-(0?[1-9]|[12]\d|3[01])-(20\d{2})(?:-|\/|$)/,
+  );
+  if (!monthFirst) return null;
+  return timestamp(
+    Date.UTC(
+      Number(monthFirst[3]),
+      Number(monthFirst[1]) - 1,
+      Number(monthFirst[2]),
+    ),
+  );
 }
 
 export function extractSourcePublishedAt(
@@ -196,6 +223,11 @@ export async function verifySourcePublishedAt(rawUrl: string): Promise<SourceDat
     };
   }
 
+  // An immutable date embedded in the origin URL is valid evidence even when
+  // the publisher blocks Cloudflare egress (Binance Square commonly returns
+  // HTTP 403). Never infer a date from the search result/snippet here.
+  const pathPublishedAt = urlDate(url);
+
   try {
     const response = await fetch(url, {
       redirect: "follow",
@@ -207,6 +239,13 @@ export async function verifySourcePublishedAt(rawUrl: string): Promise<SourceDat
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     if (!response.ok) {
+      if (pathPublishedAt != null) {
+        return {
+          status: "verified",
+          publishedAt: pathPublishedAt,
+          evidence: "url_path",
+        };
+      }
       return {
         status: "failed",
         publishedAt: null,
@@ -236,6 +275,13 @@ export async function verifySourcePublishedAt(rawUrl: string): Promise<SourceDat
     }
     return { status: "verified", ...extracted };
   } catch (error) {
+    if (pathPublishedAt != null) {
+      return {
+        status: "verified",
+        publishedAt: pathPublishedAt,
+        evidence: "url_path",
+      };
+    }
     return {
       status: "failed",
       publishedAt: null,
