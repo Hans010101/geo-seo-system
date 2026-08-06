@@ -39,6 +39,22 @@ describe("source publication date verification", () => {
       publishedAt: Date.parse("2026-08-04T00:00:00Z"),
       evidence: "url_path",
     });
+    expect(
+      extractSourcePublishedAt(
+        "https://example.com/story",
+        `<meta name="date" content="2026-08-06T10:00:00Z">
+         <time datetime="2026-08-06T10:00:00Z">live clock</time>`,
+      ),
+    ).toBeNull();
+    expect(
+      extractSourcePublishedAt(
+        "https://example.com/story",
+        `<time itemprop="datePublished" datetime="2026-08-05T10:00:00Z"></time>`,
+      ),
+    ).toEqual({
+      publishedAt: Date.parse("2026-08-05T10:00:00Z"),
+      evidence: "time_element",
+    });
   });
 
   it("rejects private destinations and reports stale verified dates", () => {
@@ -68,5 +84,24 @@ describe("source publication date verification", () => {
       publishedAt: null,
       error: "search intermediary is not an original source",
     });
+  });
+
+  it("holds generic render-time metadata until it is stable", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response(
+      `<script type="application/ld+json">{"datePublished":"${new Date().toISOString()}"}</script>`,
+      { headers: { "content-type": "text/html" } },
+    );
+    try {
+      await expect(
+        verifySourcePublishedAt("https://example.com/old-page-reindexed-now"),
+      ).resolves.toMatchObject({
+        status: "unverifiable",
+        publishedAt: null,
+        error: "publication metadata is too close to render time to be stable",
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });

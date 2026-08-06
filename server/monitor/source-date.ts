@@ -2,6 +2,7 @@ import { monitorPublishedAtFreshness } from "./util";
 
 const MAX_HTML_BYTES = 256_000;
 const REQUEST_TIMEOUT_MS = 12_000;
+const GENERIC_DATE_STABILITY_DELAY_MS = 10 * 60_000;
 const EARLIEST_REASONABLE_MS = Date.UTC(2000, 0, 1);
 const UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
@@ -123,7 +124,6 @@ export function extractSourcePublishedAt(
       [
         "article:published_time",
         "datepublished",
-        "date",
         "pubdate",
         "publishdate",
         "publication_date",
@@ -139,7 +139,15 @@ export function extractSourcePublishedAt(
   if (jsonLdAt != null) return { publishedAt: jsonLdAt, evidence: "json_ld" };
 
   for (const tag of html.match(/<time\b[^>]*>/gi) || []) {
-    const at = timestamp(tagAttributes(tag).datetime);
+    const attrs = tagAttributes(tag);
+    const marker = [
+      attrs.itemprop,
+      attrs.class,
+      attrs.id,
+      Object.prototype.hasOwnProperty.call(attrs, "pubdate") ? "pubdate" : "",
+    ].filter(Boolean).join(" ").toLowerCase();
+    if (!/(datepublished|pubdate|publish|article[-_ ]?date)/i.test(marker)) continue;
+    const at = timestamp(attrs.datetime);
     if (at != null) return { publishedAt: at, evidence: "time_element" };
   }
 
@@ -214,9 +222,19 @@ export async function verifySourcePublishedAt(rawUrl: string): Promise<SourceDat
       };
     }
     const extracted = extractSourcePublishedAt(url.toString(), await limitedText(response));
-    return extracted
-      ? { status: "verified", ...extracted }
-      : { status: "unverifiable", publishedAt: null };
+    if (!extracted) return { status: "unverifiable", publishedAt: null };
+    if (
+      extracted.evidence !== "okx_app_state" &&
+      extracted.evidence !== "url_path" &&
+      extracted.publishedAt > Date.now() - GENERIC_DATE_STABILITY_DELAY_MS
+    ) {
+      return {
+        status: "unverifiable",
+        publishedAt: null,
+        error: "publication metadata is too close to render time to be stable",
+      };
+    }
+    return { status: "verified", ...extracted };
   } catch (error) {
     return {
       status: "failed",
