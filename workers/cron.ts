@@ -10,6 +10,7 @@ import {
   getBrowserShadowStatus,
   getCleanupStatus,
   getCoordinatorStatus,
+  getFreshnessAuditStatus,
   getGeoQueueStatus,
   getMigrationAcceptanceStatus,
   getOpenRouterPreflightStatus,
@@ -63,6 +64,7 @@ async function status(env: Env) {
     geoQueue,
     openRouter,
     cleanup,
+    freshnessAudit,
   ] = await Promise.all([
     readKeys(STATUS_KEYS),
     readKeys(WEEKLY_KEYS),
@@ -74,6 +76,7 @@ async function status(env: Env) {
     getGeoQueueStatus(),
     getOpenRouterPreflightStatus(),
     getCleanupStatus(),
+    getFreshnessAuditStatus(),
   ]);
   const features = getCloudflareFeatureFlags(env);
   return {
@@ -108,6 +111,7 @@ async function status(env: Env) {
           Number(env.CLOUDFLARE_OPENROUTER_PREFLIGHT_MAX_AGE_HOURS || 26) * 3_600_000,
     },
     cleanup,
+    freshnessAudit,
     browserFulltext: {
       ...browserFulltext,
       enabled: features.browserFullTextShadow,
@@ -199,6 +203,18 @@ export default {
           scheduledTime,
         });
         return Response.json({ ok: true, queued: "cleanup", scheduledTime });
+      }
+      if (url.pathname === "/operator/maintenance/freshness-audit") {
+        await env.MONITOR_QUEUE.send({
+          kind: "freshness_audit",
+          auditId: `operator_freshness_audit:${scheduledTime}`,
+          scheduledTime,
+        });
+        return Response.json({
+          ok: true,
+          queued: "freshness_audit",
+          scheduledTime,
+        });
       }
       return Response.json({ error: "not found" }, { status: 404 });
     }

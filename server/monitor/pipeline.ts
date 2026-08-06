@@ -7,6 +7,7 @@ import { analyzeArticle } from "./analyzer";
 import * as budget from "./budget";
 import { enabledSources } from "./sources/registry";
 import type { DiscoveredPost } from "./sources/types";
+import { verifySourcePublishedAt } from "./source-date";
 import { dispatchHighThreatAlert, sendBriefing, alertThresholdMet, type BriefingItem } from "./notify";
 import {
   normalizeUrl,
@@ -65,7 +66,13 @@ function toFetchMethod(engine: string): "self" | "firecrawl" | "snippet_only" | 
   return null; // 'source_api' and future engines have no legacy enum value
 }
 
-type FreshItem = { hash: string; post: DiscoveredPost; normUrl: string; matched: string[] };
+type FreshItem = {
+  hash: string;
+  post: DiscoveredPost;
+  normUrl: string;
+  matched: string[];
+  publishedAt: number;
+};
 
 export async function runMonitorCycle(opts?: MonitorCycleOptions): Promise<MonitorCycleResult> {
   const tbsOverride = opts?.tbs;
@@ -126,7 +133,16 @@ export async function runMonitorCycle(opts?: MonitorCycleOptions): Promise<Monit
   for (const [h, v] of Array.from(discovered)) {
     if (await db.getMonitorArticleByUrlHash(h)) continue;
     const p = v.post;
-    const freshness = monitorPublishedAtFreshness(p.publishedAt, now);
+    let publishedAt = p.publishedAt ?? null;
+    if (p.sourceName === "serper" || p.sourceName.endsWith("_serper")) {
+      const verification = await verifySourcePublishedAt(p.url);
+      if (verification.status !== "verified" || verification.publishedAt == null) {
+        freshnessSkips.missing = (freshnessSkips.missing || 0) + 1;
+        continue;
+      }
+      publishedAt = verification.publishedAt;
+    }
+    const freshness = monitorPublishedAtFreshness(publishedAt, now);
     if (freshness !== "fresh") {
       freshnessSkips[freshness] = (freshnessSkips[freshness] || 0) + 1;
       continue;
@@ -136,7 +152,13 @@ export async function runMonitorCycle(opts?: MonitorCycleOptions): Promise<Monit
       langSkips[lang] = (langSkips[lang] || 0) + 1;
       continue;
     }
-    fresh.push({ hash: h, post: p, normUrl: v.normUrl, matched: Array.from(v.matched) });
+    fresh.push({
+      hash: h,
+      post: p,
+      normUrl: v.normUrl,
+      matched: Array.from(v.matched),
+      publishedAt: Number(publishedAt),
+    });
     if (fresh.length >= maxPerCycle) {
       log.warn(`Reached per-cycle cap (${maxPerCycle}); ${discovered.size - fresh.length}+ new posts deferred`);
       break;
@@ -238,7 +260,7 @@ export async function runMonitorCycle(opts?: MonitorCycleOptions): Promise<Monit
           title: (title || "").slice(0, 512) || null,
           contentMd: contentMd || null,
           contentHash: contentHash || null,
-          publishedAt: p.publishedAt ?? null,
+          publishedAt: cur.publishedAt,
           firstSeenAt: Date.now(),
           fetchEngine,
           fetchMethod: toFetchMethod(fetchEngine) as any,

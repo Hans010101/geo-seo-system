@@ -1380,6 +1380,37 @@ export async function updateMonitorArticle(id: number, data: Partial<InsertMonit
   await db.update(monitorArticles).set(data).where(eq(monitorArticles.id, id));
 }
 
+export async function listMonitorWebArticlesForFreshnessAudit(input: {
+  afterId: number;
+  firstSeenAfter: number;
+  limit: number;
+}) {
+  const db = await getDb();
+  if (!db) return [];
+  return db
+    .select({
+      id: monitorArticles.id,
+      url: monitorArticles.url,
+      publishedAt: monitorArticles.publishedAt,
+    })
+    .from(monitorArticles)
+    .where(and(
+      eq(monitorArticles.sourcePlatform, "web"),
+      gte(monitorArticles.firstSeenAt, input.firstSeenAfter),
+      sql`${monitorArticles.id} > ${Math.max(0, input.afterId)}`,
+    ))
+    .orderBy(asc(monitorArticles.id))
+    .limit(Math.max(1, Math.min(20, input.limit)));
+}
+
+export async function deleteMonitorArticleForFreshnessAudit(id: number): Promise<boolean> {
+  const db = await getDb();
+  if (!db) return false;
+  const result: any = await db.delete(monitorArticles).where(eq(monitorArticles.id, id));
+  const header = Array.isArray(result) ? result[0] : result;
+  return Number(header?.affectedRows) > 0;
+}
+
 // Full detail incl. contentMd + joined source stance/authority.
 export async function getMonitorArticleById(id: number) {
   const db = await getDb();

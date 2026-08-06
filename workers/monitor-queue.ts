@@ -32,6 +32,11 @@ import {
   sha256,
 } from "../server/monitor/util";
 import {
+  sourceDateFreshness,
+  verifySourcePublishedAt,
+  type SourceDateVerification,
+} from "../server/monitor/source-date";
+import {
   cleanupOldArticles,
 } from "../server/monitor/cleanup";
 import { recordFetchAttempt } from "../server/monitor/fetch/observability";
@@ -160,6 +165,18 @@ type MaintenanceTask = {
   scheduledTime: number;
 };
 
+type FreshnessAuditTask = {
+  kind: "freshness_audit";
+  auditId: string;
+  scheduledTime: number;
+  cursor?: number;
+  checked?: number;
+  deleted?: number;
+  corrected?: number;
+  unverifiable?: number;
+  failed?: number;
+};
+
 type BinanceProbeTask = {
   kind: "binance_probe";
   scheduledTime: number;
@@ -206,6 +223,7 @@ export type QueueTask =
   | DiscoveryTask
   | CandidateTask
   | MaintenanceTask
+  | FreshnessAuditTask
   | BinanceProbeTask
   | GeoDailyShardTask
   | GeoWeeklyShardTask
@@ -277,6 +295,14 @@ const CLEANUP_STATUS_KEYS = {
   finishedAt: "cf_cleanup_last_finished_at",
   summary: "cf_cleanup_last_summary",
   error: "cf_cleanup_last_error",
+} as const;
+
+const FRESHNESS_AUDIT_STATUS_KEYS = {
+  status: "cf_freshness_audit_last_status",
+  startedAt: "cf_freshness_audit_last_started_at",
+  finishedAt: "cf_freshness_audit_last_finished_at",
+  summary: "cf_freshness_audit_last_summary",
+  error: "cf_freshness_audit_last_error",
 } as const;
 
 function positiveInt(value: string | undefined, fallback: number): number {
@@ -884,6 +910,15 @@ export async function getOpenRouterPreflightStatus(): Promise<{
 export async function getCleanupStatus(): Promise<Record<string, string | null>> {
   return Object.fromEntries(await Promise.all(
     Object.entries(CLEANUP_STATUS_KEYS).map(async ([name, key]) => [
+      name,
+      await db.getSysConfig(key),
+    ]),
+  ));
+}
+
+export async function getFreshnessAuditStatus(): Promise<Record<string, string | null>> {
+  return Object.fromEntries(await Promise.all(
+    Object.entries(FRESHNESS_AUDIT_STATUS_KEYS).map(async ([name, key]) => [
       name,
       await db.getSysConfig(key),
     ]),
@@ -1606,14 +1641,39 @@ async function candidate(task: CandidateTask, env: QueueEnv): Promise<void> {
   }
 
   const post = task.post;
-  const freshness = monitorPublishedAtFreshness(post.publishedAt);
+  const searchDerived =
+    post.sourceName === "serper" || post.sourceName.endsWith("_serper");
+  let sourceDate: SourceDateVerification | null = null;
+  let effectivePublishedAt = post.publishedAt ?? null;
+  if (searchDerived) {
+    sourceDate = await verifySourcePublishedAt(post.url);
+    if (sourceDate.status !== "verified" || sourceDate.publishedAt == null) {
+      console.log(JSON.stringify({
+        event: "monitor_candidate.source_date_rejected",
+        sourcePlatform: post.sourcePlatform,
+        sourceName: post.sourceName,
+        urlHash: task.urlHash,
+        status: sourceDate.status,
+        error: sourceDate.error || "",
+      }));
+      await completeCandidate(env, task, {});
+      return;
+    }
+    effectivePublishedAt = sourceDate.publishedAt;
+  }
+  const freshness = searchDerived && sourceDate
+    ? sourceDateFreshness(sourceDate)
+    : monitorPublishedAtFreshness(effectivePublishedAt);
   if (freshness !== "fresh") {
     console.log(JSON.stringify({
       event: "monitor_candidate.freshness_rejected",
       sourcePlatform: post.sourcePlatform,
+      sourceName: post.sourceName,
       urlHash: task.urlHash,
       freshness,
-      publishedAt: post.publishedAt ?? null,
+      discoveredPublishedAt: post.publishedAt ?? null,
+      sourcePublishedAt: effectivePublishedAt,
+      sourceDateEvidence: sourceDate?.evidence || "",
     }));
     await completeCandidate(env, task, {});
     return;
@@ -1681,7 +1741,7 @@ async function candidate(task: CandidateTask, env: QueueEnv): Promise<void> {
       title: title || null,
       contentMd: contentMd || null,
       contentHash: contentHash || null,
-      publishedAt: post.publishedAt ?? null,
+      publishedAt: effectivePublishedAt,
       firstSeenAt: Date.now(),
       fetchEngine,
       fetchMethod: toFetchMethod(fetchEngine),
@@ -1787,6 +1847,102 @@ async function candidate(task: CandidateTask, env: QueueEnv): Promise<void> {
         error: String(error).slice(0, 300),
       }));
     }
+  }
+}
+
+const FRESHNESS_AUDIT_BATCH_SIZE = 20;
+const FRESHNESS_AUDIT_MAX_RECORDS = 1500;
+
+async function freshnessAudit(task: FreshnessAuditTask, env: QueueEnv): Promise<void> {
+  const startedAt = task.scheduledTime;
+  const totals = {
+    checked: task.checked || 0,
+    deleted: task.deleted || 0,
+    corrected: task.corrected || 0,
+    unverifiable: task.unverifiable || 0,
+    failed: task.failed || 0,
+  };
+  if (!task.cursor) {
+    await Promise.all([
+      db.setSysConfig(FRESHNESS_AUDIT_STATUS_KEYS.status, "running"),
+      db.setSysConfig(FRESHNESS_AUDIT_STATUS_KEYS.startedAt, String(startedAt)),
+      db.setSysConfig(FRESHNESS_AUDIT_STATUS_KEYS.error, ""),
+    ]);
+  }
+
+  try {
+    const rows = await db.listMonitorWebArticlesForFreshnessAudit({
+      afterId: task.cursor || 0,
+      firstSeenAfter: startedAt - 30 * 86_400_000,
+      limit: FRESHNESS_AUDIT_BATCH_SIZE,
+    });
+    const results = await Promise.all(rows.map(async (row) => ({
+      row,
+      verification: await verifySourcePublishedAt(row.url),
+    })));
+    let cursor = task.cursor || 0;
+    for (const { row, verification } of results) {
+      cursor = Math.max(cursor, row.id);
+      totals.checked++;
+      if (verification.status === "failed") totals.failed++;
+      if (verification.status === "unverifiable") totals.unverifiable++;
+
+      // The same strict rule now used for new Serper candidates is applied to
+      // the retained 30-day web dataset: no source-date evidence means the
+      // record cannot be presented as current news.
+      const freshness = sourceDateFreshness(verification, startedAt);
+      if (verification.status !== "verified" || freshness !== "fresh") {
+        if (await db.deleteMonitorArticleForFreshnessAudit(row.id)) totals.deleted++;
+        continue;
+      }
+      if (
+        verification.publishedAt != null &&
+        Math.abs(verification.publishedAt - Number(row.publishedAt || 0)) > 60_000
+      ) {
+        await db.updateMonitorArticle(row.id, {
+          publishedAt: verification.publishedAt,
+        });
+        totals.corrected++;
+      }
+    }
+
+    const summary = {
+      auditId: task.auditId,
+      cursor,
+      ...totals,
+      finished: rows.length < FRESHNESS_AUDIT_BATCH_SIZE ||
+        totals.checked >= FRESHNESS_AUDIT_MAX_RECORDS,
+    };
+    await db.setSysConfig(
+      FRESHNESS_AUDIT_STATUS_KEYS.summary,
+      JSON.stringify(summary).slice(0, 4000),
+    );
+    if (!summary.finished) {
+      await env.MONITOR_QUEUE.send({
+        ...task,
+        cursor,
+        ...totals,
+      }, { delaySeconds: 1 });
+      return;
+    }
+    await Promise.all([
+      db.setSysConfig(FRESHNESS_AUDIT_STATUS_KEYS.status, "success"),
+      db.setSysConfig(FRESHNESS_AUDIT_STATUS_KEYS.finishedAt, String(Date.now())),
+    ]);
+    console.log(JSON.stringify({
+      event: "monitor_freshness_audit.complete",
+      ...summary,
+    }));
+  } catch (error) {
+    await Promise.all([
+      db.setSysConfig(FRESHNESS_AUDIT_STATUS_KEYS.status, "failed"),
+      db.setSysConfig(FRESHNESS_AUDIT_STATUS_KEYS.finishedAt, String(Date.now())),
+      db.setSysConfig(
+        FRESHNESS_AUDIT_STATUS_KEYS.error,
+        String(error).slice(0, 1000),
+      ),
+    ]);
+    throw error;
   }
 }
 
@@ -2014,6 +2170,7 @@ async function processTask(task: QueueTask, env: QueueEnv): Promise<void> {
   if (task.kind === "bootstrap") return bootstrap(task, env);
   if (task.kind === "discovery") return discover(task, env);
   if (task.kind === "candidate") return candidate(task, env);
+  if (task.kind === "freshness_audit") return freshnessAudit(task, env);
   if (task.kind === "binance_probe") return binanceProbe(task, env);
   if (task.kind === "geo_daily_shard" || task.kind === "geo_weekly_shard") {
     return runObservedGeoShard(env, task);
