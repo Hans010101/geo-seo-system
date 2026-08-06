@@ -452,18 +452,16 @@ export async function downloadMonitorReportPdf(
   report: ReportRecord,
   reportElement: HTMLElement
 ) {
-  const [{ default: html2canvas }, { jsPDF }] = await Promise.all([
-    import("html2canvas"),
+  const [{ toCanvas }, { jsPDF }] = await Promise.all([
+    import("html-to-image"),
     import("jspdf"),
   ]);
-  const canvas = await html2canvas(reportElement, {
+  const canvas = await toCanvas(reportElement, {
     backgroundColor: "#ffffff",
-    scale: Math.min(2, Math.max(1.25, window.devicePixelRatio || 1)),
-    useCORS: true,
-    logging: false,
-    windowWidth: reportElement.scrollWidth,
-    width: reportElement.scrollWidth,
-    height: reportElement.scrollHeight,
+    cacheBust: true,
+    canvasWidth: reportElement.scrollWidth,
+    canvasHeight: reportElement.scrollHeight,
+    pixelRatio: Math.min(2, Math.max(1.25, window.devicePixelRatio || 1)),
   });
 
   const pdf = new jsPDF({
