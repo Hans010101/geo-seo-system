@@ -36,7 +36,7 @@ export function sha256(input: string): string {
 }
 
 export const MONITOR_COLLECT_MAX_AGE_DAYS = 7;
-export const MONITOR_RETENTION_DAYS = 30;
+export const MONITOR_RETENTION_DAYS = 100;
 const MONITOR_MAX_FUTURE_SKEW_MS = 24 * 60 * 60 * 1000;
 
 export type MonitorFreshnessReason = "fresh" | "missing" | "stale" | "future";

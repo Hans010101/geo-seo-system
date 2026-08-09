@@ -7,13 +7,13 @@ Objects、Browser Run 和现有数据库。
 ## 当前生产层（已实现）
 
 - 平台：小红书、抖音、快手、B 站、微博、百度贴吧、知乎。
-- 发现：Serper 仅做站内发现，每 12 小时、每个平台最多 1 个关键词。
+- 发现：Cloudflare Browser 优先、Serper 安全降级，每 6 小时、每个平台最多 2 个关键词。
 - 原始来源：只接收各平台的规范帖子/视频/问答 URL；搜索页、账号页和搜索中转页直接丢弃。
 - 新鲜度：搜索结果必须回到原站验证发布时间，并通过严格 7 天窗口；不可验证、未来时间、
   旧内容全部拒绝。
 - 去重：先按规范 URL 去重，再按正文指纹去重；数据库唯一 URL 约束处理并发重复。
-- 下游：复用现有抓取、Workers AI/OpenRouter、告警、月度保留和报告链路。
-- 调度：北京时间 03:40、15:40 随社交批次运行；可由受保护的
+- 下游：复用现有抓取、Workers AI/OpenRouter、告警、100 天保留和报告链路。
+- 调度：北京时间 03:40、09:40、15:40、21:40 随社交批次运行；可由受保护的
   `POST /operator/chinese-social` 手动触发。
 
 ## Browser Run 原生发现层（已实现）
@@ -21,7 +21,7 @@ Objects、Browser Run 和现有数据库。
 Cloudflare Worker `geo-seo-system-chinese-social-browser` 通过 Browser Run Binding
 直接渲染七个平台的搜索页：
 
-- 每轮最多 7 次 Browser 调用，每个平台 1 个关键词；北京时间 03:40、15:40 运行。
+- 每轮最多 14 次 Browser 调用，每个平台 2 个关键词；北京时间每 6 小时运行。
 - 使用 `/scrape` 抓取真实 DOM 中的原帖链接和标题，不额外消耗 Browser JSON 的 Workers AI。
 - 严格的平台 URL 规则在 Browser Worker 和主 Queue 两侧共同生效。
 - Browser 返回空结果、登录墙、验证码、429 或结构异常时，单个平台自动降级 Serper。

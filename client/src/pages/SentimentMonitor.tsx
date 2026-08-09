@@ -34,8 +34,8 @@ export default function SentimentMonitor() {
   const [page, setPage] = useState(0);
   const [threat, setThreat] = useState<string>("all");
   const [stance, setStance] = useState<string>("all");
-  const [relevance, setRelevance] = useState<string>("focus"); // default: 高+中 only
-  const [range, setRange] = useState<string>("24h"); // default: 近24小时(可切 3d/7d/30d)
+  const [relevance, setRelevance] = useState<string>("all");
+  const [range, setRange] = useState<string>("100d");
   const [sort, setSort] = useState<string>("time"); // default: 时间倒序,最新在上
   const [source, setSource] = useState<string>("all");
   const [detailId, setDetailId] = useState<number | null>(null);
@@ -49,7 +49,11 @@ export default function SentimentMonitor() {
           ? now - 3 * 86_400_000
           : range === "7d"
             ? now - 7 * 86_400_000
-            : undefined;
+            : range === "30d"
+              ? now - 30 * 86_400_000
+              : range === "100d"
+                ? now - 100 * 86_400_000
+                : undefined;
     return {
       page,
       pageSize: PAGE_SIZE,
@@ -309,7 +313,7 @@ export default function SentimentMonitor() {
         <FilterSelect value={relevance} onChange={(v) => { setRelevance(v); resetPage(); }} placeholder="相关性"
           options={[["focus", "重点(高+中)"], ["all", "全部相关性"], ["high", "高相关"], ["medium", "中相关"], ["low", "低相关"], ["irrelevant", "无关"]]} />
         <FilterSelect value={range} onChange={(v) => { setRange(v); resetPage(); }} placeholder="时间范围"
-          options={[["24h", "近 24 小时"], ["3d", "近 3 天"], ["7d", "近 7 天"], ["all", "近 30 天"]]} />
+          options={[["24h", "近 24 小时"], ["3d", "近 3 天"], ["7d", "近 7 天"], ["30d", "近 30 天"], ["100d", "近 100 天"]]} />
         <FilterSelect value={source} onChange={(v) => { setSource(v); resetPage(); }} placeholder="来源平台"
           options={[["all", "全部来源"], ["web", "Web/新闻"], ["binance_square", "币安广场"], ["gate_square", "Gate广场"], ["rss", "RSS媒体"], ["telegram", "Telegram"], ["x", "X"], ["xiaohongshu", "小红书"], ["douyin", "抖音"], ["kuaishou", "快手"], ["bilibili", "B站"], ["weibo", "微博"], ["tieba", "百度贴吧"], ["zhihu", "知乎"]]} />
         <FilterSelect value={sort} onChange={(v) => { setSort(v); resetPage(); }} placeholder="排序"

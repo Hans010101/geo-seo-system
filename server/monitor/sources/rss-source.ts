@@ -3,7 +3,7 @@
 // call, no Firecrawl render. Feeds validated 2026-07-03 (see web3-sources-survey.md); Cointelegraph's
 // TRON-tag feed is TRON-dedicated. Adding/removing a feed = edit FEEDS.
 import Parser from "rss-parser";
-import { log, keywordMatchesText } from "../util";
+import { log, keywordMatchesText, monitorPublishedAtFreshness } from "../util";
 import type { SocialSource, DiscoveredPost, SearchOpts } from "./types";
 
 // Two tiers: (A) TRON/Justin-Sun-DEDICATED tag feeds — nearly 100% on-topic, the real signal (validated
@@ -12,6 +12,7 @@ import type { SocialSource, DiscoveredPost, SearchOpts } from "./types";
 // strict seven-day publication window to RSS and every other source.
 export const RSS_FEEDS = [
   // (A) TRON / Justin Sun dedicated
+  "https://tronweekly.com/feed/",
   "https://cointelegraph.com/rss/tag/tron",
   "https://cointelegraph.com/rss/tag/justin-sun",
   "https://www.newsbtc.com/tag/tron/feed/", // freshest dedicated feed (often <2d)
@@ -26,9 +27,7 @@ export const RSS_FEEDS = [
   "https://cointelegraph.com/rss",
   "https://www.coindesk.com/arc/outboundfeeds/rss/",
   "https://decrypt.co/feed",
-  "https://blockworks.co/feed",
   "https://www.theblock.co/rss.xml",
-  "https://www.dlnews.com/arc/outboundfeeds/rss/",
   "https://thedefiant.io/feed",
 ];
 const CACHE_TTL_MS = 8 * 60 * 1000; // one monitor cycle shares one pull of all feeds
@@ -97,7 +96,13 @@ export const rssSource: SocialSource = {
   async search(keyword: string, opts?: SearchOpts): Promise<DiscoveredPost[]> {
     const items = await ensureFeeds(opts?.shard);
     if (!keyword.trim()) return [];
-    const matched = items.filter((it) => keywordMatchesText(keyword, `${it.title} ${it.text}`));
+    // Drop known stale/missing/future entries at the source boundary. This prevents dormant tag
+    // feeds from repeatedly filling Queue candidates while preserving the global seven-day rule.
+    const matched = items.filter(
+      (it) =>
+        monitorPublishedAtFreshness(it.publishedAt) === "fresh" &&
+        keywordMatchesText(keyword, `${it.title} ${it.text}`),
+    );
     return matched.map((it) => {
       const full = it.text.length >= MIN_FULL_CHARS;
       return {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  MONITOR_RETENTION_DAYS,
   monitorContentHash,
   monitorPublishedAtFreshness,
   parseSerperDate,
@@ -13,6 +14,10 @@ describe("monitor freshness", () => {
     expect(monitorPublishedAtFreshness(now - 7 * 86_400_000 - 1, now)).toBe("stale");
     expect(monitorPublishedAtFreshness(null, now)).toBe("missing");
     expect(monitorPublishedAtFreshness(now + 86_400_000 + 1, now)).toBe("future");
+  });
+
+  it("retains verified monitor records for one hundred days", () => {
+    expect(MONITOR_RETENTION_DAYS).toBe(100);
   });
 
   it("parses English and Chinese relative source timestamps", () => {

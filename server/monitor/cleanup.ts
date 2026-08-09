@@ -1,6 +1,6 @@
 // Rolling retention for monitor_articles.
 // Only source records with a verifiable publication timestamp are retained, and the complete
-// source record is physically deleted after 30 days. Reports generated before deletion remain
+// source record is physically deleted after 100 days. Reports generated before deletion remain
 // stored independently in monitor_reports.
 import { sql } from "drizzle-orm";
 import { getDb } from "../db";

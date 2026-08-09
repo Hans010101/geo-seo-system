@@ -2082,7 +2082,7 @@ async function freshnessAudit(task: FreshnessAuditTask, env: QueueEnv): Promise<
       if (verification.status === "unverifiable") totals.unverifiable++;
 
       // The same strict rule now used for new Serper candidates is applied to
-      // the retained 30-day web dataset: no source-date evidence means the
+      // the retained 100-day web dataset: no source-date evidence means the
       // record cannot be presented as current news.
       const freshness = sourceDateFreshness(verification, startedAt);
       if (verification.status !== "verified" || freshness !== "fresh") {

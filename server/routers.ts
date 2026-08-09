@@ -2519,7 +2519,7 @@ initGuard("monitor-scheduler-boot", async () => {
 });
 
 // Monitor maintenance crons (always-on infrastructure, independent of the monitorEnabled toggle):
-//  · 04:30 daily — 30-day rolling retention: delete expired/unverifiable source records
+//  · 04:30 daily — 100-day rolling retention: delete expired/unverifiable source records
 //  · 08:30 Monday — 舆情周报 for LAST week;  08:40 on the 1st — 舆情月报 for LAST month.
 // Report push (飞书/TG) is separately gated by sysConfigs monitor_report_push_enabled (default OFF).
 initGuard("monitor-maintenance-crons", async () => {
