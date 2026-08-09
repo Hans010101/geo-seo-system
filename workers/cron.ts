@@ -108,10 +108,14 @@ async function status(env: Env) {
       provider: "cloudflare_browser_primary_serper_fallback",
       browserEnabled: env.CLOUDFLARE_CHINESE_SOCIAL_BROWSER_ENABLED !== "false",
       browserMaxCallsPerRun: Number(
-        env.CLOUDFLARE_CHINESE_SOCIAL_BROWSER_MAX_CALLS_PER_RUN || 7,
+        env.CLOUDFLARE_CHINESE_SOCIAL_BROWSER_MAX_CALLS_PER_RUN || 35,
       ),
-      intervalHours: Number(env.CLOUDFLARE_CHINESE_SOCIAL_INTERVAL_HOURS || 12),
-      maxKeywords: Number(env.CLOUDFLARE_CHINESE_SOCIAL_MAX_KEYWORDS || 1),
+      intervalHours: Number(env.CLOUDFLARE_CHINESE_SOCIAL_INTERVAL_HOURS || 2),
+      maxKeywords: Number(env.CLOUDFLARE_CHINESE_SOCIAL_MAX_KEYWORDS || 5),
+      keywords: (env.CLOUDFLARE_CHINESE_SOCIAL_KEYWORDS || "")
+        .split(",")
+        .map((value) => value.trim())
+        .filter(Boolean),
       platforms: (env.CLOUDFLARE_CHINESE_SOCIAL_PLATFORMS ||
         "xiaohongshu,douyin,kuaishou,bilibili,weibo,tieba,zhihu")
         .split(",")

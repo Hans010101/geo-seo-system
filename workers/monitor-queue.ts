@@ -105,6 +105,7 @@ export type QueueEnv = CloudflareRuntimeEnv & CronBindings & CloudflareFeatureEn
   CLOUDFLARE_CHINESE_SOCIAL_ENABLED?: string;
   CLOUDFLARE_CHINESE_SOCIAL_INTERVAL_HOURS?: string;
   CLOUDFLARE_CHINESE_SOCIAL_MAX_KEYWORDS?: string;
+  CLOUDFLARE_CHINESE_SOCIAL_KEYWORDS?: string;
   CLOUDFLARE_CHINESE_SOCIAL_PLATFORMS?: string;
   CLOUDFLARE_CHINESE_SOCIAL_BROWSER_ENABLED?: string;
   CLOUDFLARE_CHINESE_SOCIAL_BROWSER_MAX_CALLS_PER_RUN?: string;
@@ -159,6 +160,7 @@ type DiscoveryTask = {
   shard?: string;
   keywords: Keyword[];
   budgetReserved?: boolean;
+  serperFallbacksReserved?: number;
   fallbackOnly?: boolean;
   browserPreferred?: boolean;
 };
@@ -253,13 +255,13 @@ const SOURCE_LIMITS: Record<string, number> = {
   telegram: 5,
   x: 20,
   binance_square_browser: 5,
-  xiaohongshu_serper: 3,
-  douyin_serper: 3,
-  kuaishou_serper: 3,
-  bilibili_serper: 3,
-  weibo_serper: 3,
-  tieba_serper: 3,
-  zhihu_serper: 3,
+  xiaohongshu_serper: 10,
+  douyin_serper: 10,
+  kuaishou_serper: 10,
+  bilibili_serper: 10,
+  weibo_serper: 10,
+  tieba_serper: 10,
+  zhihu_serper: 10,
 };
 
 const BINANCE_BROWSER_SOURCE = "binance_square_browser";
@@ -352,12 +354,27 @@ function configuredChineseSocialSources(env: QueueEnv): string[] {
     .filter((value, index, values) => allowed.has(value) && values.indexOf(value) === index);
 }
 
+function configuredChineseSocialKeywords(
+  env: QueueEnv,
+  activeKeywords: Keyword[],
+): Keyword[] {
+  const configured = (env.CLOUDFLARE_CHINESE_SOCIAL_KEYWORDS || "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter((value, index, values) => Boolean(value) && values.indexOf(value) === index);
+  const max = Math.min(10, positiveInt(env.CLOUDFLARE_CHINESE_SOCIAL_MAX_KEYWORDS, 5));
+  if (configured.length > 0) {
+    return configured.slice(0, max).map((keyword) => ({ keyword, priority: 10 }));
+  }
+  return activeKeywords.slice(0, max);
+}
+
 function chineseSocialDue(cycle: BootstrapTask, env: QueueEnv): boolean {
   if (cycle.profile !== "monitor_primary_social") return false;
   if (cycle.forceChineseSocial) return true;
   const flags = getCloudflareFeatureFlags(env);
   if (!flags.chineseSocial) return false;
-  const interval = Math.max(6, positiveInt(env.CLOUDFLARE_CHINESE_SOCIAL_INTERVAL_HOURS, 12));
+  const interval = Math.max(2, positiveInt(env.CLOUDFLARE_CHINESE_SOCIAL_INTERVAL_HOURS, 2));
   return shanghaiParts(cycle.scheduledTime).hour % interval === 3 % interval;
 }
 
@@ -632,33 +649,33 @@ function buildDiscoveryTasks(
         budgetReserved: budgetGrant.serper > 0,
       }]
     : [];
-  const chineseSocialKeywords = keywords.slice(
-    0,
-    Math.min(4, positiveInt(env.CLOUDFLARE_CHINESE_SOCIAL_MAX_KEYWORDS, 1)),
-  );
+  const chineseSocialKeywords = configuredChineseSocialKeywords(env, keywords);
   let remainingSerper = Math.max(
     0,
     budgetGrant.serper - (binance.length > 0 ? 1 : 0),
   );
   let remainingBrowserCalls = chineseSocialBrowserEnabled(env)
-    ? Math.min(20, positiveInt(env.CLOUDFLARE_CHINESE_SOCIAL_BROWSER_MAX_CALLS_PER_RUN, 7))
+    ? Math.min(50, positiveInt(env.CLOUDFLARE_CHINESE_SOCIAL_BROWSER_MAX_CALLS_PER_RUN, 35))
     : 0;
   const chineseSocial: DiscoveryTask[] = [];
   if (chineseSocialDue(cycle, env) && chineseSocialKeywords.length > 0) {
     for (const sourceName of configuredChineseSocialSources(env)) {
-      if (remainingSerper <= 0) break;
-      const taskKeywords = chineseSocialKeywords.slice(0, remainingSerper);
+      const browserKeywordCount = Math.min(chineseSocialKeywords.length, remainingBrowserCalls);
+      const fallbackKeywordCount = Math.min(chineseSocialKeywords.length, remainingSerper);
+      const taskKeywordCount = Math.max(browserKeywordCount, fallbackKeywordCount);
+      const taskKeywords = chineseSocialKeywords.slice(0, taskKeywordCount);
       if (taskKeywords.length === 0) break;
       chineseSocial.push({
         ...base,
         taskId: `${sourceName}:0`,
         sourceName,
         keywords: taskKeywords,
-        budgetReserved: true,
-        browserPreferred: remainingBrowserCalls >= taskKeywords.length,
+        budgetReserved: fallbackKeywordCount > 0,
+        serperFallbacksReserved: fallbackKeywordCount,
+        browserPreferred: browserKeywordCount === taskKeywords.length,
       });
-      remainingBrowserCalls = Math.max(0, remainingBrowserCalls - taskKeywords.length);
-      remainingSerper -= taskKeywords.length;
+      remainingBrowserCalls = Math.max(0, remainingBrowserCalls - browserKeywordCount);
+      remainingSerper = Math.max(0, remainingSerper - fallbackKeywordCount);
     }
   }
   return [...gate, ...telegram, ...x, ...binance, ...chineseSocial];
@@ -676,11 +693,9 @@ async function bootstrap(task: BootstrapTask, env: QueueEnv): Promise<void> {
   const isNews = task.profile === "monitor_primary_news";
   const runBinance = binanceDue(task, env);
   const runChineseSocial = chineseSocialDue(task, env);
-  const chineseSocialKeywordCount = Math.min(
-    keywords.length,
-    Math.min(4, positiveInt(env.CLOUDFLARE_CHINESE_SOCIAL_MAX_KEYWORDS, 1)),
-  );
+  const chineseSocialKeywordCount = configuredChineseSocialKeywords(env, keywords).length;
   const chineseSocialSerperCalls = runChineseSocial
+    && !chineseSocialBrowserEnabled(env)
     ? configuredChineseSocialSources(env).length * chineseSocialKeywordCount
     : 0;
   const gateFirecrawlEnabled = env.CLOUDFLARE_GATE_FIRECRAWL_ENABLED !== "false";
@@ -1638,7 +1653,7 @@ async function discover(task: DiscoveryTask, env: QueueEnv): Promise<void> {
   let browserSuccesses = 0;
   let browserFallbacks = 0;
   const browserErrors: string[] = [];
-  for (const keyword of task.keywords) {
+  for (const [keywordIndex, keyword] of task.keywords.entries()) {
     const zh = hasCJK(keyword.keyword);
     let found: DiscoveredPost[] | null = null;
     if (chineseSocial && task.browserPreferred) {
@@ -1675,7 +1690,13 @@ async function discover(task: DiscoveryTask, env: QueueEnv): Promise<void> {
         );
       }
     }
-    if (!found) {
+    let serperFallbackAvailable =
+      !chineseSocial || keywordIndex < (task.serperFallbacksReserved || 0);
+    if (chineseSocial && !found && task.browserPreferred && !serperFallbackAvailable) {
+      const fallbackGrant = await budget.reserveQueuedBudget({ serper: 1 });
+      serperFallbackAvailable = fallbackGrant.serper > 0;
+    }
+    if (!found && serperFallbackAvailable) {
       found = await source.search(keyword.keyword, {
         tbs: keyword.priority >= 8 ? "qdr:d" : "qdr:w",
         num: 10,
@@ -1684,6 +1705,14 @@ async function discover(task: DiscoveryTask, env: QueueEnv): Promise<void> {
         shard: task.shard,
         budgetReserved: task.budgetReserved,
       });
+    }
+    if (!found) {
+      found = [];
+      if (chineseSocial) {
+        browserErrors.push(
+          `${task.sourceName.replace(/_serper$/, "")}: Serper budget unavailable`,
+        );
+      }
     }
     for (const post of found) {
       if (!post.url || isSearchIntermediaryUrl(post.url)) continue;
