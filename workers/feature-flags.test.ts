@@ -35,6 +35,7 @@ describe("Cloudflare migration feature flags", () => {
       failureNotifications: false,
       fetchObservability: false,
       browserFullTextShadow: false,
+      chineseSocial: false,
       openRouterFallback: false,
       openRouterPreflight: false,
     });

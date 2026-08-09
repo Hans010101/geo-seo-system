@@ -311,7 +311,7 @@ export default function SentimentMonitor() {
         <FilterSelect value={range} onChange={(v) => { setRange(v); resetPage(); }} placeholder="时间范围"
           options={[["24h", "近 24 小时"], ["3d", "近 3 天"], ["7d", "近 7 天"], ["all", "近 30 天"]]} />
         <FilterSelect value={source} onChange={(v) => { setSource(v); resetPage(); }} placeholder="来源平台"
-          options={[["all", "全部来源"], ["web", "Web/新闻"], ["binance_square", "币安广场"], ["gate_square", "Gate广场"], ["rss", "RSS媒体"], ["telegram", "Telegram"]]} />
+          options={[["all", "全部来源"], ["web", "Web/新闻"], ["binance_square", "币安广场"], ["gate_square", "Gate广场"], ["rss", "RSS媒体"], ["telegram", "Telegram"], ["x", "X"], ["xiaohongshu", "小红书"], ["douyin", "抖音"], ["kuaishou", "快手"], ["bilibili", "B站"], ["weibo", "微博"], ["tieba", "百度贴吧"], ["zhihu", "知乎"]]} />
         <FilterSelect value={sort} onChange={(v) => { setSort(v); resetPage(); }} placeholder="排序"
           options={[["time", "时间倒序"], ["threat", "威胁优先"], ["sentiment", "最负面优先"]]} />
       </div>

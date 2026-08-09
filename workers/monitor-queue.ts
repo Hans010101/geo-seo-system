@@ -18,6 +18,10 @@ import {
   parseGateFeed,
 } from "../server/monitor/sources/gate-source";
 import { TELEGRAM_CHANNELS } from "../server/monitor/sources/telegram-source";
+import {
+  CHINESE_SOCIAL_PLATFORMS,
+  CHINESE_SOCIAL_SOURCE_NAMES,
+} from "../server/monitor/sources/chinese-social-source";
 import type { DiscoveredPost } from "../server/monitor/sources/types";
 import { searchWeb } from "../server/monitor/search";
 import {
@@ -96,6 +100,10 @@ export type QueueEnv = CloudflareRuntimeEnv & CronBindings & CloudflareFeatureEn
   CLOUDFLARE_PRIMARY_MAX_KEYWORDS?: string;
   CLOUDFLARE_PRIMARY_NEWS_MAX_ARTICLES?: string;
   CLOUDFLARE_PRIMARY_SOCIAL_MAX_ARTICLES?: string;
+  CLOUDFLARE_CHINESE_SOCIAL_ENABLED?: string;
+  CLOUDFLARE_CHINESE_SOCIAL_INTERVAL_HOURS?: string;
+  CLOUDFLARE_CHINESE_SOCIAL_MAX_KEYWORDS?: string;
+  CLOUDFLARE_CHINESE_SOCIAL_PLATFORMS?: string;
   CLOUDFLARE_BINANCE_SHADOW_ENABLED?: string;
   CLOUDFLARE_BINANCE_WRITE_ENABLED?: string;
   CLOUDFLARE_BINANCE_MAX_QUERIES?: string;
@@ -135,6 +143,7 @@ type BootstrapTask = {
   cycleId: string;
   profile: MonitorProfile;
   scheduledTime: number;
+  forceChineseSocial?: boolean;
 };
 
 type DiscoveryTask = {
@@ -239,6 +248,13 @@ const SOURCE_LIMITS: Record<string, number> = {
   telegram: 5,
   x: 20,
   binance_square_browser: 5,
+  xiaohongshu_serper: 3,
+  douyin_serper: 3,
+  kuaishou_serper: 3,
+  bilibili_serper: 3,
+  weibo_serper: 3,
+  tieba_serper: 3,
+  zhihu_serper: 3,
 };
 
 const BINANCE_BROWSER_SOURCE = "binance_square_browser";
@@ -319,6 +335,24 @@ function binanceEnabled(env: QueueEnv): boolean {
 function binanceDue(cycle: BootstrapTask, env: QueueEnv): boolean {
   if (cycle.profile !== "monitor_primary_social" || !binanceEnabled(env)) return false;
   const interval = Math.max(2, positiveInt(env.CLOUDFLARE_BINANCE_INTERVAL_HOURS, 6));
+  return shanghaiParts(cycle.scheduledTime).hour % interval === 3 % interval;
+}
+
+function configuredChineseSocialSources(env: QueueEnv): string[] {
+  const allowed = new Set(CHINESE_SOCIAL_SOURCE_NAMES);
+  return (env.CLOUDFLARE_CHINESE_SOCIAL_PLATFORMS ||
+    CHINESE_SOCIAL_PLATFORMS.map((platform) => platform.key).join(","))
+    .split(",")
+    .map((value) => `${value.trim().replace(/_serper$/, "")}_serper`)
+    .filter((value, index, values) => allowed.has(value) && values.indexOf(value) === index);
+}
+
+function chineseSocialDue(cycle: BootstrapTask, env: QueueEnv): boolean {
+  if (cycle.profile !== "monitor_primary_social") return false;
+  if (cycle.forceChineseSocial) return true;
+  const flags = getCloudflareFeatureFlags(env);
+  if (!flags.chineseSocial) return false;
+  const interval = Math.max(6, positiveInt(env.CLOUDFLARE_CHINESE_SOCIAL_INTERVAL_HOURS, 12));
   return shanghaiParts(cycle.scheduledTime).hour % interval === 3 % interval;
 }
 
@@ -589,7 +623,31 @@ function buildDiscoveryTasks(
         budgetReserved: budgetGrant.serper > 0,
       }]
     : [];
-  return [...gate, ...telegram, ...x, ...binance];
+  const chineseSocialKeywords = keywords.slice(
+    0,
+    Math.min(4, positiveInt(env.CLOUDFLARE_CHINESE_SOCIAL_MAX_KEYWORDS, 1)),
+  );
+  let remainingSerper = Math.max(
+    0,
+    budgetGrant.serper - (binance.length > 0 ? 1 : 0),
+  );
+  const chineseSocial: DiscoveryTask[] = [];
+  if (chineseSocialDue(cycle, env) && chineseSocialKeywords.length > 0) {
+    for (const sourceName of configuredChineseSocialSources(env)) {
+      if (remainingSerper <= 0) break;
+      const taskKeywords = chineseSocialKeywords.slice(0, remainingSerper);
+      if (taskKeywords.length === 0) break;
+      chineseSocial.push({
+        ...base,
+        taskId: `${sourceName}:0`,
+        sourceName,
+        keywords: taskKeywords,
+        budgetReserved: true,
+      });
+      remainingSerper -= taskKeywords.length;
+    }
+  }
+  return [...gate, ...telegram, ...x, ...binance, ...chineseSocial];
 }
 
 async function bootstrap(task: BootstrapTask, env: QueueEnv): Promise<void> {
@@ -603,9 +661,19 @@ async function bootstrap(task: BootstrapTask, env: QueueEnv): Promise<void> {
   }));
   const isNews = task.profile === "monitor_primary_news";
   const runBinance = binanceDue(task, env);
+  const runChineseSocial = chineseSocialDue(task, env);
+  const chineseSocialKeywordCount = Math.min(
+    keywords.length,
+    Math.min(4, positiveInt(env.CLOUDFLARE_CHINESE_SOCIAL_MAX_KEYWORDS, 1)),
+  );
+  const chineseSocialSerperCalls = runChineseSocial
+    ? configuredChineseSocialSources(env).length * chineseSocialKeywordCount
+    : 0;
   const gateFirecrawlEnabled = env.CLOUDFLARE_GATE_FIRECRAWL_ENABLED !== "false";
   const budgetGrant = await budget.reserveQueuedBudget({
-    serper: isNews ? keywords.length : runBinance ? 1 : 0,
+    serper: isNews
+      ? keywords.length
+      : (runBinance ? 1 : 0) + chineseSocialSerperCalls,
     firecrawl: isNews || !gateFirecrawlEnabled ? 0 : GATE_LIST_URLS.length,
   });
   const discoveryTasks = buildDiscoveryTasks(task, keywords, budgetGrant, env);
@@ -626,6 +694,11 @@ async function bootstrap(task: BootstrapTask, env: QueueEnv): Promise<void> {
           ...(discoveryTasks.some((item) => item.sourceName === BINANCE_BROWSER_SOURCE)
             ? ["binance_square"]
             : []),
+          ...configuredChineseSocialSources(env)
+            .filter((sourceName) =>
+              discoveryTasks.some((item) => item.sourceName === sourceName),
+            )
+            .map((sourceName) => sourceName.replace(/_serper$/, "")),
         ],
     discoveryExpected: discoveryTasks.length,
   });
@@ -1527,6 +1600,7 @@ async function discoverGateViaCloudflareBrowser(
 }
 
 async function discover(task: DiscoveryTask, env: QueueEnv): Promise<void> {
+  const startedAt = Date.now();
   if (task.sourceName === BINANCE_BROWSER_SOURCE) {
     await discoverBinance(task, env);
     return;
@@ -1604,6 +1678,17 @@ async function discover(task: DiscoveryTask, env: QueueEnv): Promise<void> {
     discovered: posts.size,
     enqueued: selected.length,
     failed: false,
+    sourceName: task.sourceName.replace(/_serper$/, ""),
+    diagnostic: {
+      status: posts.size > 0 ? "success" : "empty",
+      provider: task.sourceName.endsWith("_serper") ? "serper" : undefined,
+      discovered: posts.size,
+      enqueued: selected.length,
+      durationMs: Date.now() - startedAt,
+      queriesAttempted: task.keywords.length,
+      queriesSucceeded: task.keywords.length,
+      updatedAt: Date.now(),
+    },
   });
 }
 

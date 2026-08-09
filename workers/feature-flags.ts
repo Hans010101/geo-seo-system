@@ -2,6 +2,7 @@ export type CloudflareFeatureEnv = {
   ENABLE_CLOUDFLARE_CRON?: string;
   CLOUDFLARE_MONITOR_NEWS_ENABLED?: string;
   CLOUDFLARE_MONITOR_SOCIAL_ENABLED?: string;
+  CLOUDFLARE_CHINESE_SOCIAL_ENABLED?: string;
   CLOUDFLARE_BINANCE_SHADOW_ENABLED?: string;
   CLOUDFLARE_BINANCE_WRITE_ENABLED?: string;
   CLOUDFLARE_CLEANUP_ENABLED?: string;
@@ -35,6 +36,7 @@ export function getCloudflareFeatureFlags(env: CloudflareFeatureEnv) {
     scheduler: enabled(env.ENABLE_CLOUDFLARE_CRON),
     monitorNews: enabled(env.CLOUDFLARE_MONITOR_NEWS_ENABLED, true),
     monitorSocial: enabled(env.CLOUDFLARE_MONITOR_SOCIAL_ENABLED, true),
+    chineseSocial: enabled(env.CLOUDFLARE_CHINESE_SOCIAL_ENABLED),
     binanceShadow: enabled(env.CLOUDFLARE_BINANCE_SHADOW_ENABLED),
     binanceWrite: enabled(env.CLOUDFLARE_BINANCE_WRITE_ENABLED),
     cleanup: enabled(env.CLOUDFLARE_CLEANUP_ENABLED, true),

@@ -27,12 +27,20 @@ export const FETCH_ENGINE_LABELS: Record<string, string> = {
   source_api: "源自带",
   gate_firecrawl: "Gate渲染",
   x_api: "X API",
+  social_search: "社媒站内检索",
 };
 
 export const SOURCE_PLATFORM_META: Record<string, { label: string; color: string }> = {
   web: { label: "Web/新闻", color: "#6b7280" },
   binance_square: { label: "币安广场", color: "#f0b90b" }, // Binance yellow
   gate_square: { label: "Gate广场", color: "#2354e6" }, // Gate blue
+  xiaohongshu: { label: "小红书", color: "#ff2442" },
+  douyin: { label: "抖音", color: "#111827" },
+  kuaishou: { label: "快手", color: "#ff4906" },
+  bilibili: { label: "B站", color: "#00aeec" },
+  weibo: { label: "微博", color: "#ff8200" },
+  tieba: { label: "百度贴吧", color: "#3385ff" },
+  zhihu: { label: "知乎", color: "#056de8" },
   rss: { label: "RSS媒体", color: "#ea580c" }, // RSS orange
   telegram: { label: "Telegram", color: "#229ED4" }, // Telegram blue
   x: { label: "X", color: "#111827" },

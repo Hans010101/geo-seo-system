@@ -102,6 +102,18 @@ async function status(env: Env) {
       firecrawlEnabled: env.CLOUDFLARE_GATE_FIRECRAWL_ENABLED !== "false",
       fallbackProvider: "serper",
     },
+    chineseSocial: {
+      enabled: features.chineseSocial,
+      mode: "write",
+      provider: "serper_verified_origin",
+      intervalHours: Number(env.CLOUDFLARE_CHINESE_SOCIAL_INTERVAL_HOURS || 12),
+      maxKeywords: Number(env.CLOUDFLARE_CHINESE_SOCIAL_MAX_KEYWORDS || 1),
+      platforms: (env.CLOUDFLARE_CHINESE_SOCIAL_PLATFORMS ||
+        "xiaohongshu,douyin,kuaishou,bilibili,weibo,tieba,zhihu")
+        .split(",")
+        .map((value) => value.trim())
+        .filter(Boolean),
+    },
     openRouter: {
       ...openRouter,
       preflightEnabled: features.openRouterPreflight,
@@ -174,6 +186,20 @@ export default {
           },
         ]);
         return Response.json({ ok: true, queued: "validation_cycles", scheduledTime });
+      }
+      if (url.pathname === "/operator/chinese-social") {
+        await env.MONITOR_QUEUE.send({
+          kind: "bootstrap",
+          cycleId: `operator_chinese_social:${scheduledTime}`,
+          profile: "monitor_primary_social",
+          scheduledTime,
+          forceChineseSocial: true,
+        });
+        return Response.json({
+          ok: true,
+          queued: "chinese_social",
+          scheduledTime,
+        });
       }
       if (url.pathname === "/operator/notification-probe") {
         await env.MONITOR_QUEUE.send({

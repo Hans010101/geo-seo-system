@@ -6,6 +6,7 @@ import { gateSquareSource } from "./gate-source";
 import { rssSource } from "./rss-source";
 import { telegramSource } from "./telegram-source";
 import { xSource } from "./x-source";
+import { chineseSocialSources } from "./chinese-social-source";
 
 export const sources: SocialSource[] = [
   serperSource,
@@ -14,6 +15,7 @@ export const sources: SocialSource[] = [
   rssSource,
   telegramSource,
   xSource,
+  ...chineseSocialSources,
 ];
 
 export function enabledSources(): SocialSource[] {
@@ -28,4 +30,11 @@ export const SOURCE_PLATFORM_LABELS: Record<string, string> = {
   rss: "RSS媒体",
   telegram: "Telegram",
   x: "X/Twitter",
+  xiaohongshu: "小红书",
+  douyin: "抖音",
+  kuaishou: "快手",
+  bilibili: "B站",
+  weibo: "微博",
+  tieba: "百度贴吧",
+  zhihu: "知乎",
 };
