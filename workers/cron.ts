@@ -105,7 +105,11 @@ async function status(env: Env) {
     chineseSocial: {
       enabled: features.chineseSocial,
       mode: "write",
-      provider: "serper_verified_origin",
+      provider: "cloudflare_browser_primary_serper_fallback",
+      browserEnabled: env.CLOUDFLARE_CHINESE_SOCIAL_BROWSER_ENABLED !== "false",
+      browserMaxCallsPerRun: Number(
+        env.CLOUDFLARE_CHINESE_SOCIAL_BROWSER_MAX_CALLS_PER_RUN || 7,
+      ),
       intervalHours: Number(env.CLOUDFLARE_CHINESE_SOCIAL_INTERVAL_HOURS || 12),
       maxKeywords: Number(env.CLOUDFLARE_CHINESE_SOCIAL_MAX_KEYWORDS || 1),
       platforms: (env.CLOUDFLARE_CHINESE_SOCIAL_PLATFORMS ||

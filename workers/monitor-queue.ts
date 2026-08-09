@@ -60,6 +60,7 @@ import type {
   BrowserShadowResultSummary,
 } from "./browser-shadow-budget";
 import type { FulltextBrowserResult } from "./fulltext-browser";
+import type { ChineseSocialBrowserResult } from "./chinese-social-browser";
 import type {
   AcceptanceCycleRecord,
   BinanceAcceptanceRecord,
@@ -85,6 +86,7 @@ import {
 type CronBindings = Pick<
   CronWorkerEnv,
   | "BINANCE_BROWSER"
+  | "CHINESE_SOCIAL_BROWSER"
   | "BROWSER_SHADOW_BUDGET"
   | "FULLTEXT_BROWSER"
   | "HYPERDRIVE"
@@ -104,6 +106,8 @@ export type QueueEnv = CloudflareRuntimeEnv & CronBindings & CloudflareFeatureEn
   CLOUDFLARE_CHINESE_SOCIAL_INTERVAL_HOURS?: string;
   CLOUDFLARE_CHINESE_SOCIAL_MAX_KEYWORDS?: string;
   CLOUDFLARE_CHINESE_SOCIAL_PLATFORMS?: string;
+  CLOUDFLARE_CHINESE_SOCIAL_BROWSER_ENABLED?: string;
+  CLOUDFLARE_CHINESE_SOCIAL_BROWSER_MAX_CALLS_PER_RUN?: string;
   CLOUDFLARE_BINANCE_SHADOW_ENABLED?: string;
   CLOUDFLARE_BINANCE_WRITE_ENABLED?: string;
   CLOUDFLARE_BINANCE_MAX_QUERIES?: string;
@@ -156,6 +160,7 @@ type DiscoveryTask = {
   keywords: Keyword[];
   budgetReserved?: boolean;
   fallbackOnly?: boolean;
+  browserPreferred?: boolean;
 };
 
 type CandidateTask = {
@@ -354,6 +359,10 @@ function chineseSocialDue(cycle: BootstrapTask, env: QueueEnv): boolean {
   if (!flags.chineseSocial) return false;
   const interval = Math.max(6, positiveInt(env.CLOUDFLARE_CHINESE_SOCIAL_INTERVAL_HOURS, 12));
   return shanghaiParts(cycle.scheduledTime).hour % interval === 3 % interval;
+}
+
+function chineseSocialBrowserEnabled(env: QueueEnv): boolean {
+  return env.CLOUDFLARE_CHINESE_SOCIAL_BROWSER_ENABLED !== "false";
 }
 
 function coordinator(env: QueueEnv, profile: MonitorProfile) {
@@ -631,6 +640,9 @@ function buildDiscoveryTasks(
     0,
     budgetGrant.serper - (binance.length > 0 ? 1 : 0),
   );
+  let remainingBrowserCalls = chineseSocialBrowserEnabled(env)
+    ? Math.min(20, positiveInt(env.CLOUDFLARE_CHINESE_SOCIAL_BROWSER_MAX_CALLS_PER_RUN, 7))
+    : 0;
   const chineseSocial: DiscoveryTask[] = [];
   if (chineseSocialDue(cycle, env) && chineseSocialKeywords.length > 0) {
     for (const sourceName of configuredChineseSocialSources(env)) {
@@ -643,7 +655,9 @@ function buildDiscoveryTasks(
         sourceName,
         keywords: taskKeywords,
         budgetReserved: true,
+        browserPreferred: remainingBrowserCalls >= taskKeywords.length,
       });
+      remainingBrowserCalls = Math.max(0, remainingBrowserCalls - taskKeywords.length);
       remainingSerper -= taskKeywords.length;
     }
   }
@@ -1618,16 +1632,59 @@ async function discover(task: DiscoveryTask, env: QueueEnv): Promise<void> {
     normalizedUrl: string;
     matched: Set<string>;
   }>();
+  const chineseSocial = CHINESE_SOCIAL_SOURCE_NAMES.includes(task.sourceName);
+  let browserMs = 0;
+  let browserQueries = 0;
+  let browserSuccesses = 0;
+  let browserFallbacks = 0;
+  const browserErrors: string[] = [];
   for (const keyword of task.keywords) {
     const zh = hasCJK(keyword.keyword);
-    const found = await source.search(keyword.keyword, {
-      tbs: keyword.priority >= 8 ? "qdr:d" : "qdr:w",
-      num: 10,
-      gl: zh ? "cn" : "us",
-      hl: zh ? "zh-cn" : "en",
-      shard: task.shard,
-      budgetReserved: task.budgetReserved,
-    });
+    let found: DiscoveredPost[] | null = null;
+    if (chineseSocial && task.browserPreferred) {
+      browserQueries++;
+      try {
+        const platform = task.sourceName.replace(/_serper$/, "");
+        const response = await env.CHINESE_SOCIAL_BROWSER.fetch(
+          "https://chinese-social-browser/search",
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              platform,
+              keyword: keyword.keyword,
+              maxResults: SOURCE_LIMITS[task.sourceName] || 3,
+            }),
+          },
+        );
+        const result = await response.json<ChineseSocialBrowserResult>();
+        browserMs += Math.max(0, Number(result.browserMs) || 0);
+        if (response.ok && result.ok && result.posts.length > 0) {
+          found = result.posts;
+          browserSuccesses++;
+        } else {
+          browserFallbacks++;
+          browserErrors.push(
+            `${platform}: ${result.error || result.status || `HTTP ${response.status}`}`,
+          );
+        }
+      } catch (error) {
+        browserFallbacks++;
+        browserErrors.push(
+          `${task.sourceName.replace(/_serper$/, "")}: ${String(error).slice(0, 180)}`,
+        );
+      }
+    }
+    if (!found) {
+      found = await source.search(keyword.keyword, {
+        tbs: keyword.priority >= 8 ? "qdr:d" : "qdr:w",
+        num: 10,
+        gl: zh ? "cn" : "us",
+        hl: zh ? "zh-cn" : "en",
+        shard: task.shard,
+        budgetReserved: task.budgetReserved,
+      });
+    }
     for (const post of found) {
       if (!post.url || isSearchIntermediaryUrl(post.url)) continue;
       const normalizedUrl = normalizeUrl(post.url);
@@ -1681,12 +1738,17 @@ async function discover(task: DiscoveryTask, env: QueueEnv): Promise<void> {
     sourceName: task.sourceName.replace(/_serper$/, ""),
     diagnostic: {
       status: posts.size > 0 ? "success" : "empty",
-      provider: task.sourceName.endsWith("_serper") ? "serper" : undefined,
+      provider: chineseSocial && browserSuccesses > 0
+        ? "browser"
+        : task.sourceName.endsWith("_serper") ? "serper" : undefined,
       discovered: posts.size,
       enqueued: selected.length,
       durationMs: Date.now() - startedAt,
+      browserMs,
+      fallbacks: browserFallbacks,
       queriesAttempted: task.keywords.length,
       queriesSucceeded: task.keywords.length,
+      ...(browserErrors.length > 0 ? { errors: browserErrors.slice(0, 4) } : {}),
       updatedAt: Date.now(),
     },
   });
@@ -1745,7 +1807,9 @@ async function candidate(task: CandidateTask, env: QueueEnv): Promise<void> {
 
   const post = task.post;
   const searchDerived =
-    post.sourceName === "serper" || post.sourceName.endsWith("_serper");
+    post.sourceName === "serper" ||
+    post.sourceName.endsWith("_serper") ||
+    post.sourceName.endsWith("_browser");
   let sourceDate: SourceDateVerification | null = null;
   let effectivePublishedAt = post.publishedAt ?? null;
   if (searchDerived) {

@@ -25,6 +25,8 @@
     "CLOUDFLARE_CHINESE_SOCIAL_INTERVAL_HOURS": "12",
     "CLOUDFLARE_CHINESE_SOCIAL_MAX_KEYWORDS": "1",
     "CLOUDFLARE_CHINESE_SOCIAL_PLATFORMS": "xiaohongshu,douyin,kuaishou,bilibili,weibo,tieba,zhihu",
+    "CLOUDFLARE_CHINESE_SOCIAL_BROWSER_ENABLED": "true",
+    "CLOUDFLARE_CHINESE_SOCIAL_BROWSER_MAX_CALLS_PER_RUN": "7",
     "CLOUDFLARE_BINANCE_SHADOW_ENABLED": "true",
     "CLOUDFLARE_BINANCE_WRITE_ENABLED": "true",
     "CLOUDFLARE_BINANCE_MAX_QUERIES": "1",
@@ -86,6 +88,10 @@
     {
       "binding": "FULLTEXT_BROWSER",
       "service": "geo-seo-system-fulltext-browser"
+    },
+    {
+      "binding": "CHINESE_SOCIAL_BROWSER",
+      "service": "geo-seo-system-chinese-social-browser"
     }
   ],
   "queues": {

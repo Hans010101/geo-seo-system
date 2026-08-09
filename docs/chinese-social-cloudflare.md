@@ -16,9 +16,21 @@ Objects、Browser Run 和现有数据库。
 - 调度：北京时间 03:40、15:40 随社交批次运行；可由受保护的
   `POST /operator/chinese-social` 手动触发。
 
-## Browser Run 增强层（下一层）
+## Browser Run 原生发现层（已实现）
 
-Cloudflare Workers Paid 后，仍只使用 Cloudflare：
+Cloudflare Worker `geo-seo-system-chinese-social-browser` 通过 Browser Run Binding
+直接渲染七个平台的搜索页：
+
+- 每轮最多 7 次 Browser 调用，每个平台 1 个关键词；北京时间 03:40、15:40 运行。
+- 使用 `/scrape` 抓取真实 DOM 中的原帖链接和标题，不额外消耗 Browser JSON 的 Workers AI。
+- 严格的平台 URL 规则在 Browser Worker 和主 Queue 两侧共同生效。
+- Browser 返回空结果、登录墙、验证码、429 或结构异常时，单个平台自动降级 Serper。
+- `sourceDiagnostics` 记录 provider、browserMs、fallbacks、发现/入队数和错误。
+- Browser 发现的结果仍必须回原站验证发布时间并通过 7 天窗口。
+
+## 登录态、评论与创作者增强层（下一层）
+
+仍只使用 Cloudflare：
 
 1. Browser Run 复用每个平台的加密登录 Cookie，在真实浏览器中打开搜索/详情页。
 2. Queue 按平台串行执行，Durable Object 负责每日页面数、浏览器毫秒数、冷却和断点游标。

@@ -19,6 +19,8 @@ export type SourceDiagnostic = {
   discovered: number;
   enqueued: number;
   durationMs?: number;
+  browserMs?: number;
+  fallbacks?: number;
   queriesAttempted?: number;
   queriesSucceeded?: number;
   errors?: string[];

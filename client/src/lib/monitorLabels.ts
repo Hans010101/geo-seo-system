@@ -28,6 +28,7 @@ export const FETCH_ENGINE_LABELS: Record<string, string> = {
   gate_firecrawl: "Gate渲染",
   x_api: "X API",
   social_search: "社媒站内检索",
+  social_browser: "Cloudflare 社媒浏览器",
 };
 
 export const SOURCE_PLATFORM_META: Record<string, { label: string; color: string }> = {

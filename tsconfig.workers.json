@@ -7,6 +7,9 @@
     "workers/fulltext-browser.ts",
     "workers/fulltext-browser-guard.ts",
     "workers/fulltext-browser-configuration.d.ts",
+    "workers/chinese-social-browser.ts",
+    "workers/chinese-social-browser-helpers.ts",
+    "workers/chinese-social-browser-configuration.d.ts",
     "workers/migration-acceptance-ledger.ts",
     "workers/migration-acceptance-types.ts"
   ],
