@@ -13,7 +13,7 @@ import type { SocialSource, DiscoveredPost, SearchOpts } from "./types";
 // 2026-07-04): TRON is a low-frequency topic in general crypto broadcast channels (~1/20 msgs), and TRON's
 // own channels are groups (t.me/s serves no messages). Best available: wublockchainenglish (吴说, HTX/Sun
 // beat) + theblockbeats (律动, 中文) added to the general-news set. RSS tag feeds carry the real signal.
-export const TELEGRAM_CHANNELS = ["watcherguru", "cointelegraph", "BWEnews", "wublockchainenglish", "theblockbeats"];
+export const TELEGRAM_CHANNELS = ["watcherguru", "cointelegraph", "BWEnews", "wublockchainenglish", "theblockbeats", "ForesightNews"];
 const CACHE_TTL_MS = 8 * 60 * 1000;
 const MAX_MSGS_PER_CHANNEL = 40;
 const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";

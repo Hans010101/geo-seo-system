@@ -25,6 +25,7 @@ export const RSS_FEEDS = [
   "https://news.bitcoin.com/tag/justin-sun/feed/",
   // (B) general (low TRON density, kept for recall at zero cost)
   "https://cointelegraph.com/rss",
+  "https://cryptoslate.com/feed/",
   "https://www.coindesk.com/arc/outboundfeeds/rss/",
   "https://decrypt.co/feed",
   "https://www.theblock.co/rss.xml",

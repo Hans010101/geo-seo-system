@@ -61,4 +61,17 @@ describe("Chinese social Browser Run discovery", () => {
     expect(posts).toHaveLength(1);
     expect(posts[0]?.title).toBe("更完整的标题内容");
   });
+
+  it("keeps an authoritative structured publication time", () => {
+    const platform = CHINESE_SOCIAL_PLATFORMS.find(item => item.key === "bilibili")!;
+    const element = anchor(canonicalUrls.bilibili, "带发布时间的内容");
+    element.html = '<span>带发布时间的内容</span><time datetime="2026-08-13T01:00:00Z">今天</time>';
+    const [post] = mapBrowserScrapeResults(
+      platform,
+      chineseSocialSearchUrl("bilibili", "TRON"),
+      "TRON",
+      [element]
+    );
+    expect(post?.publishedAt).toBe(Date.parse("2026-08-13T01:00:00Z"));
+  });
 });

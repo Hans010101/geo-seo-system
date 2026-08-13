@@ -39,6 +39,18 @@ function hrefOf(element: BrowserScrapeElement): string | null {
   return element.attributes.find(attribute => attribute.name.toLowerCase() === "href")?.value || null;
 }
 
+function publishedAtOf(element: BrowserScrapeElement): number | null {
+  const value = element.attributes.find(attribute =>
+    ["datetime", "data-time", "data-timestamp"].includes(attribute.name.toLowerCase())
+  )?.value || element.html.match(/<time\b[^>]*\bdatetime=["']([^"']+)["']/i)?.[1];
+  if (!value) return null;
+  const numeric = Number(value);
+  const parsed = Number.isFinite(numeric)
+    ? numeric * (numeric < 1e12 ? 1000 : 1)
+    : Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 export function mapBrowserScrapeResults(
   platform: ChineseSocialPlatform,
   searchUrl: string,
@@ -67,7 +79,7 @@ export function mapBrowserScrapeResults(
       title: (text || `${platform.label}：${keyword}`).slice(0, 512),
       contentSnippet: text || keyword,
       author: null,
-      publishedAt: null,
+      publishedAt: publishedAtOf(element),
       sourceName: `${platform.key}_browser`,
       sourcePlatform: platform.key,
       fetchEngineHint: "social_browser",

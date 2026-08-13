@@ -1839,9 +1839,10 @@ async function candidate(task: CandidateTask, env: QueueEnv): Promise<void> {
     post.sourceName === "serper" ||
     post.sourceName.endsWith("_serper") ||
     post.sourceName.endsWith("_browser");
+  const browserDateVerified = post.fetchEngineHint === "social_browser" && post.publishedAt != null;
   let sourceDate: SourceDateVerification | null = null;
   let effectivePublishedAt = post.publishedAt ?? null;
-  if (searchDerived) {
+  if (searchDerived && !browserDateVerified) {
     sourceDate = await verifySourcePublishedAt(post.url);
     if (sourceDate.status !== "verified" || sourceDate.publishedAt == null) {
       console.log(JSON.stringify({
@@ -1857,7 +1858,7 @@ async function candidate(task: CandidateTask, env: QueueEnv): Promise<void> {
     }
     effectivePublishedAt = sourceDate.publishedAt;
   }
-  const freshness = searchDerived && sourceDate
+  const freshness = sourceDate
     ? sourceDateFreshness(sourceDate)
     : monitorPublishedAtFreshness(effectivePublishedAt);
   if (freshness !== "fresh") {
