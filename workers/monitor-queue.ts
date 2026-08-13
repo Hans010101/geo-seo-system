@@ -68,7 +68,10 @@ import type {
   GeoAcceptanceRecord,
   NotificationAcceptanceRecord,
 } from "./migration-acceptance-types";
-import type { BinanceBrowserSearchResult } from "./binance-square-browser";
+import {
+  binanceBrowserNeedsFallback,
+  type BinanceBrowserSearchResult,
+} from "./binance-square-browser";
 import {
   getCloudflareFeatureFlags,
   type CloudflareFeatureEnv,
@@ -254,7 +257,7 @@ const SOURCE_LIMITS: Record<string, number> = {
   gate_square: 8,
   telegram: 5,
   x: 20,
-  binance_square_browser: 5,
+  binance_square_browser: 15,
   xiaohongshu_serper: 10,
   douyin_serper: 10,
   kuaishou_serper: 10,
@@ -870,7 +873,7 @@ async function fetchBinancePosts(
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         queries: binanceQueries(env),
-        pageSize: 10,
+        pageSize: 20,
       }),
       signal: AbortSignal.timeout(55_000),
     });
@@ -897,7 +900,7 @@ async function fetchBinancePosts(
       }],
     };
   }
-  if (browserResult.ok || !serperBudgetReserved) {
+  if (!binanceBrowserNeedsFallback(browserResult) || !serperBudgetReserved) {
     return { result: browserResult, provider: "browser" };
   }
 

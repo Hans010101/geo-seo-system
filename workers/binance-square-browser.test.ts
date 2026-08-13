@@ -1,9 +1,22 @@
 import { describe, expect, it } from "vitest";
 import {
+  binanceBrowserNeedsFallback,
   isBinanceSearchResponse,
   isBinanceSquarePayload,
   parseBinanceSquareResponse,
 } from "./binance-square-browser";
+
+it("falls back when Binance Browser returns an empty successful payload", () => {
+  expect(binanceBrowserNeedsFallback({
+    ok: true,
+    posts: [],
+    durationMs: 1,
+    sessionId: "test",
+    queriesAttempted: 1,
+    queriesSucceeded: 1,
+    diagnostics: [],
+  })).toBe(true);
+});
 
 describe("parseBinanceSquareResponse", () => {
   it("turns Binance post cards into discovered posts", () => {

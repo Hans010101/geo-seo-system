@@ -29,6 +29,10 @@ export type BinanceBrowserSearchResult = {
   diagnostics: BinanceBrowserQueryDiagnostic[];
 };
 
+export function binanceBrowserNeedsFallback(result: BinanceBrowserSearchResult): boolean {
+  return !result.ok || result.posts.length === 0;
+}
+
 type JsonRecord = Record<string, unknown>;
 
 function record(value: unknown): JsonRecord | null {
