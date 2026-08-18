@@ -105,7 +105,7 @@ app.get("/api/health", async (c) => {
     const db = await getDb();
     if (db) {
       await Promise.race([
-        db.execute(sql`SELECT 1`),
+        db.all(sql`SELECT 1`),
         new Promise((_r, rej) => setTimeout(() => rej(new Error("db health timeout")), 3000)),
       ]);
       dbOk = true;

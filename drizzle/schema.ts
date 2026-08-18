@@ -12,7 +12,7 @@ import {
   decimal,
   index,
   uniqueIndex,
-} from "drizzle-orm/mysql-core";
+} from "./sqlite-compat";
 
 // ==================== Users ====================
 export const users = mysqlTable("users", {
@@ -424,6 +424,7 @@ export const monitorArticles = mysqlTable(
   },
   (table) => [
     index("monitor_articles_urlHash_idx").on(table.urlHash),
+    uniqueIndex("monitor_articles_contentHash_uq").on(table.contentHash),
     index("monitor_articles_domain_idx").on(table.domain),
     index("monitor_articles_firstSeenAt_idx").on(table.firstSeenAt),
   ]

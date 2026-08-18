@@ -155,10 +155,12 @@
       "new_sqlite_classes": ["MigrationAcceptanceLedger"]
     }
   ],
-  "hyperdrive": [
+  "d1_databases": [
     {
       "binding": "HYPERDRIVE",
-      "id": "cd45e0e89ac544eebd5eb7eb0ab3b8de"
+      "database_name": "geo-seo-system-db",
+      "database_id": "415ac39d-c99f-4517-a4c0-2831368762d9",
+      "migrations_dir": "drizzle-d1"
     }
   ],
   "triggers": {

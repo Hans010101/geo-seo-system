@@ -1,7 +1,6 @@
 import { eq, desc, asc, and, or, gte, lte, sql, inArray, like, count, avg } from "drizzle-orm";
-import { drizzle, type MySql2Database } from "drizzle-orm/mysql2";
+import { drizzle } from "drizzle-orm/d1";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { createConnection } from "mysql2/promise";
 import {
   InsertUser,
   User,
@@ -46,80 +45,27 @@ import {
 import { MONITOR_RETENTION_DAYS } from "./monitor/util";
 
 
-type Database = MySql2Database<any>;
-
-export type HyperdriveBinding = {
-  host: string;
-  user: string;
-  password: string;
-  database: string;
-  port: number;
-};
+type Database = ReturnType<typeof drizzle>;
+export type HyperdriveBinding = Parameters<typeof drizzle>[0];
 
 const requestDatabase = new AsyncLocalStorage<Database>();
 let _db: Database | null = null;
 
 /**
- * Run one Cloudflare request/job with its own mysql2 connection.
- *
- * Hyperdrive maintains the origin pool. Cloudflare recommends creating a
- * mysql2 connection for each invocation and enabling disableEval.
- * AsyncLocalStorage prevents concurrent Worker requests from sharing mutable
- * global database state.
+ * Keep the existing request-scoped database entry point while D1 owns the
+ * connection lifecycle natively.
  */
 export async function withHyperdriveDatabase<T>(
   binding: HyperdriveBinding,
   fn: () => Promise<T>,
 ): Promise<T> {
-  const connection = await createConnection({
-    host: binding.host,
-    user: binding.user,
-    password: binding.password,
-    database: binding.database,
-    port: binding.port,
-    disableEval: true,
-  });
-  const scopedDb = drizzle(connection);
-
-  return requestDatabase.run(scopedDb, async () => {
-    try {
-      return await fn();
-    } finally {
-      await connection.end().catch(() => undefined);
-    }
-  });
+  return requestDatabase.run(drizzle(binding), fn);
 }
 
 export async function getDb() {
   const scopedDb = requestDatabase.getStore();
   if (scopedDb) return scopedDb;
 
-  if (!_db && process.env.DATABASE_URL) {
-    try {
-      const rawUrl = process.env.DATABASE_URL;
-      // mysql2 URL parser ignores ?socketPath=, so parse it manually
-      const url = new URL(rawUrl);
-      const socketPath = url.searchParams.get("socketPath");
-      if (socketPath) {
-        const mysql2 = await import("mysql2");
-        const pool = mysql2.createPool({
-          host: "localhost",
-          user: decodeURIComponent(url.username),
-          password: decodeURIComponent(url.password),
-          database: url.pathname.slice(1), // remove leading /
-          socketPath,
-          waitForConnections: true,
-          connectionLimit: 10,
-        });
-        _db = drizzle(pool);
-      } else {
-        _db = drizzle(rawUrl);
-      }
-    } catch (error) {
-      console.warn("[Database] Failed to connect:", error);
-      _db = null;
-    }
-  }
   return _db;
 }
 
@@ -187,7 +133,7 @@ export async function upsertUser(user: InsertUser): Promise<void> {
     }
     if (!values.lastSignedIn) values.lastSignedIn = new Date();
     if (Object.keys(updateSet).length === 0) updateSet.lastSignedIn = new Date();
-    await db.insert(users).values(values).onDuplicateKeyUpdate({ set: updateSet });
+    await db.insert(users).values(values).onConflictDoUpdate({ target: users.openId, set: updateSet });
   } catch (error) {
     console.error("[Database] Failed to upsert user:", error);
     throw error;
@@ -342,8 +288,8 @@ export async function getCollectionById(id: number) {
 export async function createCollection(data: InsertCollection) {
   const db = await getDb();
   if (!db) return null;
-  const result = await db.insert(collections).values(data);
-  return result[0].insertId;
+  const [result] = await db.insert(collections).values(data).returning({ id: collections.id });
+  return result.id;
 }
 
 export async function updateCollection(id: number, data: Partial<InsertCollection>) {
@@ -762,8 +708,8 @@ export async function listAlerts(filters?: { severity?: string; isRead?: boolean
 export async function createAlert(data: InsertAlert): Promise<number | undefined> {
   const db = await getDb();
   if (!db) return undefined;
-  const result = await db.insert(alerts).values(data);
-  return (result as any)[0]?.insertId;
+  const [result] = await db.insert(alerts).values(data).returning({ id: alerts.id });
+  return result?.id;
 }
 
 export async function markAlertRead(id: number) {
@@ -849,7 +795,8 @@ export async function upsertPlatformConfig(data: InsertPlatformConfig) {
   await db
     .insert(platformConfigs)
     .values(data)
-    .onDuplicateKeyUpdate({
+    .onConflictDoUpdate({
+      target: platformConfigs.platform,
       set: {
         displayName: data.displayName,
         isEnabled: data.isEnabled,
@@ -934,7 +881,8 @@ export async function upsertWeeklyReport(data: InsertWeeklyReport) {
   await db
     .insert(weeklyReports)
     .values(data)
-    .onDuplicateKeyUpdate({
+    .onConflictDoUpdate({
+      target: weeklyReports.reportWeek,
       set: {
         reportPeriod: data.reportPeriod,
         summaryMetrics: data.summaryMetrics,
@@ -1344,34 +1292,12 @@ export async function getRecentMonitorArticleDuplicate(input: {
 export async function createMonitorArticle(data: InsertMonitorArticle) {
   const db = await getDb();
   if (!db) return null;
-  const contentHash = data.contentHash?.trim();
-  if (!contentHash) {
-    const result = await db.insert(monitorArticles).values(data);
-    return result[0].insertId;
-  }
-
-  // Cross-URL content dedup must remain race-safe across concurrent Queue consumers.
-  // MySQL named locks are scoped to this Hyperdrive origin connection and released
-  // explicitly below; the URL UNIQUE constraint remains the final URL-level guard.
-  const lockName = `monitor-content:${contentHash.slice(0, 44)}`;
-  const lockResult: any = await db.execute(sql`SELECT GET_LOCK(${lockName}, 5) AS acquired`);
-  const lockRows = Array.isArray(lockResult) && Array.isArray(lockResult[0])
-    ? lockResult[0]
-    : lockResult;
-  if (Number(lockRows?.[0]?.acquired) !== 1) {
-    throw new Error("monitor content dedup lock timeout");
-  }
-  try {
-    const duplicate = await getRecentMonitorArticleDuplicate({
-      contentHashes: [contentHash],
-      title: data.title,
-    });
-    if (duplicate) return null;
-    const result = await db.insert(monitorArticles).values(data);
-    return result[0].insertId;
-  } finally {
-    await db.execute(sql`SELECT RELEASE_LOCK(${lockName})`).catch(() => {});
-  }
+  const [result] = await db
+    .insert(monitorArticles)
+    .values(data)
+    .onConflictDoNothing()
+    .returning({ id: monitorArticles.id });
+  return result?.id ?? null;
 }
 
 export async function updateMonitorArticle(id: number, data: Partial<InsertMonitorArticle>) {
@@ -1406,9 +1332,11 @@ export async function listMonitorWebArticlesForFreshnessAudit(input: {
 export async function deleteMonitorArticleForFreshnessAudit(id: number): Promise<boolean> {
   const db = await getDb();
   if (!db) return false;
-  const result: any = await db.delete(monitorArticles).where(eq(monitorArticles.id, id));
-  const header = Array.isArray(result) ? result[0] : result;
-  return Number(header?.affectedRows) > 0;
+  const rows = await db
+    .delete(monitorArticles)
+    .where(eq(monitorArticles.id, id))
+    .returning({ id: monitorArticles.id });
+  return rows.length > 0;
 }
 
 // Full detail incl. contentMd + joined source stance/authority.
@@ -1479,8 +1407,8 @@ export async function listMonitorArticles(filters?: {
   const orderBy =
     filters?.sort === "threat"
       ? [
-          sql`${monitorArticles.threatLevel} IS NULL`, // unanalyzed last (FIELD(NULL)=0 would float them first)
-          sql`FIELD(${monitorArticles.threatLevel}, 'high', 'medium', 'low', 'none')`,
+          sql`${monitorArticles.threatLevel} IS NULL`,
+          sql`CASE ${monitorArticles.threatLevel} WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END`,
           desc(monitorArticles.publishedAt),
         ]
       : filters?.sort === "sentiment"
@@ -1580,14 +1508,15 @@ export async function getMonitorStats() {
 }
 
 // ==================== Monitor Reports (舆情周报/月报) ====================
-// Regeneration = overwrite: unique (reportType, reportPeriod) with onDuplicateKeyUpdate.
+// Regeneration = overwrite: unique (reportType, reportPeriod).
 export async function upsertMonitorReport(data: InsertMonitorReport): Promise<void> {
   const db = await getDb();
   if (!db) return;
   await db
     .insert(monitorReports)
     .values(data)
-    .onDuplicateKeyUpdate({
+    .onConflictDoUpdate({
+      target: [monitorReports.reportType, monitorReports.reportPeriod],
       set: {
         periodStart: data.periodStart,
         periodEnd: data.periodEnd,

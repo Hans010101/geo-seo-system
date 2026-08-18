@@ -16,17 +16,13 @@ import { normalizeDomain, log } from "./util";
 // host-only (before first '/') -> before first ':' (port) -> strip leading www.
 // (citations.domain never actually carries a scheme, but keeping this in lock-step avoids silent drift.)
 export function normSql(col: string): string {
-  return `TRIM(LEADING 'www.' FROM SUBSTRING_INDEX(SUBSTRING_INDEX(REPLACE(REPLACE(LOWER(TRIM(${col})),'https://',''),'http://',''),'/',1),':',1))`;
+  return `LTRIM(SUBSTR(SUBSTR(REPLACE(REPLACE(LOWER(TRIM(${col})),'https://',''),'http://',''), 1, INSTR(REPLACE(REPLACE(LOWER(TRIM(${col})),'https://',''),'http://','') || '/', '/') - 1) || ':', 1, INSTR(SUBSTR(REPLACE(REPLACE(LOWER(TRIM(${col})),'https://',''),'http://',''), 1, INSTR(REPLACE(REPLACE(LOWER(TRIM(${col})),'https://',''),'http://','') || '/', '/') - 1) || ':', ':') - 1), 'www.')`;
 }
 
-// drizzle(mysql2) .execute() resolves to the raw driver result [rows, fields]; be defensive.
 export async function rawRows<T = any>(query: any): Promise<T[]> {
   const db = await getDb();
   if (!db) return [];
-  const res: any = await db.execute(query);
-  if (Array.isArray(res) && Array.isArray(res[0])) return res[0] as T[];
-  if (Array.isArray(res)) return res as T[];
-  return (res?.rows ?? []) as T[];
+  return db.all<T>(query);
 }
 
 export type PenetrationCategory = "amplified" | "potential" | "cited_neutral" | "low";
@@ -84,7 +80,7 @@ export async function getSourcePenetration(opts?: { days?: number }): Promise<So
   const days = opts?.days;
   const windowClause =
     days && Number.isInteger(days) && days > 0
-      ? `AND publishedAt >= (UNIX_TIMESTAMP(NOW() - INTERVAL ${days} DAY) * 1000)`
+      ? `AND publishedAt >= (unixepoch('now', '-${days} days') * 1000)`
       : "";
   const query = sql.raw(`
     SELECT m.domain AS domain, m.articles AS articles, m.negatives AS negatives,
@@ -106,7 +102,7 @@ export async function getSourcePenetration(opts?: { days?: number }): Promise<So
       SELECT ${normSql("ci.domain")} AS domain,
              COUNT(*) AS aiCitations,
              COUNT(DISTINCT co.platform) AS aiPlatforms,
-             GROUP_CONCAT(DISTINCT co.platform ORDER BY co.platform SEPARATOR ',') AS platformList
+             GROUP_CONCAT(DISTINCT co.platform) AS platformList
       FROM citations ci JOIN collections co ON ci.collectionId = co.id
       GROUP BY ${normSql("ci.domain")}
     ) c ON m.domain = c.domain
@@ -242,7 +238,7 @@ export async function getCitationSourceActivity(opts?: { limit?: number }): Prom
     FROM (
       SELECT ${normSql("ci.domain")} AS domain, COUNT(*) AS aiCitations,
              COUNT(DISTINCT co.platform) AS aiPlatforms,
-             GROUP_CONCAT(DISTINCT co.platform ORDER BY co.platform SEPARATOR ',') AS platformList
+             GROUP_CONCAT(DISTINCT co.platform) AS platformList
       FROM citations ci JOIN collections co ON ci.collectionId = co.id
       GROUP BY ${normSql("ci.domain")}
     ) c
@@ -266,7 +262,7 @@ export async function getCitationSourceActivity(opts?: { limit?: number }): Prom
     SELECT ${sql.raw(normSql("domain"))} AS domain, title, url, sentimentScore, publishedAt, createdAt
     FROM monitor_articles
     WHERE ${sql.raw(normSql("domain"))} IN (${sql.join(domains, sql`, `)})
-    ORDER BY COALESCE(publishedAt, UNIX_TIMESTAMP(createdAt) * 1000) DESC`);
+    ORDER BY COALESCE(publishedAt, createdAt * 1000) DESC`);
   for (const r of latestRows) {
     const d = String(r.domain);
     if (!latestByDomain.has(d)) {

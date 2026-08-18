@@ -187,7 +187,7 @@ export async function buildMonitorReport(p: ReportPeriod): Promise<MonitorReport
   const topNegatives = (await rawRows<any>(sql.raw(`
     SELECT title, domain, url, sentimentScore, threatLevel FROM monitor_articles
     WHERE ${win} AND relevance IN ('high','medium') AND sentimentScore <= 2
-    ORDER BY threatLevel IS NULL, FIELD(threatLevel,'high','medium','low','none'), sentimentScore ASC LIMIT 10`))).map((r) => ({
+    ORDER BY threatLevel IS NULL, CASE threatLevel WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END, sentimentScore ASC LIMIT 10`))).map((r) => ({
     title: r.title ?? null, domain: r.domain ?? null, url: String(r.url),
     sentimentScore: r.sentimentScore == null ? null : Number(r.sentimentScore), threatLevel: r.threatLevel ?? null,
   }));
@@ -219,7 +219,7 @@ export async function buildMonitorReport(p: ReportPeriod): Promise<MonitorReport
     SELECT c.d domain, c.aiPlatforms, c.firstCited
     FROM (
       SELECT ${normSql("ci.domain")} d, COUNT(DISTINCT co.platform) aiPlatforms,
-        MIN(UNIX_TIMESTAMP(ci.createdAt) * 1000) firstCited
+        MIN(ci.createdAt * 1000) firstCited
       FROM citations ci JOIN collections co ON ci.collectionId = co.id GROUP BY d
       HAVING firstCited >= ${startMs} AND firstCited < ${endMs}
     ) c

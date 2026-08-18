@@ -1254,7 +1254,7 @@ const collectionsRouter = router({
       const { sql, eq, and } = await import("drizzle-orm");
       const conditions = [
         eq(collections.status, "pending"),
-        sql`${collections.createdAt} < DATE_SUB(NOW(), INTERVAL 5 MINUTE)`,
+        sql`${collections.createdAt} < unixepoch('now', '-5 minutes')`,
       ];
       if (input?.batchId) {
         conditions.push(eq(collections.batchId, input.batchId));
