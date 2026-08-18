@@ -20,7 +20,6 @@ import {
   type MonitorCycleResult,
 } from "./monitor/pipeline";
 import * as monitorBudget from "./monitor/budget";
-import { getCookieStatus } from "./monitor/sources/binance-cookie";
 import { getPushConfig, setPushConfig } from "./monitor/notify";
 import {
   getSourcePenetration,
@@ -2612,10 +2611,21 @@ const monitorRouter = router({
     return { success: ok };
   }),
 
-  // 币安广场 AWS WAF cookie status (read-only). Refresh is fully external: the GitHub Actions cron runs
-  // refresh-binance-cookie.ts every 2h (Chromium runner) → writes into sysConfigs. No in-app refresh
-  // endpoint (Cloud Run has no Chromium; the old button only ever errored).
-  binanceCookieStatus: protectedProcedure.query(async () => getCookieStatus()),
+  // Cloudflare-native Binance Browser/Serper status from the latest social cycle.
+  binanceStatus: protectedProcedure.query(async () => {
+    const [status, provider, updatedAt, error] = await Promise.all([
+      db.getSysConfig("cf_binance_last_status"),
+      db.getSysConfig("cf_binance_last_provider"),
+      db.getSysConfig("cf_binance_last_finished_at"),
+      db.getSysConfig("cf_binance_last_error"),
+    ]);
+    return {
+      status: status || "unknown",
+      provider,
+      updatedAt: Number(updatedAt || 0) || null,
+      error: error || null,
+    };
+  }),
 
   // Phase 2 push config: briefing/realtime toggles + briefing mode (channels + silent hours live in
   // notificationConfigs, managed at /config/notifications).

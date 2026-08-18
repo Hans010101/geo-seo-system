@@ -81,7 +81,6 @@
     "node-cron": "^4.2.1",
     "nodemailer": "^8.0.5",
     "p-limit": "^7.3.0",
-    "playwright-core": "^1.61.1",
     "qrcode": "^1.5.4",
     "react": "^19.2.1",
     "react-day-picker": "^9.11.1",

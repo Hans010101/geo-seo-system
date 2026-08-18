@@ -1,7 +1,6 @@
 // Source registry. Add a new SocialSource here (and it flows through the pipeline unchanged).
 import type { SocialSource } from "./types";
 import { serperSource } from "./serper-source";
-import { binanceSquareSource } from "./binance-source";
 import { gateSquareSource } from "./gate-source";
 import { rssSource } from "./rss-source";
 import { telegramSource } from "./telegram-source";
@@ -10,7 +9,6 @@ import { chineseSocialSources } from "./chinese-social-source";
 
 export const sources: SocialSource[] = [
   serperSource,
-  binanceSquareSource,
   gateSquareSource,
   rssSource,
   telegramSource,

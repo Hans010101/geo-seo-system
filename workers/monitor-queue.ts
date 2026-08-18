@@ -1313,6 +1313,20 @@ async function discoverBinance(task: DiscoveryTask, env: QueueEnv): Promise<void
     })));
   }
   const diagnostic = sourceDiagnostic(result, mode, provider, selected.length);
+  const finishedAt = Date.now();
+  await Promise.all([
+    db.setSysConfig(BINANCE_STATUS_KEYS.status, diagnostic.status),
+    db.setSysConfig(BINANCE_STATUS_KEYS.provider, provider),
+    db.setSysConfig(BINANCE_STATUS_KEYS.mode, mode),
+    db.setSysConfig(BINANCE_STATUS_KEYS.startedAt, String(finishedAt - result.durationMs)),
+    db.setSysConfig(BINANCE_STATUS_KEYS.finishedAt, String(finishedAt)),
+    db.setSysConfig(BINANCE_STATUS_KEYS.summary, JSON.stringify({
+      rawPosts: result.posts.length,
+      matchedPosts: posts.size,
+      enqueued: selected.length,
+    })),
+    db.setSysConfig(BINANCE_STATUS_KEYS.error, (diagnostic.errors || []).join("; ").slice(0, 1000)),
+  ]);
   await recordAcceptance(env, "/record-binance", binanceAcceptanceRecord({
     runId: `${task.cycleId}:${task.taskId}`,
     mode,
@@ -1320,7 +1334,7 @@ async function discoverBinance(task: DiscoveryTask, env: QueueEnv): Promise<void
     result,
     matched: posts,
     enqueued: selected.length,
-    startedAt: Date.now() - result.durationMs,
+    startedAt: finishedAt - result.durationMs,
   }));
   console.log(JSON.stringify({
     event: "binance_square.discovery",

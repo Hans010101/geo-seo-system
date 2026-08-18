@@ -101,7 +101,7 @@ export default function SentimentMonitor() {
     onSuccess: () => { utils.monitor.getPushConfig.invalidate(); toast.success("推送设置已更新"); },
     onError: (e) => toast.error(e.message),
   });
-  const { data: bnCookie } = trpc.monitor.binanceCookieStatus.useQuery();
+  const { data: binance } = trpc.monitor.binanceStatus.useQuery();
 
   const articles = resp?.data ?? [];
   const total = resp?.total ?? 0;
@@ -144,11 +144,11 @@ export default function SentimentMonitor() {
             </div>
             <div
               className="flex items-center gap-2 rounded-lg border px-3 py-1.5"
-              title={bnCookie?.expireAt ? `过期时间: ${new Date(bnCookie.expireAt).toLocaleString("zh-CN", { hour12: false })}` : "币安广场 WAF cookie 状态"}
+              title={[binance?.provider && `采集通道: ${binance.provider}`, binance?.updatedAt && `更新时间: ${new Date(binance.updatedAt).toLocaleString("zh-CN", { hour12: false })}`, binance?.error].filter(Boolean).join("\n") || "Cloudflare 币安广场采集状态"}
             >
-              <span className="text-xs text-muted-foreground">币安 cookie</span>
-              <Badge variant={bnCookie?.valid ? "default" : "secondary"} className={`text-[10px] ${bnCookie?.valid ? "" : "text-orange-600"}`}>
-                {bnCookie?.valid ? "有效" : "无效/过期"}
+              <span className="text-xs text-muted-foreground">币安采集</span>
+              <Badge variant={binance?.status === "success" ? "default" : "secondary"} className={`text-[10px] ${binance?.status === "partial" ? "text-orange-600" : ""}`}>
+                {binance?.status === "success" ? "正常" : binance?.status === "partial" ? "备用通道运行" : binance?.status === "empty" ? "暂无新内容" : binance?.status === "running" ? "运行中" : "等待运行"}
               </Badge>
             </div>
             <Button
