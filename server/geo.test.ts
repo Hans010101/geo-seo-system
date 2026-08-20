@@ -370,5 +370,11 @@ describe("GEO Platform API", () => {
         caller.weeklyReports.generate({ reportWeek: "2026-W15" })
       ).rejects.toThrow();
     });
+
+    it("lets admins generate a weekly report", async () => {
+      const caller = appRouter.createCaller(createAdminContext());
+      await expect(caller.weeklyReports.generate({ reportWeek: "2026-W34" }))
+        .resolves.toEqual({ success: true, reportWeek: "2026-W34" });
+    });
   });
 });

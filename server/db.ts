@@ -316,25 +316,8 @@ export async function getTopCitedUrls(limit: number = 20, startTime?: number, en
   const db = await getDb();
   if (!db) return [];
   const conditions = [];
-  if (startTime || endTime) {
-    const collectionIds = await db
-      .select({ id: collections.id })
-      .from(collections)
-      .where(
-        and(
-          startTime ? gte(collections.timestamp, startTime) : undefined,
-          endTime ? lte(collections.timestamp, endTime) : undefined
-        )
-      );
-    if (collectionIds.length > 0) {
-      conditions.push(
-        inArray(
-          citations.collectionId,
-          collectionIds.map((c) => c.id)
-        )
-      );
-    }
-  }
+  if (startTime) conditions.push(gte(collections.timestamp, startTime));
+  if (endTime) conditions.push(lte(collections.timestamp, endTime));
   const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
   return db
     .select({
@@ -345,6 +328,7 @@ export async function getTopCitedUrls(limit: number = 20, startTime?: number, en
       citationCount: count(),
     })
     .from(citations)
+    .innerJoin(collections, eq(citations.collectionId, collections.id))
     .where(whereClause)
     .groupBy(citations.url, citations.domain, citations.title, citations.sourceType)
     .orderBy(desc(count()))
@@ -355,25 +339,8 @@ export async function getCitationDomainDistribution(startTime?: number, endTime?
   const db = await getDb();
   if (!db) return [];
   const conditions = [];
-  if (startTime || endTime) {
-    const collectionIds = await db
-      .select({ id: collections.id })
-      .from(collections)
-      .where(
-        and(
-          startTime ? gte(collections.timestamp, startTime) : undefined,
-          endTime ? lte(collections.timestamp, endTime) : undefined
-        )
-      );
-    if (collectionIds.length > 0) {
-      conditions.push(
-        inArray(
-          citations.collectionId,
-          collectionIds.map((c) => c.id)
-        )
-      );
-    }
-  }
+  if (startTime) conditions.push(gte(collections.timestamp, startTime));
+  if (endTime) conditions.push(lte(collections.timestamp, endTime));
   const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
   return db
     .select({
@@ -382,6 +349,7 @@ export async function getCitationDomainDistribution(startTime?: number, endTime?
       sourceType: citations.sourceType,
     })
     .from(citations)
+    .innerJoin(collections, eq(citations.collectionId, collections.id))
     .where(whereClause)
     .groupBy(citations.domain, citations.sourceType)
     .orderBy(desc(count()));
@@ -410,33 +378,21 @@ export async function deleteAnalysisByCollectionId(collectionId: number) {
 export async function getSentimentTrend(questionId: string, platform?: string) {
   const db = await getDb();
   if (!db) return [];
-  // Get collections for this question, optionally filtered by platform
   const conditions = [eq(collections.questionId, questionId)];
   if (platform) conditions.push(eq(collections.platform, platform as any));
   conditions.push(eq(collections.status, "success"));
 
-  const collectionList = await db
-    .select({ id: collections.id, timestamp: collections.timestamp, platform: collections.platform })
+  return db
+    .select({
+      timestamp: collections.timestamp,
+      platform: collections.platform,
+      sentimentScore: analyses.sentimentScore,
+      overallTone: analyses.overallTone,
+    })
     .from(collections)
+    .leftJoin(analyses, eq(analyses.collectionId, collections.id))
     .where(and(...conditions))
     .orderBy(asc(collections.timestamp));
-
-  if (collectionList.length === 0) return [];
-
-  const collectionIds = collectionList.map((c) => c.id);
-  const analysisList = await db
-    .select()
-    .from(analyses)
-    .where(inArray(analyses.collectionId, collectionIds));
-
-  const analysisMap = new Map(analysisList.map((a) => [a.collectionId, a]));
-
-  return collectionList.map((c) => ({
-    timestamp: c.timestamp,
-    platform: c.platform,
-    sentimentScore: analysisMap.get(c.id)?.sentimentScore || null,
-    overallTone: analysisMap.get(c.id)?.overallTone || null,
-  }));
 }
 
 // ==================== Dashboard Helpers ====================
@@ -938,43 +894,22 @@ export async function getHeatmapData(startTime?: number, endTime?: number) {
   if (startTime) conditions.push(gte(collections.timestamp, startTime));
   if (endTime) conditions.push(lte(collections.timestamp, endTime));
 
-  const collectionList = await db
+  const rows = await db
     .select({
-      id: collections.id,
       questionId: collections.questionId,
       platform: collections.platform,
+      avgScore: avg(analyses.sentimentScore),
     })
     .from(collections)
-    .where(and(...conditions));
+    .innerJoin(analyses, eq(analyses.collectionId, collections.id))
+    .where(and(...conditions))
+    .groupBy(collections.questionId, collections.platform);
 
-  if (collectionList.length === 0) return [];
-
-  const collectionIds = collectionList.map((c) => c.id);
-  const analysisList = await db
-    .select({ collectionId: analyses.collectionId, sentimentScore: analyses.sentimentScore })
-    .from(analyses)
-    .where(inArray(analyses.collectionId, collectionIds));
-
-  const analysisMap = new Map(analysisList.map((a) => [a.collectionId, a.sentimentScore]));
-
-  // Group by questionId + platform
-  const heatmap: Record<string, Record<string, number[]>> = {};
-  collectionList.forEach((c) => {
-    if (!heatmap[c.questionId]) heatmap[c.questionId] = {};
-    if (!heatmap[c.questionId][c.platform]) heatmap[c.questionId][c.platform] = [];
-    const score = analysisMap.get(c.id);
-    if (score) heatmap[c.questionId][c.platform].push(score);
-  });
-
-  const result: { questionId: string; platform: string; avgScore: number }[] = [];
-  Object.entries(heatmap).forEach(([qid, platforms]) => {
-    Object.entries(platforms).forEach(([platform, scores]) => {
-      const avg = scores.reduce((a, b) => a + b, 0) / scores.length;
-      result.push({ questionId: qid, platform, avgScore: Math.round(avg * 10) / 10 });
-    });
-  });
-
-  return result;
+  return rows.map((row) => ({
+    questionId: row.questionId,
+    platform: row.platform,
+    avgScore: Math.round((Number(row.avgScore) || 0) * 10) / 10,
+  }));
 }
 
 // ==================== Uncited Our Content Helper ====================
@@ -989,32 +924,15 @@ export async function getUncitedOurContent(startTime?: number, endTime?: number)
 
   if (allOurUrls.length === 0) return [];
 
-  // Get all cited URLs in the time range
   const conditions = [];
-  if (startTime || endTime) {
-    const collectionIds = await db
-      .select({ id: collections.id })
-      .from(collections)
-      .where(
-        and(
-          startTime ? gte(collections.timestamp, startTime) : undefined,
-          endTime ? lte(collections.timestamp, endTime) : undefined
-        )
-      );
-    if (collectionIds.length > 0) {
-      conditions.push(
-        inArray(
-          citations.collectionId,
-          collectionIds.map((c) => c.id)
-        )
-      );
-    }
-  }
+  if (startTime) conditions.push(gte(collections.timestamp, startTime));
+  if (endTime) conditions.push(lte(collections.timestamp, endTime));
   conditions.push(eq(citations.isOurContent, true));
 
   const citedUrls = await db
     .select({ url: citations.url })
     .from(citations)
+    .innerJoin(collections, eq(citations.collectionId, collections.id))
     .where(and(...conditions));
 
   const citedUrlSet = new Set(citedUrls.map((c) => c.url));

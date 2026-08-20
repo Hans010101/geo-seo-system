@@ -23,7 +23,8 @@ export default function WeeklyReports() {
       toast.success("周报生成成功");
     },
     onError: (err) => {
-      toast.error("生成失败: " + err.message);
+      console.error("GEO weekly report generation failed", err);
+      toast.error("周报生成失败，请稍后重试");
     },
   });
 
