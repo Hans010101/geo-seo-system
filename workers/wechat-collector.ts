@@ -20,7 +20,7 @@ const encoder = new TextEncoder();
 export class WeChatCollectorContainer extends Container<WeChatEnv> {
   defaultPort = 8001;
   sleepAfter = "15m";
-  pingEndpoint = "/";
+  pingEndpoint = "container/";
 
   constructor(ctx: DurableObjectState<{}>, env: WeChatEnv) {
     super(ctx, env);
