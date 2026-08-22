@@ -12,7 +12,6 @@ const connection = await createConnection(DATABASE_URL);
 // ==================== Platform Configs ====================
 const platformConfigs = [
   { platform: "chatgpt", displayName: "ChatGPT", isEnabled: true, modelVersion: "gpt-4o", collectFrequency: "weekly" },
-  { platform: "perplexity", displayName: "Perplexity", isEnabled: true, modelVersion: "default", collectFrequency: "weekly" },
   { platform: "gemini", displayName: "Gemini", isEnabled: true, modelVersion: "gemini-2.0", collectFrequency: "weekly" },
   { platform: "wenxin", displayName: "文心一言", isEnabled: true, modelVersion: "ernie-4.0", collectFrequency: "weekly" },
   { platform: "claude", displayName: "Claude", isEnabled: true, modelVersion: "claude-3.5-sonnet", collectFrequency: "weekly" },

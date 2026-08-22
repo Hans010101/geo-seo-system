@@ -45,8 +45,8 @@ function getTimeRange(range: TimeRange) {
 
 const ALERTS_PAGE_SIZE = 5;
 
-const DOMESTIC_PLATFORMS = ["deepseek", "tongyi", "zhipu", "kimi", "doubao", "minimax", "wenxin", "hunyuan"];
-const INTERNATIONAL_PLATFORMS = ["chatgpt", "claude", "copilot", "perplexity", "grok", "gemini", "llama"];
+const DOMESTIC_PLATFORMS = ["deepseek", "tongyi", "zhipu", "kimi", "doubao", "minimax", "wenxin"];
+const INTERNATIONAL_PLATFORMS = ["chatgpt", "claude", "copilot", "grok", "gemini"];
 
 export default function Home() {
   const utils = trpc.useUtils();

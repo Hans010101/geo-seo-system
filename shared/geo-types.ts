@@ -1,7 +1,6 @@
-// Platform types - 15 mainstream AI platforms
+// Platform types - 12 monitored AI platforms
 export const PLATFORMS = [
   "chatgpt",
-  "perplexity",
   "gemini",
   "wenxin",
   "claude",
@@ -13,14 +12,11 @@ export const PLATFORMS = [
   "tongyi",
   "zhipu",
   "grok",
-  "llama",
-  "hunyuan",
 ] as const;
 export type Platform = (typeof PLATFORMS)[number];
 
 export const PLATFORM_LABELS: Record<Platform, string> = {
   chatgpt: "ChatGPT",
-  perplexity: "Perplexity",
   gemini: "Gemini",
   wenxin: "文心一言",
   claude: "Claude",
@@ -32,13 +28,10 @@ export const PLATFORM_LABELS: Record<Platform, string> = {
   tongyi: "通义千问",
   zhipu: "智谱清言",
   grok: "Grok",
-  llama: "Llama",
-  hunyuan: "混元",
 };
 
 export const PLATFORM_COLORS: Record<Platform, string> = {
   chatgpt: "#10a37f",
-  perplexity: "#1a73e8",
   gemini: "#8e44ad",
   wenxin: "#2080f0",
   claude: "#d97706",
@@ -50,14 +43,11 @@ export const PLATFORM_COLORS: Record<Platform, string> = {
   tongyi: "#7c3aed",
   zhipu: "#059669",
   grok: "#000000",
-  llama: "#3b82f6",
-  hunyuan: "#14b8a6",
 };
 
 // OpenRouter model mapping for each platform
 export const PLATFORM_OPENROUTER_MODELS: Record<Platform, string> = {
   chatgpt: "openai/gpt-4o",
-  perplexity: "perplexity/sonar-pro",
   // gemini-2.0-flash-001 was retired from OpenRouter; gemini-2.5-flash is the current stable replacement
   gemini: "google/gemini-2.5-flash",
   // baidu/ernie-4.5-300b-a47b was delisted; only vision-language variants remain on OpenRouter
@@ -74,8 +64,6 @@ export const PLATFORM_OPENROUTER_MODELS: Record<Platform, string> = {
   zhipu: "z-ai/glm-4.7",
   // Grok 3 deprecated per xAI notice; Grok 4.20 is the current stable non-multi-agent revision
   grok: "x-ai/grok-4.20",
-  llama: "meta-llama/llama-4-maverick",
-  hunyuan: "tencent/hunyuan-a13b-instruct",
 };
 
 // Platforms that are better served by Bailian (百炼) than OpenRouter
@@ -84,7 +72,6 @@ export const PLATFORM_RECOMMENDED_PROVIDER: Partial<Record<Platform, string>> = 
   doubao: "百炼",
   wenxin: "百炼",
   tongyi: "百炼",
-  hunyuan: "百炼",
 };
 
 // Bailian (阿里百炼) model names — used when baseUrl contains dashscope/bailian
@@ -102,9 +89,9 @@ export const PLATFORM_BAILIAN_MODELS: Partial<Record<Platform, string>> = {
 // ==================== LLM Provider Routing ====================
 // We support two LLM providers as a primary/hot-standby pair:
 //   - bai (B.AI)       — primary (preferred for the 7 platforms it covers)
-//   - openrouter       — hot standby + fallback for the 8 platforms BAI doesn't cover
+//   - openrouter       — hot standby + fallback for the 5 platforms BAI doesn't cover
 // The active "primary" is stored in sysConfigs (key=llm_primary_provider). Default 'bai'.
-// "BAI 不覆盖的 8 个平台,任何时候都走 OpenRouter" — enforced in resolveProviderForPlatform.
+// BAI-uncovered platforms always use OpenRouter — enforced in resolveProviderForPlatform.
 export type LLMProvider = "bai" | "openrouter";
 
 // BAI model names — used when baseUrl contains 'b.ai'.

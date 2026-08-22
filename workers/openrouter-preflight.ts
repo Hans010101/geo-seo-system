@@ -47,7 +47,7 @@ async function responseError(response: Response): Promise<string> {
  * A one-token paid probe is deliberate: GET /key proves that a key is valid,
  * but an unlimited key can still belong to an account with zero credits.
  * The tiny completion is the only reliable way to detect OpenRouter HTTP 402
- * before the 465-cell weekly GEO run starts.
+ * before the 372-cell weekly GEO run starts.
  */
 export async function probeOpenRouter(
   options: OpenRouterPreflightOptions,

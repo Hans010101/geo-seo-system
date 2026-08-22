@@ -116,8 +116,8 @@ export default function ConfigPlatforms() {
   }, [platformList]);
 
   // Platforms to show per tab
-  const cnPlatforms = ["wenxin", "doubao", "kimi", "deepseek", "minimax", "tongyi", "zhipu", "baichuan", "hunyuan", "tiangong"];
-  const intlPlatforms = ["chatgpt", "perplexity", "gemini", "claude", "copilot", "mistral", "grok", "llama"];
+  const cnPlatforms = ["wenxin", "doubao", "kimi", "deepseek", "minimax", "tongyi", "zhipu", "baichuan", "tiangong"];
+  const intlPlatforms = ["chatgpt", "gemini", "claude", "copilot", "mistral", "grok"];
 
   const enabledCount = platformList?.filter((p) => p.isEnabled).length || 0;
   const globalKeyCount = globalKeysList?.filter((k) => k.isActive).length || 0;
@@ -997,7 +997,7 @@ function KeyCard({ keyObj, canEdit, onEdit, onDelete }: { keyObj: any; canEdit: 
           {provider === "openrouter" && (
             <div className="flex gap-2 text-[10px] text-muted-foreground">
               <span className="w-16 shrink-0">说明</span>
-              <span>BAI 不覆盖的 8 个平台（通义/文心/混元/豆包/Copilot/Perplexity/Grok/Llama）始终走此 Key</span>
+              <span>BAI 不覆盖的 5 个平台（通义/文心/豆包/Copilot/Grok）始终走此 Key</span>
             </div>
           )}
         </div>
@@ -1054,7 +1054,7 @@ function PrimaryProviderCard() {
             </div>
             <p className="text-xs text-muted-foreground mt-1">
               BAI 覆盖 7 个平台（ChatGPT / Claude / Gemini / DeepSeek / 智谱 / Kimi / MiniMax），默认走 BAI。
-              其余 8 个平台无论怎么切换都走 OpenRouter。切换后立即生效，无需重启。
+              其余 5 个平台无论怎么切换都走 OpenRouter。切换后立即生效，无需重启。
             </p>
 
             <div className="flex items-center gap-2 mt-3 flex-wrap">
@@ -1130,7 +1130,7 @@ function PrimaryProviderCard() {
                 确认从 <strong>{isBai ? "B.AI" : "OpenRouter"}</strong> 切换到 <strong>{targetLabel}</strong>？
                 <br /><br />
                 <span className="text-foreground">
-                  BAI 覆盖的 7 个平台将立即改走 {targetLabel}。BAI 不覆盖的 8 个平台不受影响。
+                  BAI 覆盖的 7 个平台将立即改走 {targetLabel}。BAI 不覆盖的 5 个平台不受影响。
                   <br />
                   当前另一个 Provider 的 Key:{" "}
                   <Badge variant={(targetProvider === "bai" ? baiAvail : orAvail) ? "default" : "destructive"}>

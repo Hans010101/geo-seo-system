@@ -2190,7 +2190,7 @@ export type CloudflareGeoWeeklyShardResult = {
 
 // Cloudflare weekly GEO coverage is advanced in small, idempotent shards. With
 // the production default of 6 cells × 12 social events/day, the current
-// 31-question × 15-platform matrix completes inside one week without exceeding
+// 31-question × 12-platform matrix completes inside one week without exceeding
 // the Free-plan external-subrequest ceiling in any single invocation.
 export async function runCloudflareGeoWeeklyShard(options?: {
   maxCells?: number;

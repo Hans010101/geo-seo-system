@@ -6,7 +6,6 @@ export type Pricing = { input: number; output: number };
 
 export const OPENROUTER_PRICING: Record<string, Pricing> = {
   "openai/gpt-4o":                       { input: 0.0000025,    output: 0.00001 },
-  "perplexity/sonar-pro":                { input: 0.000003,     output: 0.000015 },
   "google/gemini-2.5-flash":             { input: 0.0000003,    output: 0.0000025 },   // also used by analysis path
   "baidu/ernie-4.5-vl-424b-a47b":        { input: 0.00000042,   output: 0.00000125 },
   "anthropic/claude-sonnet-4":           { input: 0.000003,     output: 0.000015 },
@@ -17,8 +16,6 @@ export const OPENROUTER_PRICING: Record<string, Pricing> = {
   "qwen/qwen-plus":                      { input: 0.00000026,   output: 0.00000078 },
   "z-ai/glm-4.7":                        { input: 0.0000004,    output: 0.00000175 },
   "x-ai/grok-4.20":                      { input: 0.00000125,   output: 0.0000025 },
-  "meta-llama/llama-4-maverick":         { input: 0.00000015,   output: 0.0000006 },
-  "tencent/hunyuan-a13b-instruct":       { input: 0.00000014,   output: 0.00000057 },
 };
 
 // Compute USD cost for a single LLM invocation. Returns null when model is unknown or tokens are missing.
