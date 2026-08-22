@@ -17,12 +17,14 @@
     "cf:deploy:binance-browser": "wrangler deploy --config wrangler.binance-browser.jsonc",
     "cf:deploy:fulltext-browser": "wrangler deploy --config wrangler.fulltext-browser.jsonc",
     "cf:deploy:chinese-social-browser": "wrangler deploy --config wrangler.chinese-social-browser.jsonc",
+    "cf:deploy:wechat": "wrangler deploy --config wrangler.wechat.jsonc",
     "cf:deploy:cron": "wrangler deploy --config wrangler.cron.jsonc",
     "cf:deploy": "pnpm run cf:deploy:pages && pnpm run cf:deploy:binance-browser && pnpm run cf:deploy:fulltext-browser && pnpm run cf:deploy:chinese-social-browser && pnpm run cf:deploy:cron"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.693.0",
     "@aws-sdk/s3-request-presigner": "^3.693.0",
+    "@cloudflare/containers": "0.3.7",
     "@hono/trpc-server": "^0.4.2",
     "@hookform/resolvers": "^5.2.2",
     "@mozilla/readability": "^0.6.0",

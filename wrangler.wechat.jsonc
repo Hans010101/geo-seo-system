@@ -1,0 +1,45 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "geo-seo-system-wechat",
+  "main": "workers/wechat-collector.ts",
+  "compatibility_date": "2026-08-22",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "vars": {
+    "WECHAT_ADMIN_USERNAME": "hans.pan007@gmail.com",
+    "WECHAT_PUBLIC_URL": "https://geo-seo-system-wechat.hans-pan007.workers.dev",
+    "WECHAT_STATE_URL": "https://geo-seo-system-wechat.hans-pan007.workers.dev/internal/state"
+  },
+  "r2_buckets": [
+    {
+      "binding": "WECHAT_STATE",
+      "bucket_name": "geo-seo-system-state"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "WECHAT_CONTAINER",
+        "class_name": "WeChatCollectorContainer"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1-wechat-container",
+      "new_sqlite_classes": ["WeChatCollectorContainer"]
+    }
+  ],
+  "containers": [
+    {
+      "class_name": "WeChatCollectorContainer",
+      "image": "./Dockerfile.wechat",
+      "max_instances": 1,
+      "instance_type": "standard-1"
+    }
+  ],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  }
+}

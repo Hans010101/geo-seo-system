@@ -1,0 +1,83 @@
+FROM ghcr.io/rachelos/we-mp-rss@sha256:125472e8a58a05f02b930ba2b958575ffc87378743d9491383b13390f709215e AS repacked
+COPY containers/repack-image.py /repack-image.py
+COPY containers/wechat-state.py /app/wechat-state.py
+RUN sed -i 's/print(f"{k}={v}")/print(f"{k}=<redacted>")/' /app/main.py && python3 /repack-image.py
+
+FROM scratch
+COPY --from=repacked /chunks/00/ /
+COPY --from=repacked /chunks/01/ /
+COPY --from=repacked /chunks/02/ /
+COPY --from=repacked /chunks/03/ /
+COPY --from=repacked /chunks/04/ /
+COPY --from=repacked /chunks/05/ /
+COPY --from=repacked /chunks/06/ /
+COPY --from=repacked /chunks/07/ /
+COPY --from=repacked /chunks/08/ /
+COPY --from=repacked /chunks/09/ /
+COPY --from=repacked /chunks/10/ /
+COPY --from=repacked /chunks/11/ /
+COPY --from=repacked /chunks/12/ /
+COPY --from=repacked /chunks/13/ /
+COPY --from=repacked /chunks/14/ /
+COPY --from=repacked /chunks/15/ /
+COPY --from=repacked /chunks/16/ /
+COPY --from=repacked /chunks/17/ /
+COPY --from=repacked /chunks/18/ /
+COPY --from=repacked /chunks/19/ /
+COPY --from=repacked /chunks/20/ /
+COPY --from=repacked /chunks/21/ /
+COPY --from=repacked /chunks/22/ /
+COPY --from=repacked /chunks/23/ /
+COPY --from=repacked /chunks/24/ /
+COPY --from=repacked /chunks/25/ /
+COPY --from=repacked /chunks/26/ /
+COPY --from=repacked /chunks/27/ /
+COPY --from=repacked /chunks/28/ /
+COPY --from=repacked /chunks/29/ /
+COPY --from=repacked /chunks/30/ /
+COPY --from=repacked /chunks/31/ /
+COPY --from=repacked /chunks/32/ /
+COPY --from=repacked /chunks/33/ /
+COPY --from=repacked /chunks/34/ /
+COPY --from=repacked /chunks/35/ /
+COPY --from=repacked /chunks/36/ /
+COPY --from=repacked /chunks/37/ /
+COPY --from=repacked /chunks/38/ /
+COPY --from=repacked /chunks/39/ /
+COPY --from=repacked /chunks/40/ /
+COPY --from=repacked /chunks/41/ /
+COPY --from=repacked /chunks/42/ /
+COPY --from=repacked /chunks/43/ /
+COPY --from=repacked /chunks/44/ /
+COPY --from=repacked /chunks/45/ /
+COPY --from=repacked /chunks/46/ /
+COPY --from=repacked /chunks/47/ /
+COPY --from=repacked /chunks/48/ /
+COPY --from=repacked /chunks/49/ /
+COPY --from=repacked /chunks/50/ /
+COPY --from=repacked /chunks/51/ /
+COPY --from=repacked /chunks/52/ /
+COPY --from=repacked /chunks/53/ /
+COPY --from=repacked /chunks/54/ /
+COPY --from=repacked /chunks/55/ /
+COPY --from=repacked /chunks/56/ /
+COPY --from=repacked /chunks/57/ /
+COPY --from=repacked /chunks/58/ /
+COPY --from=repacked /chunks/59/ /
+COPY --from=repacked /chunks/60/ /
+COPY --from=repacked /chunks/61/ /
+COPY --from=repacked /chunks/62/ /
+COPY --from=repacked /chunks/63/ /
+ENV PATH=/pnpm:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    PNPM_HOME=/pnpm \
+    DEBIAN_FRONTEND=noninteractive \
+    PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
+    INSTALL=True \
+    BROWSER_TYPE=webkit \
+    PLANT_PATH=/app/env \
+    WEREAD_LIC_PATH=/app/data/wx.lic \
+    WEREAD_PROFILE_DIR=/app/data/weread-chrome-profile \
+    PLAYWRIGHT_BROWSERS_PATH=/app/env/driver/_x86_64
+WORKDIR /app
+EXPOSE 8001
+ENTRYPOINT ["/app/env_x86_64/bin/python3", "/app/wechat-state.py"]
