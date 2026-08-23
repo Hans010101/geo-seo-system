@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import signal
+import socket
 import sqlite3
 import subprocess
 import tempfile
@@ -21,6 +22,8 @@ STATE_TOKEN = os.environ["STATE_TOKEN"]
 REFRESH_INTERVAL = max(3600, int(os.getenv("WECHAT_REFRESH_INTERVAL_SECONDS", "21600")))
 stopping = threading.Event()
 child = None
+child_lock = threading.Lock()
+bootstrap = None
 STATUS = Path("/app/static/backup-status.json")
 
 
@@ -91,19 +94,46 @@ def restore_state(body):
     with zipfile.ZipFile(io.BytesIO(body)) as zf:
         if not set(zf.namelist()).issubset(FILES) or "db.db" not in zf.namelist():
             raise ValueError("invalid state archive")
-        with tempfile.TemporaryDirectory() as temp:
-            snapshot = Path(temp) / "db.db"
-            with zf.open("db.db") as src, open(snapshot, "wb") as dst:
-                shutil.copyfileobj(src, dst)
-            with sqlite3.connect(snapshot) as source, sqlite3.connect(DB) as target:
-                source.backup(target)
-        for name in FILES[1:]:
+        for name in FILES:
             if name in zf.namelist():
                 restored = DATA / f"{name}.restore"
                 with zf.open(name) as src, open(restored, "wb") as dst:
                     shutil.copyfileobj(src, dst)
                 restored.replace(DATA / name)
     backup_status(True, "restored")
+
+
+def start_upstream():
+    global bootstrap, child
+    with child_lock:
+        if child and child.poll() is None:
+            return
+        if bootstrap:
+            bootstrap.shutdown()
+            bootstrap.server_close()
+            bootstrap = None
+        child = subprocess.Popen(["/app/start.sh"])
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            if child.poll() is not None:
+                raise RuntimeError(f"upstream exited with code {child.returncode}")
+            try:
+                with socket.create_connection(("127.0.0.1", 8001), timeout=0.25):
+                    return
+            except OSError:
+                time.sleep(0.25)
+        raise TimeoutError("upstream did not start")
+
+
+class BootstrapHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Length", "2")
+        self.end_headers()
+        self.wfile.write(b"ok")
+
+    def log_message(self, _format, *_args):
+        pass
 
 
 class StateHandler(BaseHTTPRequestHandler):
@@ -135,10 +165,21 @@ class StateHandler(BaseHTTPRequestHandler):
             if length <= 0 or length > 25 * 1024 * 1024:
                 return self.reply(413)
             restore_state(self.rfile.read(length))
+            start_upstream()
             self.reply(200, b'{"ok":true}')
         except Exception as error:
             backup_status(False, str(error))
             self.reply(400)
+
+    def do_POST(self):
+        if self.path != "/start" or not self.authorized():
+            return self.reply(404)
+        try:
+            start_upstream()
+            self.reply(200, b'{"ok":true}')
+        except Exception as error:
+            backup_status(False, str(error))
+            self.reply(500)
 
     def log_message(self, _format, *_args):
         pass
@@ -181,9 +222,12 @@ seed_weread_cookie()
 signal.signal(signal.SIGTERM, stop)
 signal.signal(signal.SIGINT, stop)
 threading.Thread(target=refresh_loop, daemon=True).start()
+bootstrap = ThreadingHTTPServer(("0.0.0.0", 8001), BootstrapHandler)
+threading.Thread(target=bootstrap.serve_forever, daemon=True).start()
 threading.Thread(
     target=ThreadingHTTPServer(("0.0.0.0", 8787), StateHandler).serve_forever,
     daemon=True,
 ).start()
-child = subprocess.Popen(["/app/start.sh"])
-raise SystemExit(child.wait())
+while child is None and not stopping.wait(0.1):
+    pass
+raise SystemExit(child.wait() if child else 0)

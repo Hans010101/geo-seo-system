@@ -51,8 +51,8 @@ export class WeChatCollectorContainer extends Container<WeChatEnv> {
     };
   }
 
-  private async stateRequest(method: "GET" | "PUT", body?: ArrayBuffer) {
-    return this.containerFetch("http://container/state", {
+  private async stateRequest(method: "GET" | "PUT" | "POST", body?: ArrayBuffer) {
+    return this.containerFetch(`http://container/${method === "POST" ? "start" : "state"}`, {
       method,
       headers: { authorization: `Bearer ${this.wechatEnv.WECHAT_STATE_TOKEN}` },
       body,
@@ -74,11 +74,9 @@ export class WeChatCollectorContainer extends Container<WeChatEnv> {
     try {
       await this.waitForPort({ portToCheck: 8787, retries: 30, waitInterval: 250 });
       const object = await this.wechatEnv.WECHAT_STATE.get(STATE_KEY);
-      if (!object) return;
-      const response = await this.stateRequest(
-        "PUT",
-        await decryptState(await object.arrayBuffer(), this.wechatEnv),
-      );
+      const response = object
+        ? await this.stateRequest("PUT", await decryptState(await object.arrayBuffer(), this.wechatEnv))
+        : await this.stateRequest("POST");
       if (!response.ok) throw new Error(`WeChat state restore HTTP ${response.status}`);
       await this.waitForPort({ portToCheck: this.defaultPort, retries: 60, waitInterval: 500 });
     } catch (error) {
