@@ -29,6 +29,7 @@ export const FETCH_ENGINE_LABELS: Record<string, string> = {
   x_api: "X API",
   social_search: "社媒站内检索",
   social_browser: "Cloudflare 社媒浏览器",
+  wechat_rss: "微信聚合 RSS",
 };
 
 export const SOURCE_PLATFORM_META: Record<string, { label: string; color: string }> = {
@@ -42,6 +43,7 @@ export const SOURCE_PLATFORM_META: Record<string, { label: string; color: string
   weibo: { label: "微博", color: "#ff8200" },
   tieba: { label: "百度贴吧", color: "#3385ff" },
   zhihu: { label: "知乎", color: "#056de8" },
+  wechat: { label: "微信公众号", color: "#07c160" },
   rss: { label: "RSS媒体", color: "#ea580c" }, // RSS orange
   telegram: { label: "Telegram", color: "#229ED4" }, // Telegram blue
   x: { label: "X", color: "#111827" },

@@ -35,4 +35,5 @@ export const SOURCE_PLATFORM_LABELS: Record<string, string> = {
   weibo: "微博",
   tieba: "百度贴吧",
   zhihu: "知乎",
+  wechat: "微信公众号",
 };

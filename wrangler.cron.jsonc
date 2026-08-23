@@ -18,7 +18,9 @@
     "CLOUDFLARE_PRIMARY_MAX_KEYWORDS": "100",
     "CLOUDFLARE_PRIMARY_CRON": "15,40 1-23/2 * * *",
     "CLOUDFLARE_PRIMARY_NEWS_MAX_ARTICLES": "18",
-    "CLOUDFLARE_PRIMARY_NEWS_SOURCES": "serper,rss",
+    "CLOUDFLARE_PRIMARY_NEWS_SOURCES": "serper,rss,wechat",
+    "CLOUDFLARE_WECHAT_ENABLED": "true",
+    "CLOUDFLARE_WECHAT_MAX_ARTICLES": "20",
     "CLOUDFLARE_PRIMARY_SOCIAL_MAX_ARTICLES": "30",
     "CLOUDFLARE_PRIMARY_SOCIAL_SOURCES": "gate_square,telegram,x,binance_square",
     "CLOUDFLARE_CHINESE_SOCIAL_ENABLED": "true",
@@ -93,6 +95,10 @@
     {
       "binding": "CHINESE_SOCIAL_BROWSER",
       "service": "geo-seo-system-chinese-social-browser"
+    },
+    {
+      "binding": "WECHAT_COLLECTOR",
+      "service": "geo-seo-system-wechat"
     }
   ],
   "queues": {

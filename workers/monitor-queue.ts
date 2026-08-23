@@ -12,6 +12,7 @@ import { dispatchNotification } from "../server/_core/notification";
 import * as budget from "../server/monitor/budget";
 import { enabledSources } from "../server/monitor/sources/registry";
 import { RSS_FEEDS } from "../server/monitor/sources/rss-source";
+import { parseWeChatRss } from "../server/monitor/sources/wechat-source";
 import {
   GATE_LIST_URLS,
   getGateRenderDiagnostic,
@@ -100,11 +101,15 @@ type CronBindings = Pick<
 >;
 
 export type QueueEnv = CloudflareRuntimeEnv & CronBindings & CloudflareFeatureEnv & {
+  WECHAT_COLLECTOR: Fetcher;
   ENABLE_CLOUDFLARE_CRON?: string;
   CLOUDFLARE_CRON_MODE?: string;
   CLOUDFLARE_PRIMARY_MAX_KEYWORDS?: string;
   CLOUDFLARE_PRIMARY_NEWS_MAX_ARTICLES?: string;
   CLOUDFLARE_PRIMARY_SOCIAL_MAX_ARTICLES?: string;
+  CLOUDFLARE_WECHAT_ENABLED?: string;
+  CLOUDFLARE_WECHAT_MAX_ARTICLES?: string;
+  WECHAT_COLLECTOR_TOKEN?: string;
   CLOUDFLARE_CHINESE_SOCIAL_ENABLED?: string;
   CLOUDFLARE_CHINESE_SOCIAL_INTERVAL_HOURS?: string;
   CLOUDFLARE_CHINESE_SOCIAL_MAX_KEYWORDS?: string;
@@ -254,6 +259,7 @@ export type QueueTask =
 const SOURCE_LIMITS: Record<string, number> = {
   serper: 5,
   rss: 5,
+  wechat: 20,
   gate_square: 8,
   telegram: 5,
   x: 20,
@@ -606,7 +612,15 @@ function buildDiscoveryTasks(
       shard,
       keywords,
     }));
-    return [...serper, ...rss];
+    const wechat = env.CLOUDFLARE_WECHAT_ENABLED === "false"
+      ? []
+      : [{
+          ...base,
+          taskId: "wechat:0",
+          sourceName: "wechat",
+          keywords,
+        }];
+    return [...serper, ...rss, ...wechat];
   }
 
   const gateFirecrawlEnabled = env.CLOUDFLARE_GATE_FIRECRAWL_ENABLED !== "false";
@@ -718,7 +732,11 @@ async function bootstrap(task: BootstrapTask, env: QueueEnv): Promise<void> {
     maxArticles,
     keywords: keywords.length,
     sources: isNews
-      ? ["serper", "rss"]
+      ? [
+          "serper",
+          "rss",
+          ...(discoveryTasks.some((item) => item.sourceName === "wechat") ? ["wechat"] : []),
+        ]
       : [
           "gate_square",
           "telegram",
@@ -1647,6 +1665,96 @@ async function discoverGateViaCloudflareBrowser(
 
 async function discover(task: DiscoveryTask, env: QueueEnv): Promise<void> {
   const startedAt = Date.now();
+  if (task.sourceName === "wechat") {
+    if (!env.WECHAT_COLLECTOR_TOKEN) throw new Error("WECHAT_COLLECTOR_TOKEN is missing");
+    const response = await env.WECHAT_COLLECTOR.fetch("https://wechat-collector/collect", {
+      headers: { authorization: `Bearer ${env.WECHAT_COLLECTOR_TOKEN}` },
+      signal: AbortSignal.timeout(60_000),
+    });
+    if (!response.ok) {
+      const error = `WeChat collector HTTP ${response.status}: ${(await response.text()).slice(0, 200)}`;
+      if (response.status !== 409) throw new Error(error);
+      await finishDiscovery(task, env, {
+        discovered: 0,
+        enqueued: 0,
+        failed: true,
+        sourceName: "wechat",
+        diagnostic: {
+          status: "failed",
+          provider: "cloudflare_container_werss",
+          discovered: 0,
+          enqueued: 0,
+          durationMs: Date.now() - startedAt,
+          queriesAttempted: 1,
+          queriesSucceeded: 0,
+          errors: [error],
+          updatedAt: Date.now(),
+        },
+      });
+      return;
+    }
+    const found = await parseWeChatRss(await response.text());
+    const posts = new Map<string, {
+      post: DiscoveredPost;
+      normalizedUrl: string;
+      matched: Set<string>;
+    }>();
+    for (const post of found) {
+      if (
+        !post.url ||
+        isSearchIntermediaryUrl(post.url) ||
+        monitorPublishedAtFreshness(post.publishedAt) !== "fresh"
+      ) continue;
+      const content = `${post.title} ${post.fullContent || post.contentSnippet || ""}`;
+      const matched = task.keywords
+        .filter((keyword) => keywordMatchesText(keyword.keyword, content))
+        .map((keyword) => keyword.keyword);
+      if (matched.length === 0) continue;
+      const normalizedUrl = normalizeUrl(post.url);
+      const urlHash = sha256(normalizedUrl);
+      const current = posts.get(urlHash);
+      if (current) matched.forEach((keyword) => current.matched.add(keyword));
+      else posts.set(urlHash, { post, normalizedUrl, matched: new Set(matched) });
+    }
+    const limit = Math.min(
+      50,
+      positiveInt(env.CLOUDFLARE_WECHAT_MAX_ARTICLES, SOURCE_LIMITS.wechat),
+    );
+    const selected = Array.from(posts.entries())
+      .sort(([, a], [, b]) => (b.post.publishedAt || 0) - (a.post.publishedAt || 0))
+      .slice(0, limit);
+    if (selected.length > 0) {
+      await env.MONITOR_QUEUE.sendBatch(selected.map(([urlHash, value]) => ({
+        body: {
+          kind: "candidate",
+          cycleId: task.cycleId,
+          profile: task.profile,
+          deliveryId: `${task.taskId}:${urlHash}`,
+          urlHash,
+          normalizedUrl: value.normalizedUrl,
+          post: value.post,
+          matchedKeywords: Array.from(value.matched),
+        },
+      })));
+    }
+    await finishDiscovery(task, env, {
+      discovered: found.length,
+      enqueued: selected.length,
+      failed: false,
+      sourceName: "wechat",
+      diagnostic: {
+        status: selected.length > 0 ? "success" : "empty",
+        provider: "cloudflare_container_werss",
+        discovered: found.length,
+        enqueued: selected.length,
+        durationMs: Date.now() - startedAt,
+        queriesAttempted: 1,
+        queriesSucceeded: 1,
+        updatedAt: Date.now(),
+      },
+    });
+    return;
+  }
   if (task.sourceName === BINANCE_BROWSER_SOURCE) {
     await discoverBinance(task, env);
     return;

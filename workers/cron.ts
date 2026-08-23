@@ -132,6 +132,10 @@ async function status(env: Env) {
     },
     cleanup,
     freshnessAudit,
+    wechat: {
+      enabled: env.CLOUDFLARE_WECHAT_ENABLED !== "false",
+      ...((news as { sourceDiagnostics?: Record<string, unknown> }).sourceDiagnostics?.wechat || {}),
+    },
     browserFulltext: {
       ...browserFulltext,
       enabled: features.browserFullTextShadow,

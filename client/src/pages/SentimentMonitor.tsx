@@ -102,6 +102,14 @@ export default function SentimentMonitor() {
     onError: (e) => toast.error(e.message),
   });
   const { data: binance } = trpc.monitor.binanceStatus.useQuery();
+  const { data: cloudflareStatus } = trpc.system.cloudflareStatus.useQuery(undefined, {
+    refetchInterval: 60_000,
+  });
+  const wechat = cloudflareStatus?.wechat as {
+    status?: string;
+    updatedAt?: number;
+    errors?: string[];
+  } | null;
 
   const articles = resp?.data ?? [];
   const total = resp?.total ?? 0;
@@ -151,6 +159,18 @@ export default function SentimentMonitor() {
                 {binance?.status === "success" ? "正常" : binance?.status === "partial" ? "备用通道运行" : binance?.status === "empty" ? "暂无新内容" : binance?.status === "running" ? "运行中" : "等待运行"}
               </Badge>
             </div>
+            <a
+              href="https://geo-seo-system-wechat.hans-pan007.workers.dev"
+              target="_blank"
+              rel="noreferrer"
+              className="flex items-center gap-2 rounded-lg border px-3 py-1.5"
+              title={[wechat?.updatedAt && `更新时间: ${new Date(wechat.updatedAt).toLocaleString("zh-CN", { hour12: false })}`, ...(wechat?.errors || [])].filter(Boolean).join("\n") || "微信公众号采集状态"}
+            >
+              <span className="text-xs text-muted-foreground">微信信源</span>
+              <Badge variant={wechat?.status === "success" ? "default" : "secondary"} className="text-[10px]">
+                {wechat?.status === "success" ? "正常" : wechat?.status === "empty" ? "暂无新内容" : wechat?.status === "failed" ? "需授权/检查" : "等待运行"}
+              </Badge>
+            </a>
             <Button
               onClick={() => trigger.mutate()}
               disabled={trigger.isPending || schedule?.running}
@@ -315,7 +335,7 @@ export default function SentimentMonitor() {
         <FilterSelect value={range} onChange={(v) => { setRange(v); resetPage(); }} placeholder="时间范围"
           options={[["24h", "近 24 小时"], ["3d", "近 3 天"], ["7d", "近 7 天"], ["30d", "近 30 天"], ["100d", "近 100 天"]]} />
         <FilterSelect value={source} onChange={(v) => { setSource(v); resetPage(); }} placeholder="来源平台"
-          options={[["all", "全部来源"], ["web", "Web/新闻"], ["binance_square", "币安广场"], ["gate_square", "Gate广场"], ["rss", "RSS媒体"], ["telegram", "Telegram"], ["x", "X"], ["xiaohongshu", "小红书"], ["douyin", "抖音"], ["kuaishou", "快手"], ["bilibili", "B站"], ["weibo", "微博"], ["tieba", "百度贴吧"], ["zhihu", "知乎"]]} />
+          options={[["all", "全部来源"], ["web", "Web/新闻"], ["binance_square", "币安广场"], ["gate_square", "Gate广场"], ["wechat", "微信公众号"], ["rss", "RSS媒体"], ["telegram", "Telegram"], ["x", "X"], ["xiaohongshu", "小红书"], ["douyin", "抖音"], ["kuaishou", "快手"], ["bilibili", "B站"], ["weibo", "微博"], ["tieba", "百度贴吧"], ["zhihu", "知乎"]]} />
         <FilterSelect value={sort} onChange={(v) => { setSort(v); resetPage(); }} placeholder="排序"
           options={[["time", "时间倒序"], ["threat", "威胁优先"], ["sentiment", "最负面优先"]]} />
       </div>
