@@ -1705,7 +1705,7 @@ async function discover(task: DiscoveryTask, env: QueueEnv): Promise<void> {
     const searchQueries = WECHAT_SEARCH_QUERIES.slice(0, task.serperFallbacksReserved || 0);
     const searchResults = await Promise.allSettled(searchQueries.map((query) => searchWeb(
       `site:mp.weixin.qq.com/s ${query}`,
-      { tbs: "qdr:d", num: 10, gl: "cn", hl: "zh-cn" },
+      { tbs: "qdr:w", num: 10, gl: "cn", hl: "zh-cn" },
     )));
     for (const [index, result] of searchResults.entries()) {
       if (result.status === "fulfilled") {
