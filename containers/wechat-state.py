@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+import json
 import shutil
 import signal
 import sqlite3
@@ -21,6 +22,16 @@ INTERVAL = max(60, int(os.getenv("STATE_UPLOAD_INTERVAL_SECONDS", "600")))
 REFRESH_INTERVAL = max(3600, int(os.getenv("WECHAT_REFRESH_INTERVAL_SECONDS", "21600")))
 stopping = threading.Event()
 child = None
+STATUS = Path("/app/static/backup-status.json")
+
+
+def backup_status(ok, message):
+    STATUS.parent.mkdir(parents=True, exist_ok=True)
+    STATUS.write_text(json.dumps({
+        "ok": ok,
+        "message": message[:300],
+        "checkedAt": int(time.time()),
+    }), "utf-8")
 
 
 def seed_weread_cookie():
@@ -90,6 +101,7 @@ def restore():
 
 def backup():
     if not DB.exists():
+        backup_status(False, "database not found")
         return
     try:
         with tempfile.TemporaryDirectory() as temp:
@@ -106,8 +118,10 @@ def backup():
             with request("PUT", archive.read_bytes()):
                 pass
         print("wechat-state: saved", flush=True)
+        backup_status(True, "saved")
     except Exception as error:
         print(f"wechat-state: save failed: {error}", flush=True)
+        backup_status(False, str(error))
 
 
 def loop():
