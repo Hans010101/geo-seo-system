@@ -24,8 +24,6 @@ import {
   LayoutDashboard,
   LogOut,
   PanelLeft,
-  FileQuestion,
-  Link2,
   FileBarChart,
   Bell,
   Database,
@@ -39,8 +37,8 @@ import {
   Radar,
   ScanSearch,
   Network,
-  ClipboardList,
   Mail,
+  Bot,
 } from "lucide-react";
 import { CSSProperties, FormEvent, useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
@@ -50,18 +48,14 @@ import { Input } from "./ui/input";
 import { trpc } from "@/lib/trpc";
 import { Separator } from "./ui/separator";
 
-const sentimentMenuItems = [
-  { icon: Radar, label: "舆情概览", path: "/sentiment-monitor" },
-  { icon: Network, label: "信源穿透", path: "/sentiment-monitor/penetration" },
-  { icon: ClipboardList, label: "舆情报告", path: "/sentiment-monitor/reports" },
-];
-
-const geoMenuItems = [
-  { icon: LayoutDashboard, label: "GEO 总览", path: "/" },
-  { icon: FileQuestion, label: "问题详情", path: "/questions" },
-  { icon: Link2, label: "引用源分析", path: "/citations" },
-  { icon: FileBarChart, label: "GEO 周报", path: "/reports" },
-  { icon: Bell, label: "预警中心", path: "/alerts" },
+const primaryMenuItems = [
+  { icon: LayoutDashboard, label: "工作台", path: "/", matches: ["/"] },
+  { icon: Radar, label: "舆情情报", path: "/sentiment-monitor", matches: ["/sentiment-monitor"] },
+  { icon: Bot, label: "GEO 洞察", path: "/geo", matches: ["/geo", "/questions", "/citations"] },
+  { icon: Network, label: "联动分析", path: "/sentiment-monitor/penetration", matches: ["/sentiment-monitor/penetration"] },
+  { icon: Bell, label: "预警与处置", path: "/alerts", matches: ["/alerts"] },
+  { icon: FileBarChart, label: "报告中心", path: "/report-center", matches: ["/report-center", "/reports", "/sentiment-monitor/reports"] },
+  { icon: Activity, label: "运行中心", path: "/operations", matches: ["/operations"] },
 ];
 
 const configMenuItems = [
@@ -73,6 +67,9 @@ const configMenuItems = [
   { icon: Activity, label: "采集管理", path: "/config/collection" },
   { icon: Clock, label: "定时采集", path: "/config/scheduler" },
 ];
+
+const isMenuActive = (location: string, item: { matches?: string[]; path: string }) =>
+  (item.matches ?? [item.path]).includes(location);
 
 const SIDEBAR_WIDTH_KEY = "sidebar-width";
 const DEFAULT_WIDTH = 260;
@@ -362,8 +359,8 @@ function DashboardLayoutContent({
   const isCollapsed = state === "collapsed";
   const [isResizing, setIsResizing] = useState(false);
   const sidebarRef = useRef<HTMLDivElement>(null);
-  const allItems = [...sentimentMenuItems, ...geoMenuItems, ...configMenuItems];
-  const activeMenuItem = allItems.find((item) => item.path === location);
+  const allItems = [...primaryMenuItems, ...configMenuItems];
+  const activeMenuItem = allItems.find((item) => isMenuActive(location, item));
   const isMobile = useIsMobile();
 
   useEffect(() => {
@@ -419,43 +416,16 @@ function DashboardLayoutContent({
           </SidebarHeader>
 
           <SidebarContent className="gap-0">
-            {/* 舆情监控 */}
+            {/* 决策工作区 */}
             <div className="px-3 py-2">
               {!isCollapsed && (
                 <p className="text-[10px] font-medium text-sidebar-foreground/40 uppercase tracking-wider mb-1 px-2">
-                  舆情监控
+                  决策工作区
                 </p>
               )}
               <SidebarMenu>
-                {sentimentMenuItems.map((item) => {
-                  const isActive = location === item.path;
-                  return (
-                    <SidebarMenuItem key={item.path}>
-                      <SidebarMenuButton
-                        isActive={isActive}
-                        onClick={() => setLocation(item.path)}
-                        tooltip={item.label}
-                        className="h-9 transition-all font-normal text-sm"
-                      >
-                        <item.icon className={`h-4 w-4 ${isActive ? "text-sidebar-primary" : ""}`} />
-                        <span>{item.label}</span>
-                      </SidebarMenuButton>
-                    </SidebarMenuItem>
-                  );
-                })}
-              </SidebarMenu>
-            </div>
-
-            {/* GEO 监测 */}
-            <div className="px-3 py-2">
-              {!isCollapsed && (
-                <p className="text-[10px] font-medium text-sidebar-foreground/40 uppercase tracking-wider mb-1 px-2">
-                  GEO 监测
-                </p>
-              )}
-              <SidebarMenu>
-                {geoMenuItems.map((item) => {
-                  const isActive = location === item.path;
+                {primaryMenuItems.map((item) => {
+                  const isActive = isMenuActive(location, item);
                   return (
                     <SidebarMenuItem key={item.path}>
                       <SidebarMenuButton
@@ -477,7 +447,7 @@ function DashboardLayoutContent({
             <div className="px-3 py-2">
               {!isCollapsed && (
                 <p className="text-[10px] font-medium text-sidebar-foreground/40 uppercase tracking-wider mb-1 px-2">
-                  配置管理
+                  系统配置
                 </p>
               )}
               <SidebarMenu>

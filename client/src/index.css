@@ -126,6 +126,8 @@
   }
   body {
     @apply bg-background text-foreground;
+    font-family: "Avenir Next", "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-variant-numeric: tabular-nums;
   }
   button:not(:disabled),
   [role="button"]:not([aria-disabled="true"]),

@@ -28,6 +28,7 @@ import {
 } from "@shared/geo-types";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
+import { Link } from "wouter";
 
 type TimeRange = "week" | "month" | "quarter";
 
@@ -143,16 +144,20 @@ export default function Home() {
           <h1 className="text-2xl font-bold tracking-tight">TRON GEO 系统总览</h1>
           <p className="text-muted-foreground text-sm mt-1">TRON 生成式引擎优化监测系统</p>
         </div>
-        <Select value={timeRange} onValueChange={(v) => setTimeRange(v as TimeRange)}>
-          <SelectTrigger className="w-[140px]">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="week">本周</SelectItem>
-            <SelectItem value="month">最近4周</SelectItem>
-            <SelectItem value="quarter">最近12周</SelectItem>
-          </SelectContent>
-        </Select>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="outline" asChild><Link href="/questions">问题详情</Link></Button>
+          <Button variant="outline" asChild><Link href="/citations">引用源分析</Link></Button>
+          <Select value={timeRange} onValueChange={(v) => setTimeRange(v as TimeRange)}>
+            <SelectTrigger className="w-[140px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="week">本周</SelectItem>
+              <SelectItem value="month">最近4周</SelectItem>
+              <SelectItem value="quarter">最近12周</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
       </div>
 
       {/* KPI Cards */}
