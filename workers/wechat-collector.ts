@@ -22,7 +22,6 @@ export class WeChatCollectorContainer extends Container<WeChatEnv> {
   defaultPort = 8001;
   sleepAfter = "15m";
   pingEndpoint = "container/";
-  private restored = false;
   private readonly wechatEnv: WeChatEnv;
 
   constructor(ctx: DurableObjectState<{}>, env: WeChatEnv) {
@@ -69,20 +68,13 @@ export class WeChatCollectorContainer extends Container<WeChatEnv> {
   }
 
   override async onStart() {
-    if (this.restored) return;
-    this.restored = true;
-    try {
-      await this.waitForPort({ portToCheck: 8787, retries: 30, waitInterval: 250 });
-      const object = await this.wechatEnv.WECHAT_STATE.get(STATE_KEY);
-      const response = object
-        ? await this.stateRequest("PUT", await decryptState(await object.arrayBuffer(), this.wechatEnv))
-        : await this.stateRequest("POST");
-      if (!response.ok) throw new Error(`WeChat state restore HTTP ${response.status}`);
-      await this.waitForPort({ portToCheck: this.defaultPort, retries: 60, waitInterval: 500 });
-    } catch (error) {
-      this.restored = false;
-      throw error;
-    }
+    await this.waitForPort({ portToCheck: 8787, retries: 30, waitInterval: 250 });
+    const object = await this.wechatEnv.WECHAT_STATE.get(STATE_KEY);
+    const response = object
+      ? await this.stateRequest("PUT", await decryptState(await object.arrayBuffer(), this.wechatEnv))
+      : await this.stateRequest("POST");
+    if (!response.ok) throw new Error(`WeChat state restore HTTP ${response.status}`);
+    await this.waitForPort({ portToCheck: this.defaultPort, retries: 60, waitInterval: 500 });
   }
 
   override async onActivityExpired() {
@@ -93,9 +85,6 @@ export class WeChatCollectorContainer extends Container<WeChatEnv> {
     }
   }
 
-  override onStop() {
-    this.restored = false;
-  }
 }
 
 function container(env: WeChatEnv) {
