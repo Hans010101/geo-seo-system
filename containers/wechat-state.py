@@ -20,9 +20,7 @@ FILES = ("db.db", "wx.lic", ".secret_key")
 STATE_TOKEN = os.environ["STATE_TOKEN"]
 REFRESH_INTERVAL = max(3600, int(os.getenv("WECHAT_REFRESH_INTERVAL_SECONDS", "21600")))
 stopping = threading.Event()
-restarting = threading.Event()
 child = None
-child_lock = threading.Lock()
 STATUS = Path("/app/static/backup-status.json")
 
 
@@ -90,28 +88,21 @@ def archive_state():
 
 
 def restore_state(body):
-    global child
     with zipfile.ZipFile(io.BytesIO(body)) as zf:
         if not set(zf.namelist()).issubset(FILES) or "db.db" not in zf.namelist():
             raise ValueError("invalid state archive")
-        with child_lock:
-            restarting.set()
-            try:
-                previous = child
-                if previous and previous.poll() is None:
-                    previous.terminate()
-                    try:
-                        previous.wait(timeout=20)
-                    except subprocess.TimeoutExpired:
-                        previous.kill()
-                        previous.wait()
-                for name in FILES:
-                    if name in zf.namelist():
-                        with zf.open(name) as src, open(DATA / name, "wb") as dst:
-                            shutil.copyfileobj(src, dst)
-                child = subprocess.Popen(["/app/start.sh"])
-            finally:
-                restarting.clear()
+        with tempfile.TemporaryDirectory() as temp:
+            snapshot = Path(temp) / "db.db"
+            with zf.open("db.db") as src, open(snapshot, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+            with sqlite3.connect(snapshot) as source, sqlite3.connect(DB) as target:
+                source.backup(target)
+        for name in FILES[1:]:
+            if name in zf.namelist():
+                restored = DATA / f"{name}.restore"
+                with zf.open(name) as src, open(restored, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+                restored.replace(DATA / name)
     backup_status(True, "restored")
 
 
@@ -195,10 +186,4 @@ threading.Thread(
     daemon=True,
 ).start()
 child = subprocess.Popen(["/app/start.sh"])
-while True:
-    current = child
-    exit_code = current.wait()
-    while restarting.is_set():
-        time.sleep(0.05)
-    if stopping.is_set() or current is child:
-        raise SystemExit(exit_code)
+raise SystemExit(child.wait())
