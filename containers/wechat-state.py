@@ -23,6 +23,24 @@ stopping = threading.Event()
 child = None
 
 
+def seed_weread_cookie():
+    cookie = os.getenv("WECHAT_WEREAD_COOKIE", "").strip()
+    lic = DATA / "wx.lic"
+    if not cookie or lic.exists():
+        return
+    import yaml
+
+    vid = next(
+        (item.split("=", 1)[1].strip() for item in cookie.split(";") if item.strip().startswith("wr_vid=")),
+        "",
+    )
+    lic.write_text(
+        yaml.safe_dump({"weread_data": {"cookie": cookie, "vid": vid, "name": ""}}, allow_unicode=True),
+        "utf-8",
+    )
+    print("wechat-state: seeded WeRead login", flush=True)
+
+
 def request(method, data=None):
     req = urllib.request.Request(
         STATE_URL,
@@ -75,6 +93,10 @@ def backup():
 
 
 def loop():
+    while not stopping.wait(5):
+        if DB.exists():
+            backup()
+            break
     while not stopping.wait(INTERVAL):
         backup()
 
@@ -113,6 +135,7 @@ def stop(signum, _frame):
 
 
 restore()
+seed_weread_cookie()
 signal.signal(signal.SIGTERM, stop)
 signal.signal(signal.SIGINT, stop)
 threading.Thread(target=loop, daemon=True).start()

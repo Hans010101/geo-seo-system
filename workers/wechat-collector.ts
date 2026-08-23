@@ -9,6 +9,7 @@ interface WeChatEnv {
   WECHAT_COLLECTOR_TOKEN: string;
   WECHAT_STATE_TOKEN: string;
   WECHAT_STATE_ENCRYPTION_KEY: string;
+  WECHAT_WEREAD_COOKIE: string;
   WECHAT_STATE_URL: string;
   WECHAT_PUBLIC_URL: string;
 }
@@ -39,6 +40,7 @@ export class WeChatCollectorContainer extends Container<WeChatEnv> {
       STATE_TOKEN: env.WECHAT_STATE_TOKEN,
       STATE_UPLOAD_INTERVAL_SECONDS: "600",
       WECHAT_REFRESH_INTERVAL_SECONDS: "21600",
+      WECHAT_WEREAD_COOKIE: env.WECHAT_WEREAD_COOKIE,
       WEREAD_PROFILE_DIR: "/app/data/weread-chrome-profile",
     };
   }
