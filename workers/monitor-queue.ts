@@ -12,7 +12,10 @@ import { dispatchNotification } from "../server/_core/notification";
 import * as budget from "../server/monitor/budget";
 import { enabledSources } from "../server/monitor/sources/registry";
 import { RSS_FEEDS } from "../server/monitor/sources/rss-source";
-import { parseWeChatRss } from "../server/monitor/sources/wechat-source";
+import {
+  mapWeChatSearchItems,
+  parseWeChatRss,
+} from "../server/monitor/sources/wechat-source";
 import {
   GATE_LIST_URLS,
   getGateRenderDiagnostic,
@@ -274,6 +277,8 @@ const SOURCE_LIMITS: Record<string, number> = {
 };
 
 const BINANCE_BROWSER_SOURCE = "binance_square_browser";
+const WECHAT_SEARCH_KEYWORDS = ["孙宇晨", "波场", "TRON"];
+const WECHAT_SEARCH_QUERIES = ['"孙宇晨"', '("波场" OR "TRON")'];
 
 const CF_STATUS_KEYS = {
   mode: "cf_cron_mode",
@@ -389,6 +394,11 @@ function chineseSocialDue(cycle: BootstrapTask, env: QueueEnv): boolean {
 
 function chineseSocialBrowserEnabled(env: QueueEnv): boolean {
   return env.CLOUDFLARE_CHINESE_SOCIAL_BROWSER_ENABLED !== "false";
+}
+
+function wechatSearchDue(cycle: BootstrapTask): boolean {
+  const time = shanghaiParts(cycle.scheduledTime);
+  return cycle.profile === "monitor_primary_news" && time.hour === 9;
 }
 
 function coordinator(env: QueueEnv, profile: MonitorProfile) {
@@ -619,6 +629,12 @@ function buildDiscoveryTasks(
           taskId: "wechat:0",
           sourceName: "wechat",
           keywords,
+          serperFallbacksReserved: wechatSearchDue(cycle)
+            ? Math.min(
+                WECHAT_SEARCH_QUERIES.length,
+                Math.max(0, budgetGrant.serper - serper.length),
+              )
+            : 0,
         }];
     return [...serper, ...rss, ...wechat];
   }
@@ -716,9 +732,12 @@ async function bootstrap(task: BootstrapTask, env: QueueEnv): Promise<void> {
     ? configuredChineseSocialSources(env).length * chineseSocialKeywordCount
     : 0;
   const gateFirecrawlEnabled = env.CLOUDFLARE_GATE_FIRECRAWL_ENABLED !== "false";
+  const wechatSearchCalls = isNews && env.CLOUDFLARE_WECHAT_ENABLED !== "false" && wechatSearchDue(task)
+    ? WECHAT_SEARCH_QUERIES.length
+    : 0;
   const budgetGrant = await budget.reserveQueuedBudget({
     serper: isNews
-      ? keywords.length
+      ? keywords.length + wechatSearchCalls
       : (runBinance ? 1 : 0) + chineseSocialSerperCalls,
     firecrawl: isNews || !gateFirecrawlEnabled ? 0 : GATE_LIST_URLS.length,
   });
@@ -1666,14 +1685,37 @@ async function discoverGateViaCloudflareBrowser(
 async function discover(task: DiscoveryTask, env: QueueEnv): Promise<void> {
   const startedAt = Date.now();
   if (task.sourceName === "wechat") {
-    if (!env.WECHAT_COLLECTOR_TOKEN) throw new Error("WECHAT_COLLECTOR_TOKEN is missing");
-    const response = await env.WECHAT_COLLECTOR.fetch("https://wechat-collector/collect", {
-      headers: { authorization: `Bearer ${env.WECHAT_COLLECTOR_TOKEN}` },
-      signal: AbortSignal.timeout(60_000),
-    });
-    if (!response.ok) {
-      const error = `WeChat collector HTTP ${response.status}: ${(await response.text()).slice(0, 200)}`;
-      if (response.status !== 409) throw new Error(error);
+    const errors: string[] = [];
+    let collectorSucceeded = false;
+    let found: DiscoveredPost[] = [];
+    try {
+      if (!env.WECHAT_COLLECTOR_TOKEN) throw new Error("WECHAT_COLLECTOR_TOKEN is missing");
+      const response = await env.WECHAT_COLLECTOR.fetch("https://wechat-collector/collect", {
+        headers: { authorization: `Bearer ${env.WECHAT_COLLECTOR_TOKEN}` },
+        signal: AbortSignal.timeout(60_000),
+      });
+      if (!response.ok) {
+        throw new Error(`WeChat collector HTTP ${response.status}: ${(await response.text()).slice(0, 200)}`);
+      }
+      found = await parseWeChatRss(await response.text());
+      collectorSucceeded = true;
+    } catch (error) {
+      errors.push(String(error).slice(0, 240));
+    }
+    const searchQueries = WECHAT_SEARCH_QUERIES.slice(0, task.serperFallbacksReserved || 0);
+    const searchResults = await Promise.allSettled(searchQueries.map((query) => searchWeb(
+      `site:mp.weixin.qq.com/s ${query}`,
+      { tbs: "qdr:d", num: 10, gl: "cn", hl: "zh-cn" },
+    )));
+    for (const [index, result] of searchResults.entries()) {
+      if (result.status === "fulfilled") {
+        found.push(...mapWeChatSearchItems(result.value, WECHAT_SEARCH_KEYWORDS));
+      } else {
+        errors.push(`${searchQueries[index]}: ${String(result.reason).slice(0, 180)}`);
+      }
+    }
+    const searchSucceeded = searchResults.filter((result) => result.status === "fulfilled").length;
+    if (!collectorSucceeded && searchSucceeded === 0) {
       await finishDiscovery(task, env, {
         discovered: 0,
         enqueued: 0,
@@ -1681,19 +1723,18 @@ async function discover(task: DiscoveryTask, env: QueueEnv): Promise<void> {
         sourceName: "wechat",
         diagnostic: {
           status: "failed",
-          provider: "cloudflare_container_werss",
+          provider: "cloudflare_container_werss+serper_site_search",
           discovered: 0,
           enqueued: 0,
           durationMs: Date.now() - startedAt,
-          queriesAttempted: 1,
+          queriesAttempted: 1 + searchQueries.length,
           queriesSucceeded: 0,
-          errors: [error],
+          errors,
           updatedAt: Date.now(),
         },
       });
       return;
     }
-    const found = await parseWeChatRss(await response.text());
     const posts = new Map<string, {
       post: DiscoveredPost;
       normalizedUrl: string;
@@ -1706,7 +1747,8 @@ async function discover(task: DiscoveryTask, env: QueueEnv): Promise<void> {
         monitorPublishedAtFreshness(post.publishedAt) !== "fresh"
       ) continue;
       const content = `${post.title} ${post.fullContent || post.contentSnippet || ""}`;
-      const matched = task.keywords
+      const matched = [...task.keywords, ...WECHAT_SEARCH_KEYWORDS.map((keyword) => ({ keyword, priority: 10 }))]
+        .filter((keyword, index, values) => values.findIndex((item) => item.keyword === keyword.keyword) === index)
         .filter((keyword) => keywordMatchesText(keyword.keyword, content))
         .map((keyword) => keyword.keyword);
       if (matched.length === 0) continue;
@@ -1743,13 +1785,16 @@ async function discover(task: DiscoveryTask, env: QueueEnv): Promise<void> {
       failed: false,
       sourceName: "wechat",
       diagnostic: {
-        status: selected.length > 0 ? "success" : "empty",
-        provider: "cloudflare_container_werss",
+        status: errors.length > 0 ? "partial" : selected.length > 0 ? "success" : "empty",
+        provider: searchQueries.length > 0
+          ? "cloudflare_container_werss+serper_site_search"
+          : "cloudflare_container_werss",
         discovered: found.length,
         enqueued: selected.length,
         durationMs: Date.now() - startedAt,
-        queriesAttempted: 1,
-        queriesSucceeded: 1,
+        queriesAttempted: 1 + searchQueries.length,
+        queriesSucceeded: Number(collectorSucceeded) + searchSucceeded,
+        ...(errors.length > 0 ? { errors } : {}),
         updatedAt: Date.now(),
       },
     });

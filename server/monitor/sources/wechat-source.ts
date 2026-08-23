@@ -1,4 +1,6 @@
 import Parser from "rss-parser";
+import type { SerperWebItem } from "../search";
+import { keywordMatchesText, monitorPublishedAtFreshness, parseSerperDate } from "../util";
 import type { DiscoveredPost } from "./types";
 
 const parser = new Parser();
@@ -40,6 +42,40 @@ export async function parseWeChatRss(xml: string): Promise<DiscoveredPost[]> {
       sourceName: "wechat",
       sourcePlatform: "wechat",
       fetchEngineHint: "wechat_rss",
+      fetchCostUsdHint: 0,
+    } satisfies DiscoveredPost];
+  });
+}
+
+export function mapWeChatSearchItems(
+  items: SerperWebItem[],
+  keywords: string[],
+  now = Date.now(),
+): DiscoveredPost[] {
+  return items.flatMap((item) => {
+    let url: URL;
+    try {
+      url = new URL(item.url);
+    } catch {
+      return [];
+    }
+    const publishedAt = parseSerperDate(item.date, now);
+    const content = `${item.title} ${item.snippet}`;
+    if (
+      url.hostname !== "mp.weixin.qq.com" ||
+      url.pathname !== "/s" ||
+      monitorPublishedAtFreshness(publishedAt, now) !== "fresh" ||
+      !keywords.some((keyword) => keywordMatchesText(keyword, content))
+    ) return [];
+    return [{
+      url: url.toString(),
+      title: item.title,
+      contentSnippet: item.snippet,
+      author: item.source,
+      publishedAt,
+      sourceName: "wechat_search",
+      sourcePlatform: "wechat",
+      fetchEngineHint: "serper_site_search",
       fetchCostUsdHint: 0,
     } satisfies DiscoveredPost];
   });
