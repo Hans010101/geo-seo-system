@@ -26,16 +26,34 @@ child = None
 def seed_weread_cookie():
     cookie = os.getenv("WECHAT_WEREAD_COOKIE", "").strip()
     lic = DATA / "wx.lic"
-    if not cookie or lic.exists():
+    if not cookie:
         return
     import yaml
+
+    document = {}
+    if lic.exists():
+        try:
+            document = yaml.safe_load(lic.read_text("utf-8")) or {}
+        except Exception:
+            document = {}
+    weread = document.get("weread_data") or {}
+    if isinstance(weread, str):
+        import json
+
+        try:
+            weread = json.loads(weread)
+        except Exception:
+            weread = {}
+    if weread.get("cookie"):
+        return
 
     vid = next(
         (item.split("=", 1)[1].strip() for item in cookie.split(";") if item.strip().startswith("wr_vid=")),
         "",
     )
+    document["weread_data"] = {"cookie": cookie, "vid": vid, "name": ""}
     lic.write_text(
-        yaml.safe_dump({"weread_data": {"cookie": cookie, "vid": vid, "name": ""}}, allow_unicode=True),
+        yaml.safe_dump(document, allow_unicode=True),
         "utf-8",
     )
     print("wechat-state: seeded WeRead login", flush=True)

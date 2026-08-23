@@ -47,7 +47,7 @@ export class WeChatCollectorContainer extends Container<WeChatEnv> {
 }
 
 function container(env: WeChatEnv) {
-  return env.WECHAT_CONTAINER.get(env.WECHAT_CONTAINER.idFromName("wechat"));
+  return env.WECHAT_CONTAINER.get(env.WECHAT_CONTAINER.idFromName("wechat-v2"));
 }
 
 function bearer(request: Request): string {
