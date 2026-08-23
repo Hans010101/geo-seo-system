@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
-import os
+import hmac
+import io
 import json
+import os
 import shutil
 import signal
 import sqlite3
@@ -8,20 +10,19 @@ import subprocess
 import tempfile
 import threading
 import time
-import urllib.error
-import urllib.request
 import zipfile
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 DATA = Path("/app/data")
 DB = DATA / "db.db"
 FILES = ("db.db", "wx.lic", ".secret_key")
-STATE_URL = os.environ["STATE_URL"]
 STATE_TOKEN = os.environ["STATE_TOKEN"]
-INTERVAL = max(60, int(os.getenv("STATE_UPLOAD_INTERVAL_SECONDS", "600")))
 REFRESH_INTERVAL = max(3600, int(os.getenv("WECHAT_REFRESH_INTERVAL_SECONDS", "21600")))
 stopping = threading.Event()
+restarting = threading.Event()
 child = None
+child_lock = threading.Lock()
 STATUS = Path("/app/static/backup-status.json")
 
 
@@ -70,67 +71,86 @@ def seed_weread_cookie():
     print("wechat-state: seeded WeRead login", flush=True)
 
 
-def request(method, data=None):
-    req = urllib.request.Request(
-        STATE_URL,
-        data=data,
-        method=method,
-        headers={"Authorization": f"Bearer {STATE_TOKEN}"},
-    )
-    return urllib.request.urlopen(req, timeout=60)
+def archive_state():
+    if not DB.exists():
+        raise FileNotFoundError("database not found")
+    output = io.BytesIO()
+    with tempfile.TemporaryDirectory() as temp:
+        snapshot = Path(temp) / "db.db"
+        with sqlite3.connect(DB) as source, sqlite3.connect(snapshot) as target:
+            source.backup(target)
+        with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.write(snapshot, "db.db")
+            for name in FILES[1:]:
+                path = DATA / name
+                if path.exists():
+                    zf.write(path, name)
+    backup_status(True, "snapshot ready")
+    return output.getvalue()
 
 
-def restore():
-    DATA.mkdir(parents=True, exist_ok=True)
-    try:
-        with request("GET") as response, tempfile.NamedTemporaryFile() as archive:
-            shutil.copyfileobj(response, archive)
-            archive.flush()
-            with zipfile.ZipFile(archive.name) as zf:
+def restore_state(body):
+    global child
+    with zipfile.ZipFile(io.BytesIO(body)) as zf:
+        if not set(zf.namelist()).issubset(FILES) or "db.db" not in zf.namelist():
+            raise ValueError("invalid state archive")
+        with child_lock:
+            restarting.set()
+            try:
+                previous = child
+                if previous and previous.poll() is None:
+                    previous.terminate()
+                    try:
+                        previous.wait(timeout=20)
+                    except subprocess.TimeoutExpired:
+                        previous.kill()
+                        previous.wait()
                 for name in FILES:
                     if name in zf.namelist():
                         with zf.open(name) as src, open(DATA / name, "wb") as dst:
                             shutil.copyfileobj(src, dst)
-        print("wechat-state: restored", flush=True)
-    except urllib.error.HTTPError as error:
-        if error.code != 404:
-            print(f"wechat-state: restore HTTP {error.code}", flush=True)
-    except Exception as error:
-        print(f"wechat-state: restore failed: {error}", flush=True)
+                child = subprocess.Popen(["/app/start.sh"])
+            finally:
+                restarting.clear()
+    backup_status(True, "restored")
 
 
-def backup():
-    if not DB.exists():
-        backup_status(False, "database not found")
-        return
-    try:
-        with tempfile.TemporaryDirectory() as temp:
-            snapshot = Path(temp) / "db.db"
-            with sqlite3.connect(DB) as source, sqlite3.connect(snapshot) as target:
-                source.backup(target)
-            archive = Path(temp) / "state.zip"
-            with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zf:
-                zf.write(snapshot, "db.db")
-                for name in FILES[1:]:
-                    path = DATA / name
-                    if path.exists():
-                        zf.write(path, name)
-            with request("PUT", archive.read_bytes()):
-                pass
-        print("wechat-state: saved", flush=True)
-        backup_status(True, "saved")
-    except Exception as error:
-        print(f"wechat-state: save failed: {error}", flush=True)
-        backup_status(False, str(error))
+class StateHandler(BaseHTTPRequestHandler):
+    def authorized(self):
+        supplied = self.headers.get("Authorization", "").removeprefix("Bearer ")
+        return hmac.compare_digest(supplied, STATE_TOKEN)
 
+    def reply(self, status, body=b"", content_type="application/json"):
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
-def loop():
-    while not stopping.wait(5):
-        if DB.exists():
-            backup()
-            break
-    while not stopping.wait(INTERVAL):
-        backup()
+    def do_GET(self):
+        if self.path != "/state" or not self.authorized():
+            return self.reply(404)
+        try:
+            self.reply(200, archive_state(), "application/zip")
+        except Exception as error:
+            backup_status(False, str(error))
+            self.reply(500)
+
+    def do_PUT(self):
+        if self.path != "/state" or not self.authorized():
+            return self.reply(404)
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if length <= 0 or length > 25 * 1024 * 1024:
+                return self.reply(413)
+            restore_state(self.rfile.read(length))
+            self.reply(200, b'{"ok":true}')
+        except Exception as error:
+            backup_status(False, str(error))
+            self.reply(400)
+
+    def log_message(self, _format, *_args):
+        pass
 
 
 def refresh_loop():
@@ -154,23 +174,31 @@ def refresh_loop():
                 force_bundled=True,
                 cooldown_hours=0,
             ):
-                backup()
+                backup_status(True, "cookie refreshed")
         except Exception as error:
             print(f"wechat-state: refresh failed: {error}", flush=True)
 
 
 def stop(signum, _frame):
     stopping.set()
-    backup()
     if child and child.poll() is None:
         child.send_signal(signum)
 
 
-restore()
+DATA.mkdir(parents=True, exist_ok=True)
 seed_weread_cookie()
 signal.signal(signal.SIGTERM, stop)
 signal.signal(signal.SIGINT, stop)
-threading.Thread(target=loop, daemon=True).start()
 threading.Thread(target=refresh_loop, daemon=True).start()
+threading.Thread(
+    target=ThreadingHTTPServer(("0.0.0.0", 8787), StateHandler).serve_forever,
+    daemon=True,
+).start()
 child = subprocess.Popen(["/app/start.sh"])
-raise SystemExit(child.wait())
+while True:
+    current = child
+    exit_code = current.wait()
+    while restarting.is_set():
+        time.sleep(0.05)
+    if stopping.is_set() or current is child:
+        raise SystemExit(exit_code)

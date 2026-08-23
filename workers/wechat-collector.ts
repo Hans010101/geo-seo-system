@@ -22,9 +22,12 @@ export class WeChatCollectorContainer extends Container<WeChatEnv> {
   defaultPort = 8001;
   sleepAfter = "15m";
   pingEndpoint = "container/";
+  private restored = false;
+  private readonly wechatEnv: WeChatEnv;
 
   constructor(ctx: DurableObjectState<{}>, env: WeChatEnv) {
     super(ctx, env);
+    this.wechatEnv = env;
     this.envVars = {
       DB: "sqlite:///./data/db.db",
       USERNAME: env.WECHAT_ADMIN_USERNAME,
@@ -46,6 +49,54 @@ export class WeChatCollectorContainer extends Container<WeChatEnv> {
       WECHAT_WEREAD_COOKIE: env.WECHAT_WEREAD_COOKIE,
       WEREAD_PROFILE_DIR: "/app/data/weread-chrome-profile",
     };
+  }
+
+  private async stateRequest(method: "GET" | "PUT", body?: ArrayBuffer) {
+    return this.containerFetch("http://container/state", {
+      method,
+      headers: { authorization: `Bearer ${this.wechatEnv.WECHAT_STATE_TOKEN}` },
+      body,
+    }, 8787);
+  }
+
+  async saveState() {
+    const response = await this.stateRequest("GET");
+    if (!response.ok) throw new Error(`WeChat state snapshot HTTP ${response.status}`);
+    const body = await response.arrayBuffer();
+    if (!body.byteLength || body.byteLength > MAX_STATE_BYTES) throw new Error("invalid state size");
+    await this.wechatEnv.WECHAT_STATE.put(STATE_KEY, await encryptState(body, this.wechatEnv));
+    return { ok: true, bytes: body.byteLength };
+  }
+
+  override async onStart() {
+    if (this.restored) return;
+    this.restored = true;
+    try {
+      await this.waitForPort({ portToCheck: 8787, retries: 30, waitInterval: 250 });
+      const object = await this.wechatEnv.WECHAT_STATE.get(STATE_KEY);
+      if (!object) return;
+      const response = await this.stateRequest(
+        "PUT",
+        await decryptState(await object.arrayBuffer(), this.wechatEnv),
+      );
+      if (!response.ok) throw new Error(`WeChat state restore HTTP ${response.status}`);
+      await this.waitForPort({ portToCheck: this.defaultPort, retries: 60, waitInterval: 500 });
+    } catch (error) {
+      this.restored = false;
+      throw error;
+    }
+  }
+
+  override async onActivityExpired() {
+    try {
+      await this.saveState();
+    } finally {
+      await this.stop();
+    }
+  }
+
+  override onStop() {
+    this.restored = false;
   }
 }
 
@@ -134,12 +185,15 @@ async function proxy(request: Request, env: WeChatEnv, removeAuthorization = fal
   const url = new URL(request.url);
   const headers = new Headers(request.headers);
   if (removeAuthorization) headers.delete("authorization");
-  return container(env).fetch(new Request(`http://container${url.pathname}${url.search}`, {
+  const target = container(env);
+  const response = await target.fetch(new Request(`http://container${url.pathname}${url.search}`, {
     method: request.method,
     headers,
     body: request.method === "GET" || request.method === "HEAD" ? undefined : request.body,
     redirect: "manual",
   }));
+  if (request.method !== "GET" && request.method !== "HEAD") await target.saveState();
+  return response;
 }
 
 async function upstreamToken(env: WeChatEnv): Promise<string> {
@@ -228,7 +282,9 @@ export default {
         return Response.json({ error: "unauthorized" }, { status: 401 });
       }
       if (request.method !== "POST") return new Response(null, { status: 405 });
-      await container(env).stop();
+      const target = container(env);
+      await target.saveState();
+      await target.stop();
       return Response.json({ ok: true });
     }
 
@@ -248,6 +304,7 @@ export default {
         return Response.json({ error: "wechat login invalid", message: login.message }, { status: 409 });
       }
       const response = await container(env).fetch("http://container/feed/all.rss?limit=100");
+      await container(env).saveState();
       return new Response(response.body, {
         status: response.status,
         headers: { "content-type": response.headers.get("content-type") || "application/xml" },
