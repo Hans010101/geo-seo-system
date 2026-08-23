@@ -223,6 +223,15 @@ export default {
       return new Response(null, { status: 405 });
     }
 
+    if (url.pathname === "/internal/container/restart") {
+      if (bearer(request) !== env.WECHAT_STATE_TOKEN) {
+        return Response.json({ error: "unauthorized" }, { status: 401 });
+      }
+      if (request.method !== "POST") return new Response(null, { status: 405 });
+      await container(env).stop();
+      return Response.json({ ok: true });
+    }
+
     if (url.pathname === "/status") {
       if (bearer(request) !== env.WECHAT_COLLECTOR_TOKEN) {
         return Response.json({ error: "unauthorized" }, { status: 401 });
