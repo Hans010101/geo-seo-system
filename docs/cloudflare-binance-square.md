@@ -1,6 +1,8 @@
 # Cloudflare 币安广场采集
 
-## 当前架构
+以下架构与配额说明属于历史方案，本轮未重新验证；002 当前入口、D1 拓扑与发布约束以 [DEPLOY.md](../DEPLOY.md) 为准。
+
+## 历史方案架构
 
 币安广场在 Cloudflare 版本中独立运行，不依赖 Cloud Run：
 
@@ -30,10 +32,10 @@ Cloud Run 只用于平行效果对比，不在这条链路中提供接口、Cook
 - `CLOUDFLARE_BINANCE_QUERY_TERMS`
 - `CLOUDFLARE_BINANCE_INTERVAL_HOURS`
 
-状态读取：
+状态读取（002 受保护接口，需现有授权；401 不代表采集故障）：
 
 ```text
-GET https://geo-seo-system-cron.hans-pan007.workers.dev
+GET https://geo-seo-system-cron.bitman001.workers.dev
 ```
 
 重点字段：

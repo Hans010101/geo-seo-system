@@ -1,130 +1,68 @@
-# 部署与迁移手册
+# 002 现行发布说明
 
-## 当前策略
+截至 2026-10-10，现用项目已在 Cloudflare 002 运行。本文是当前发布约束，不再沿用旧 Cloud Run／Hyperdrive 迁移的强制流程。
 
-Cloudflare 已部署完整版本，Cloud Run 暂时保持不动：
+## 已验证的生产资源
+
+- 账号：`a828bebda1f352216c7d7da425bad17a`（002）。
+- Pages 项目：`geo-seo-system`；入口：[geo-seo-system-faq.pages.dev](https://geo-seo-system-faq.pages.dev)。
+- Cron Worker：`geo-seo-system-cron`；入口：[geo-seo-system-cron.bitman001.workers.dev](https://geo-seo-system-cron.bitman001.workers.dev)。
+- D1：`geo-seo-system-db`，ID `c5389b9d-218e-4e11-bb64-6659233d812f`。
+- D1 绑定名沿用 `HYPERDRIVE`，但资源类型是 `d1_databases`，不是 Hyperdrive；不需要旧 MySQL 账号、Cloud SQL 网络规则或 `DATABASE_URL`。
+- Queue：`geo-seo-monitor`、`geo-seo-browser-shadow`，消费者均为 002 的 `geo-seo-system-cron`，当前未暂停。
+- R2：`geo-seo-system-state`；浏览器服务和 Durable Objects 也属于 002，保留现行 Service Binding 与状态。
 
 ```text
-用户 ──→ Cloudflare Pages + Functions ──→ Hyperdrive ──→ Cloud SQL MySQL
-
-Cloudflare Cron Worker（Queue 分片主运行版本）
-Cloud Run（保持原样，仅用于平行对比）
+用户 → 002 Pages + Functions → 002 D1
+002 Cron → 002 Queue / 浏览器服务 / Workers AI → 002 D1
+         → 002 R2 / Durable Objects
 ```
 
-Cloudflare Cron 当前开启 `primary` 模式：
+新闻与社媒开启，Cron 为 `primary` 模式：北京时间奇数小时 `:15` 运行新闻批次，`:40` 运行社交批次。每日 GEO、每周 GEO、微信采集和 OpenRouter 自动预检均关闭，发布不能自动恢复这些任务。
 
-- 北京时间奇数小时 `:15` 运行新闻批次，`:40` 运行社交批次；
-- Workers AI 为文章分析主路由，OpenRouter 只作故障降级和 GEO 平台采集；
-- 币安广场通过 Browser/Serper 在 Cloudflare 内独立采集，不允许调用 Cloud Run 兜底；
-- Browser Shadow 使用独立串行 Queue、每日 4 页和 8 分钟硬预算；
-- 实时告警、负面简报和最终失败通知有独立开关与幂等键；
-- 每日 GEO 是 24 单元的轮转抽样，每周 GEO 是 31 问题 × 全部 15 平台的完整矩阵；
-- OpenRouter 每日先做低成本预检，402、鉴权失败或状态过期时只暂停 GEO，不影响舆情主链。
+## 发布前置条件
 
-Cloud Run 不参与 Cloudflare 的运行时降级链，且在迁移验收完成前不得停止、修改或删除。
+1. 使用 Node.js 22、pnpm 10 和项目锁文件安装依赖。
+2. 核对 Wrangler 默认账号和所有待发布配置的 `account_id` 均为上述 002；不重新登录、不覆盖共享凭据。
+3. 核对 Pages／Cron 的 D1 ID、Queue、R2、Service Binding、Durable Objects 和生产 URL 都指向 002，保留现有 Secrets 与运行开关。不要复制旧 007 配置。
+4. 只发布干净、已批准的检出或已核验产物。当前工作区有大量未发布改动，**不能直接从这里执行全量部署**；文档提交不代表这些改动获准发布。
+5. 若涉及浏览器服务，先核对并发布对应已批准服务版本，再发布调用它的应用／Cron；现有一键脚本不覆盖所有浏览器服务。
 
-## Cloudflare 资源
+在满足以上条件的发布检出中，先执行检查与构建：
 
-- Pages 项目：`geo-seo-system`
-- Pages 地址：`https://geo-seo-system.pages.dev`
-- Cron Worker：`geo-seo-system-cron`
-- Cron 地址：`https://geo-seo-system-cron.hans-pan007.workers.dev`
-- Hyperdrive：`geo-seo-system-mysql`
-- Hyperdrive ID：`cd45e0e89ac544eebd5eb7eb0ab3b8de`
-- 数据库账号：独立的 `geo_cloudflare` 最小权限账号，强制 TLS
+```bash
+pnpm run check
+pnpm run check:workers
+pnpm test
+pnpm run cf:build
+```
 
-Cloudflare Pages Secret（只记录名称，不记录值）：
-
-- `JWT_SECRET`
-- `GOOGLE_CLIENT_ID`
-- `GOOGLE_CLIENT_SECRET`
-- `RESEND_API_KEY`
-
-Cron Worker Secret：
-
-- `OPENROUTER_API_KEY`
-- `RESEND_API_KEY`
-
-数据库连接信息由 Hyperdrive 保存，不应另设明文 `DATABASE_URL`。
-
-## 标准 Cloudflare 部署
-
-前置条件：
-
-1. Node.js 22、pnpm 10；
-2. `pnpm install --frozen-lockfile` 已完成；
-3. Wrangler 已登录到正确的 Cloudflare 账号；
-4. Hyperdrive、数据库网络规则和 Secrets 已配置。
-
-一键部署：
+现有 `scripts/deploy-cloudflare.sh` 会实际部署 Pages、币安浏览器服务和 Cron，并执行线上 smoke test；不是只读检查。只有发布内容和 002 配置均通过审核后才运行：
 
 ```bash
 bash scripts/deploy-cloudflare.sh
 ```
 
-等价的手动流程：
+密钥和认证凭据沿用现有 002 云端 Secrets、加密存储与受限本地认证文件，不写入文档、Git、日志或命令行。保留现有 JWT、Google OAuth、Resend、模型与采集服务配置；不要用一份不完整的 Secret 清单覆盖线上绑定。
+
+## 只读验收
 
 ```bash
-pnpm run check
-pnpm test
-pnpm run cf:deploy:pages
-pnpm run cf:deploy:cron
-bash scripts/post-deploy-cloudflare-smoke.sh
+curl -fsS https://geo-seo-system-faq.pages.dev/api/health
 ```
 
-部署只有在 smoke test 全部通过后才算完成。它会验证首页、数据库健康、启动错误、公开 tRPC、受保护路由，以及 Cron Worker 的并行模式。
+健康结果应包含 `ok:true`、`db:true`，且 `bootErrors` 为空。Cron 详细状态通过已登录的 002 后台或现有授权读取；未授权请求返回 401 不能视为采集故障，也不应为验证导出密钥。
 
-## 日常验证
+还需核对两条 Queue 有消费者且未暂停、四个迁移状态可读、既有定时批次在 002 D1 有新入库，及 GEO／微信开关仍关闭。首页或健康检查成功不等于所有平台覆盖正常；微博／小红书缺登录态、X 空结果和正文降级应单独记录。
 
-```bash
-curl -fsS https://geo-seo-system.pages.dev/api/health
-curl -fsS https://geo-seo-system-cron.hans-pan007.workers.dev
-bash scripts/post-deploy-cloudflare-smoke.sh
-```
+## 回滚与停机边界
 
-健康结果必须包含：
+只在 002 项目的部署历史中选择已经验证健康的 Pages 部署／Cron 版本回滚，并确认 D1 绑定、Service Binding、Secrets 和任务开关仍保持 002 配置。不要回滚到旧 007 入口或恢复历史 Hyperdrive 连接。
 
-```json
-{"ok":true,"db":true,"bootErrors":[]}
-```
+停止后台任务使用现有 Cron 运行开关；不要删除 D1、R2、Queue 或 Durable Objects 作为停机手段。回滚、停机和资源删除均是独立线上操作，本轮只更新文档，没有执行。
 
-只验证 Cloud Run 原环境：
+## 历史方案（本轮未验证，禁止当作现行发布步骤）
 
-```bash
-bash scripts/post-deploy-smoke.sh \
-  https://geo-system-kwm3xu534q-an.a.run.app
-```
+仓库曾采用 Cloud Run／Express → Cloud SQL MySQL，以及 Cloudflare → Hyperdrive → Cloud SQL 的方案。历史 `scripts/deploy.sh`、`scripts/post-deploy-smoke.sh` 和旧迁移门槛只用于理解原实现，不是 002 的前置条件或运行时兜底。
 
-## 将来正式迁移顺序
-
-正式切换应安排维护窗口并按顺序执行：
-
-1. 先冻结会创建后台任务的管理操作，并确认 Cloud Run 当前任务已结束。
-2. 确认 Cloudflare 金丝雀任务已有足够的成功运行记录。
-3. 确认 OpenRouter 预检健康、每日 GEO 完成、每周 465 单元在窗口内完成。
-4. 所有 Stage 5 模块至少观察 2–3 个自然周期，并完成真实 14 天平行窗口。
-5. 将正式域名和全部用户流量切到 Cloudflare Pages。
-6. 保留 Cloud Run 作为只读回退一段观察期。
-7. 经确认后再删除 Cloud Run；删除前另行备份数据库与配置。
-
-Cloud Run 的停止、流量切换和删除不属于当前部署，当前不要执行。
-
-## 回滚
-
-Pages 回滚：
-
-1. 在 Cloudflare Dashboard 的 Pages 部署历史中选择上一健康部署并回滚；或
-2. 检出已知健康 Git commit，再执行 `pnpm run cf:deploy:pages`。
-
-Cron Worker 回滚：
-
-```bash
-pnpm exec wrangler versions list --config wrangler.cron.jsonc
-pnpm exec wrangler rollback <VERSION_ID> --config wrangler.cron.jsonc
-```
-
-紧急停止 Cloudflare 后台任务时，把 `ENABLE_CLOUDFLARE_CRON` 设回 `"false"` 并重新部署 Cron Worker。不要删除 Hyperdrive 或数据库用户作为停机手段。
-
-## Cloud Run 原部署
-
-原 Cloud Run 自动部署仍由 `scripts/deploy.sh` 管理。除非明确要修改或回滚 Cloud Run，否则 Cloudflare 部署流程不会调用它，也不会更改 Cloud Run 服务、revision、流量或环境变量。
+本轮没有验证、部署、恢复或删除旧 Cloud Run、Hyperdrive、MySQL 账号或 007 资源；未来处理这些历史资源需要另行授权与核验。不要依据历史文档创建旧数据库连接、恢复每日／每周 GEO 自动采集，或支付、重启 007 服务。
