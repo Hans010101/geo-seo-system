@@ -94,6 +94,14 @@ describe("Agent-Reach pilot boundary", () => {
       { channel: "weibo", url: "https://m.weibo.cn/detail/5360563145411531", text: "短" },
     ]) expect(() => parsePost({ ...base, ...patch })).toThrow();
     expect(dailyCap("weibo")).toBe(150);
+  });
+  it("records but does not push medium alerts for Mac-collected posts", async () => {
+    const { env } = environment();
+    const local = { ...validPost(), channel: "weibo", url: "https://m.weibo.cn/detail/5360563145411531", title: "孙宇晨", text: "孙宇晨今天又上热搜了，波场相关" };
+    expect((await worker.fetch(request(local), env)).status).toBe(200);
+    expect(mocks.run.mock.calls[0][0]).toMatchObject({ alertPushMinSeverity: "high" });
+    expect((await worker.fetch(request(validPost()), env)).status).toBe(200);
+    expect(mocks.run.mock.calls[1][0].alertPushMinSeverity).toBeUndefined();
     expect(dailyCap("reddit")).toBe(DAILY_CAP);
   });
   it("validates collector heartbeats and keeps the last discovery time", () => {

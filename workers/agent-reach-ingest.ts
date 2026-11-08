@@ -161,7 +161,12 @@ export default {
     }
     try {
       const result = await withCloudflareEnv(env, () => withHyperdriveDatabase(env.HYPERDRIVE, () =>
-        runMonitorCycle({ importPosts: [post], maxArticles: 1 })));
+        runMonitorCycle({
+          importPosts: [post],
+          maxArticles: 1,
+          // Weibo/Tieba are high-volume and gossip-heavy: medium alerts go to the alert center only.
+          ...(post.sourceName === "local_browser" ? { alertPushMinSeverity: "high" as const } : {}),
+        })));
       const status = result.failed || result.analysisFailed ? "failed" : result.inserted ? "inserted" : "filtered_or_duplicate";
       await env.HYPERDRIVE.prepare("UPDATE agentReachReceipts SET status = ?, result = ? WHERE urlHash = ?")
         .bind(status, JSON.stringify(result), hash).run();

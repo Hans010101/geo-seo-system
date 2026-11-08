@@ -174,6 +174,13 @@ export async function sendBriefing(
 
 // High-threat real-time alert: creates a negative_article alert + dispatches immediately. Deduped by
 // urlHash so the same article never re-alerts. Returns whether an alert was created.
+const PUSH_SEVERITY_RANK: Record<string, number> = { medium: 1, high: 2, critical: 3 };
+
+/** Whether an alert of `severity` reaches Telegram/email when a channel sets a push floor. */
+export function meetsPushFloor(severity: string, floor?: "high" | "critical"): boolean {
+  return !floor || (PUSH_SEVERITY_RANK[severity] || 0) >= PUSH_SEVERITY_RANK[floor];
+}
+
 export async function dispatchHighThreatAlert(a: {
   url: string;
   urlHash: string;
@@ -184,6 +191,8 @@ export async function dispatchHighThreatAlert(a: {
   threatLevel?: string | null; // actual threat of THIS article (may be medium now that threshold is configurable)
 }, options?: {
   deliveryEnabledOverride?: boolean;
+  /** Below this severity the alert is recorded in the alert center but not pushed. */
+  pushMinSeverity?: "high" | "critical";
 }): Promise<{ created: boolean; content?: string }> {
   const cfg = await getPushConfig();
   const deliveryEnabled = options?.deliveryEnabledOverride ?? cfg.realtimeEnabled;
@@ -221,7 +230,7 @@ export async function dispatchHighThreatAlert(a: {
     dedupKey,
   } as any);
 
-  if (deliveryEnabled) {
+  if (deliveryEnabled && meetsPushFloor(severity, options?.pushMinSeverity)) {
     const notifyTitle = `【${amplified ? "危·已入AI" : threat}】负面舆情 - ${a.domain || ""}`;
     // Queue/Worker invocations can end immediately after this function returns,
     // so both independent notification paths are explicitly awaited.

@@ -66,6 +66,8 @@ export type MonitorCycleOptions = {
   suppressNotifications?: boolean;
   // External pilot input never invokes discovery or the paid full-text router.
   importPosts?: DiscoveredPost[];
+  // Noisy imported channels (Mac-collected Weibo/Tieba) record medium alerts without pushing them.
+  alertPushMinSeverity?: "high" | "critical";
 };
 
 function toFetchMethod(engine: string): "self" | "firecrawl" | "snippet_only" | null {
@@ -346,7 +348,7 @@ export async function runMonitorCycle(opts?: MonitorCycleOptions): Promise<Monit
                 sentimentScore: analysis.sentimentScore,
                 summary: analysis.summary,
                 threatLevel: analysis.threatLevel,
-              });
+              }, opts?.alertPushMinSeverity ? { pushMinSeverity: opts.alertPushMinSeverity } : undefined);
               if (res.created) stats.realtimeAlerts++;
             } catch (e: any) {
               log.error(`High-threat alert failed ${p.url}: ${String(e?.message || e).slice(0, 120)}`);
