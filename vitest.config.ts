@@ -22,6 +22,8 @@ export default defineConfig({
       "workers/**/*.spec.ts",
       "client/src/pages/OperationsCenter.test.ts",
       "client/src/pages/AlertCenter.test.ts",
+      "client/src/lib/**/*.test.ts",
+      "shared/**/*.test.ts",
     ],
   },
 });

@@ -30,6 +30,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { Link } from "wouter";
+import { METRICS, metricTitle } from "@shared/metric-definitions";
 
 type TimeRange = "week" | "month" | "quarter";
 
@@ -164,11 +165,11 @@ export default function Home() {
 
       {/* KPI Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
-        <KPICard title="情感均值" value={summary?.overallSentimentAvg?.toFixed(1) || "—"} icon={<Activity className="h-4 w-4" />} loading={summaryLoading} color="text-primary" />
-        <KPICard title="友好来源率" value={summary ? `${summary.friendlySourceRate}%` : "—"} icon={<Link2 className="h-4 w-4" />} loading={summaryLoading} color="text-emerald-600" />
-        <KPICard title="事实覆盖率" value={summary ? `${summary.targetFactsCoverage}%` : "—"} icon={<Target className="h-4 w-4" />} loading={summaryLoading} color="text-blue-600" />
-        <KPICard title="引用命中率" value={summary ? `${summary.ourContentRate}%` : "—"} icon={<BarChart3 className="h-4 w-4" />} loading={summaryLoading} color="text-violet-600" />
-        <KPICard title="未读预警" value={summary?.alertCount?.toString() || "0"} icon={<Bell className="h-4 w-4" />} loading={summaryLoading} color="text-orange-600" />
+        <KPICard title={metricTitle("geoSentiment", timeRange)} help={METRICS.geoSentiment.help} value={summary?.overallSentimentAvg?.toFixed(1) || "—"} icon={<Activity className="h-4 w-4" />} loading={summaryLoading} color="text-primary" />
+        <KPICard title={metricTitle("friendlySource", timeRange)} help={METRICS.friendlySource.help} value={summary ? `${summary.friendlySourceRate}%` : "—"} icon={<Link2 className="h-4 w-4" />} loading={summaryLoading} color="text-emerald-600" />
+        <KPICard title={metricTitle("factCoverage", timeRange)} help={METRICS.factCoverage.help} value={summary ? `${summary.targetFactsCoverage}%` : "—"} icon={<Target className="h-4 w-4" />} loading={summaryLoading} color="text-blue-600" />
+        <KPICard title={metricTitle("ownCitation", timeRange)} help={METRICS.ownCitation.help} value={summary ? `${summary.ourContentRate}%` : "—"} icon={<BarChart3 className="h-4 w-4" />} loading={summaryLoading} color="text-violet-600" />
+        <KPICard title={metricTitle("newAlerts", timeRange)} help={METRICS.newAlerts.help} value={summary?.alertCount?.toString() || "0"} icon={<Bell className="h-4 w-4" />} loading={summaryLoading} color="text-orange-600" />
       </div>
 
       {/* Platform Breakdown — domestic / international split */}
@@ -373,9 +374,9 @@ export default function Home() {
   );
 }
 
-function KPICard({ title, value, icon, loading, color }: { title: string; value: string; icon: React.ReactNode; loading: boolean; color: string }) {
+function KPICard({ title, help, value, icon, loading, color }: { title: string; help?: string; value: string; icon: React.ReactNode; loading: boolean; color: string }) {
   return (
-    <Card>
+    <Card title={help}>
       <CardContent className="p-4">
         {loading ? (
           <div className="space-y-2">

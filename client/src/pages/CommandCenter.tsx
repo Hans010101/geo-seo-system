@@ -21,6 +21,8 @@ import { SOURCE_PLATFORM_META, THREAT_META } from "@/lib/monitorLabels";
 import { useState } from "react";
 import MonitorArticleDetailSheet from "@/components/MonitorArticleDetailSheet";
 import CollectionDetailSheet from "@/components/CollectionDetailSheet";
+import { briefingState, buildBriefingText } from "@/lib/commandBriefing";
+import { METRICS, metricTitle } from "@shared/metric-definitions";
 
 const week = () => ({ startTime: Date.now() - 7 * 86_400_000, endTime: Date.now() });
 
@@ -38,8 +40,8 @@ export default function CommandCenter() {
   const [collectionId, setCollectionId] = useState<number | null>(null);
   const [weekRange] = useState(week);
   const { data: geo, isLoading: geoLoading } = trpc.dashboard.summary.useQuery(weekRange, { staleTime: 30_000 });
-  const { data: sentiment, isLoading: sentimentLoading } = trpc.monitor.stats.useQuery(undefined, { staleTime: 30_000 });
-  const { data: alerts } = trpc.alerts.list.useQuery({ status: "active", limit: 5, offset: 0 }, { staleTime: 15_000 });
+  const { data: sentiment, isLoading: sentimentLoading, isError: sentimentError } = trpc.monitor.stats.useQuery(undefined, { staleTime: 30_000 });
+  const { data: alerts, isError: alertsError } = trpc.alerts.list.useQuery({ status: "active", limit: 5, offset: 0 }, { staleTime: 15_000 });
   const { data: articles } = trpc.monitor.listArticles.useQuery({ page: 0, pageSize: 6, focus: true, startTime: weekRange.startTime, sort: "time" });
   const { data: cloudflare } = trpc.system.cloudflareStatus.useQuery(undefined, { staleTime: 30_000, refetchInterval: 60_000 });
 
@@ -53,9 +55,16 @@ export default function CommandCenter() {
   const currentProfile = worker?.profiles?.monitor_primary_news;
   const workerHealthy = worker?.ok && ["success", "queued", "running"].includes(worker?.taskStatus);
   const activeAlertTotal = alerts?.total ?? 0;
-  const briefing = sentiment?.highThreat
-    ? `过去 30 天仍有 ${sentiment.highThreat} 条高威胁舆情，当前 ${activeAlertTotal} 项预警事件待处置。`
-    : `当前未发现高威胁舆情，${activeAlertTotal ? `仍有 ${activeAlertTotal} 项预警事件待处置。` : "暂无待处置预警。"}`;
+  const briefingInput = {
+    sentimentLoaded: !!sentiment,
+    alertsLoaded: !!alerts,
+    failed: sentimentError || alertsError,
+    highThreat: sentiment?.highThreat ?? 0,
+    activeAlertTotal,
+  };
+  const riskState = briefingState(briefingInput);
+  const briefing = buildBriefingText(briefingInput);
+  const workerKnown = cloudflare !== undefined;
 
   return (
     <div className="space-y-6">
@@ -63,8 +72,8 @@ export default function CommandCenter() {
         <div>
           <div className="mb-2 flex items-center gap-2">
             <Badge variant="outline" className="gap-1.5 font-normal">
-              <span className={`h-1.5 w-1.5 rounded-full ${workerHealthy ? "bg-emerald-500" : "bg-amber-500"}`} />
-              Cloudflare {workerHealthy ? "运行正常" : "需关注"}
+              <span className={`h-1.5 w-1.5 rounded-full ${!workerKnown ? "bg-muted-foreground" : workerHealthy ? "bg-emerald-500" : "bg-amber-500"}`} />
+              Cloudflare {!workerKnown ? "检查中" : workerHealthy ? "运行正常" : "需关注"}
             </Badge>
             <span className="text-xs text-muted-foreground">更新于 {timeAgo(worker?.finishedAt || worker?.fetchedAt)}</span>
           </div>
@@ -86,27 +95,31 @@ export default function CommandCenter() {
             </div>
             <p className="mt-3 text-lg font-medium leading-7">{briefing}</p>
             <p className="mt-2 text-sm text-muted-foreground">
-              近 24 小时新增舆情 {sentiment?.todayNew ?? "—"} 条；近 30 天有效情报率 {sentiment?.focusRate ?? "—"}%、正文成功率 {sentiment?.fullTextRate ?? "—"}%；本周 GEO 事实覆盖率 {geo?.targetFactsCoverage ?? "—"}%。
+              近 24 小时新增舆情 {sentiment?.todayNew ?? "—"} 条；近 30 天有效情报率 {sentiment?.focusRate ?? "—"}%、正文成功率 {sentiment?.fullTextRate ?? "—"}%；近 7 天 GEO 事实覆盖率 {geo?.targetFactsCoverage ?? "—"}%。
             </p>
           </div>
           <div className="border-t bg-muted/35 p-5 lg:border-l lg:border-t-0 lg:p-6">
             <p className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">系统判断</p>
             <div className="mt-3 space-y-2 text-sm">
-              <StatusLine ok={!sentiment?.highThreat} label="舆情风险" value={sentiment?.highThreat ? "存在高威胁信号" : "风险平稳"} />
-              <StatusLine ok={(sentiment?.focusRate ?? 0) >= 60} label="情报质量" value={`有效 ${sentiment?.focusRate ?? "—"}% · 正文 ${sentiment?.fullTextRate ?? "—"}%`} />
-              <StatusLine ok={(geo?.targetFactsCoverage ?? 0) >= 80} label="事实一致性" value={`${geo?.targetFactsCoverage ?? "—"}%`} />
-              <StatusLine ok={workerHealthy} label="采集主链" value={workerHealthy ? "定时任务持续运行" : "请进入运行中心检查"} />
+              <StatusLine
+                ok={riskState === "ready" ? !sentiment?.highThreat : null}
+                label="舆情风险"
+                value={riskState === "loading" ? "加载中…" : riskState === "error" ? "无法判断" : sentiment?.highThreat ? "存在高威胁信号" : "风险平稳"}
+              />
+              <StatusLine ok={sentiment ? (sentiment.focusRate ?? 0) >= 60 : null} label="情报质量" value={`有效 ${sentiment?.focusRate ?? "—"}% · 正文 ${sentiment?.fullTextRate ?? "—"}%`} />
+              <StatusLine ok={geo ? (geo.targetFactsCoverage ?? 0) >= 80 : null} label="事实一致性" value={`${geo?.targetFactsCoverage ?? "—"}%`} />
+              <StatusLine ok={workerKnown ? !!workerHealthy : null} label="采集主链" value={!workerKnown ? "检查中…" : workerHealthy ? "定时任务持续运行" : "请进入运行中心检查"} />
             </div>
           </div>
         </div>
       </section>
 
       <section aria-label="核心指标" className="grid grid-cols-2 gap-3 lg:grid-cols-5">
-        <Metric label="高威胁舆情" value={sentiment?.highThreat} suffix="条" icon={ShieldAlert} loading={sentimentLoading} danger={!!sentiment?.highThreat} />
-        <Metric label="GEO 情感均值" value={geo?.overallSentimentAvg?.toFixed(1)} suffix="/ 5" icon={Activity} loading={geoLoading} />
-        <Metric label="事实覆盖率" value={geo?.targetFactsCoverage} suffix="%" icon={Target} loading={geoLoading} />
-        <Metric label="己方引用率" value={geo?.ourContentRate} suffix="%" icon={Link2} loading={geoLoading} />
-        <Metric label="待处置预警" value={alerts?.total ?? 0} suffix="项" icon={AlertTriangle} loading={!alerts} danger={!!alerts?.total} />
+        <Metric label={metricTitle("highThreat", "days30")} help={METRICS.highThreat.help} value={sentiment?.highThreat} suffix="条" icon={ShieldAlert} loading={sentimentLoading} danger={!!sentiment?.highThreat} />
+        <Metric label={metricTitle("geoSentiment", "week")} help={METRICS.geoSentiment.help} value={geo?.overallSentimentAvg?.toFixed(1)} suffix="/ 5" icon={Activity} loading={geoLoading} />
+        <Metric label={metricTitle("factCoverage", "week")} help={METRICS.factCoverage.help} value={geo?.targetFactsCoverage} suffix="%" icon={Target} loading={geoLoading} />
+        <Metric label={metricTitle("ownCitation", "week")} help={METRICS.ownCitation.help} value={geo?.ourContentRate} suffix="%" icon={Link2} loading={geoLoading} />
+        <Metric label={metricTitle("openAlerts", "all")} help={METRICS.openAlerts.help} value={alerts?.total ?? 0} suffix="项" icon={AlertTriangle} loading={!alerts} danger={!!alerts?.total} />
       </section>
 
       <div className="grid gap-4 xl:grid-cols-[1.15fr_.85fr]">
@@ -140,7 +153,8 @@ export default function CommandCenter() {
                   </button>
                 ))}
               </div>
-            ) : <Empty icon={CheckCircle2} text="暂无待处置预警" />}
+            ) : alerts ? <Empty icon={CheckCircle2} text="暂无待处置预警" />
+              : <Empty icon={AlertTriangle} text={alertsError ? "预警加载失败" : "正在加载预警…"} />}
           </CardContent>
         </Card>
 
@@ -208,12 +222,14 @@ export default function CommandCenter() {
   );
 }
 
-function Metric({ label, value, suffix, icon: Icon, loading, danger }: { label: string; value: string | number | null | undefined; suffix: string; icon: typeof Activity; loading: boolean; danger?: boolean }) {
-  return <div className="rounded-xl border bg-card p-4"><div className="flex items-center justify-between text-xs text-muted-foreground"><span>{label}</span><Icon className={`h-4 w-4 ${danger ? "text-red-500" : "text-primary"}`} /></div>{loading ? <Skeleton className="mt-4 h-7 w-20" /> : <p className={`mt-3 text-2xl font-semibold tabular-nums ${danger ? "text-red-600" : ""}`}>{value ?? "—"} <span className="text-xs font-normal text-muted-foreground">{suffix}</span></p>}</div>;
+function Metric({ label, help, value, suffix, icon: Icon, loading, danger }: { label: string; help?: string; value: string | number | null | undefined; suffix: string; icon: typeof Activity; loading: boolean; danger?: boolean }) {
+  return <div className="rounded-xl border bg-card p-4" title={help}><div className="flex items-center justify-between text-xs text-muted-foreground"><span>{label}</span><Icon className={`h-4 w-4 ${danger ? "text-red-500" : "text-primary"}`} /></div>{loading ? <Skeleton className="mt-4 h-7 w-20" /> : <p className={`mt-3 text-2xl font-semibold tabular-nums ${danger ? "text-red-600" : ""}`}>{value ?? "—"} <span className="text-xs font-normal text-muted-foreground">{suffix}</span></p>}</div>;
 }
 
-function StatusLine({ ok, label, value }: { ok: boolean; label: string; value: string }) {
-  return <div className="flex items-center justify-between gap-3"><span className="text-muted-foreground">{label}</span><span className="flex items-center gap-1.5 font-medium"><span className={`h-1.5 w-1.5 rounded-full ${ok ? "bg-emerald-500" : "bg-amber-500"}`} />{value}</span></div>;
+// ok=null means "not known yet" (still loading) and renders a neutral dot instead of green/amber.
+function StatusLine({ ok, label, value }: { ok: boolean | null; label: string; value: string }) {
+  const dot = ok === null ? "bg-muted-foreground/50" : ok ? "bg-emerald-500" : "bg-amber-500";
+  return <div className="flex items-center justify-between gap-3"><span className="text-muted-foreground">{label}</span><span className="flex items-center gap-1.5 font-medium"><span className={`h-1.5 w-1.5 rounded-full ${dot}`} />{value}</span></div>;
 }
 
 function RuntimeRow({ label, value, detail }: { label: string; value: string; detail: string }) {
