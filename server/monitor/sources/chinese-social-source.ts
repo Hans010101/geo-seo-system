@@ -1,5 +1,5 @@
 import { searchWeb } from "../search";
-import { parseSerperDate } from "../util";
+import { monitorArticleMatchesKeywords, parseSerperDate } from "../util";
 import type { DiscoveredPost, SearchOpts, SocialSource } from "./types";
 
 export type ChineseSocialPlatform = {
@@ -73,7 +73,7 @@ export const CHINESE_SOCIAL_PLATFORMS: ChineseSocialPlatform[] = [
     queryScope: "site:zhihu.com/question OR site:zhuanlan.zhihu.com/p",
     matches: url =>
       (hostIs(url, "zhihu.com") &&
-        /^\/question\/\d+(?:\/answer\/\d+)?/.test(url.pathname)) ||
+        /^(?:\/question\/\d+(?:\/answer\/\d+)?|\/zvideo\/\d+)/.test(url.pathname)) ||
       (hostIs(url, "zhuanlan.zhihu.com") && /^\/p\/\d+/.test(url.pathname)),
   },
 ];
@@ -81,6 +81,10 @@ export const CHINESE_SOCIAL_PLATFORMS: ChineseSocialPlatform[] = [
 export const CHINESE_SOCIAL_SOURCE_NAMES = CHINESE_SOCIAL_PLATFORMS.map(
   platform => `${platform.key}_serper`
 );
+
+export function chineseSocialKeywordMatchesText(keyword: string, text: string): boolean {
+  return monitorArticleMatchesKeywords([keyword], "", text);
+}
 
 export function mapChineseSocialSearchItems(
   platform: ChineseSocialPlatform,

@@ -68,8 +68,6 @@ export interface Env {
   CLOUDFLARE_PRIMARY_SOCIAL_SOURCES?: string;
   CLOUDFLARE_AI_MODEL?: string;
   CLOUDFLARE_AI_MAX_TOKENS?: string;
-  CLOUDFLARE_OPENROUTER_FALLBACK_ENABLED?: string;
-  CLOUDFLARE_OPENROUTER_FALLBACK_MODEL?: string;
   CLOUDFLARE_GEO_WEEKLY_ENABLED?: string;
   CLOUDFLARE_GEO_WEEKLY_ALL_PLATFORMS?: string;
   CLOUDFLARE_GEO_WEEKLY_MAX_CELLS?: string;
@@ -79,6 +77,7 @@ export interface Env {
     run(model: string, input: Record<string, unknown>): Promise<unknown>;
   };
   HYPERDRIVE?: HyperdriveBinding;
+  CHINESE_SOCIAL_BROWSER?: Fetcher;
 }
 
 // ─── App ───
@@ -120,6 +119,24 @@ app.get("/api/health", async (c) => {
 
 // ─── Auth Routes (register, login, Google OAuth) ───
 registerAuthRoutesCf(app);
+
+async function proxyChineseSocialAuth(c: Parameters<typeof authenticateRequestCf>[0], path: string) {
+  const user = await authenticateRequestCf(c);
+  if (!user || !["admin", "developer"].includes(user.role)) return c.json({ error: "forbidden" }, 403);
+  if (!c.env.CHINESE_SOCIAL_BROWSER) return c.json({ error: "social Browser binding unavailable" }, 503);
+  const response = await c.env.CHINESE_SOCIAL_BROWSER.fetch(`https://chinese-social-browser${path}`, {
+    method: c.req.method,
+    headers: { "content-type": "application/json" },
+    body: c.req.method === "GET" ? undefined : await c.req.text(),
+  });
+  return new Response(response.body, { status: response.status, headers: response.headers });
+}
+
+app.get("/api/chinese-social/auth/status", c => proxyChineseSocialAuth(c, "/auth/status"));
+app.post("/api/chinese-social/auth/start", c => proxyChineseSocialAuth(c, "/auth/start"));
+app.post("/api/chinese-social/auth/poll", c => proxyChineseSocialAuth(c, "/auth/poll"));
+app.post("/api/chinese-social/auth/verify", c => proxyChineseSocialAuth(c, "/auth/verify"));
+app.post("/api/chinese-social/auth/import", c => proxyChineseSocialAuth(c, "/auth/import"));
 
 // ─── Telegram Webhook ───
 app.post("/api/telegram/webhook", async (c) => {
@@ -425,9 +442,9 @@ export async function runCloudflareScheduledTasks(event: ScheduledEvent, env: En
     }
     // The primary social event also carries maintenance once per day, keeping
     // all of this Worker inside the account's one remaining Free-plan Cron slot.
-    if (maintenanceWindow && localTime.weekday === 1) {
+    if (maintenanceWindow && localTime.weekday === 5) {
       const { generateMonitorReport, weeklyPeriodOf } = await import("../server/monitor/report");
-      const lastWeek = weeklyPeriodOf(weeklyPeriodOf(Date.now()).startMs - 1);
+      const lastWeek = weeklyPeriodOf(weeklyPeriodOf(event.scheduledTime).startMs - 1);
       await runObservedCloudflareTask(mode, "weekly_report", () =>
         generateMonitorReport("weekly", lastWeek.reportPeriod),
       );
