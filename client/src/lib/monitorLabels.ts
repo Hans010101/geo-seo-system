@@ -30,6 +30,7 @@ export const FETCH_ENGINE_LABELS: Record<string, string> = {
   social_search: "社媒站内检索",
   social_browser: "Cloudflare 社媒浏览器",
   wechat_rss: "微信聚合 RSS",
+  agent_reach_public: "Agent-Reach 公开内容（不保证完整）",
 };
 
 export const SOURCE_PLATFORM_META: Record<string, { label: string; color: string }> = {
@@ -48,6 +49,7 @@ export const SOURCE_PLATFORM_META: Record<string, { label: string; color: string
   telegram: { label: "Telegram", color: "#229ED4" }, // Telegram blue
   x: { label: "X", color: "#111827" },
   reddit: { label: "Reddit", color: "#ff4500" },
+  youtube: { label: "YouTube", color: "#ff0000" },
 };
 
 export const SENTIMENT_MONITOR_COLORS: Record<number, string> = {

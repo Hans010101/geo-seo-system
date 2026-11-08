@@ -1,0 +1,21 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "geo-agent-reach-pilot",
+  "account_id": "a828bebda1f352216c7d7da425bad17a",
+  "main": "workers/agent-reach-ingest.ts",
+  "compatibility_date": "2026-11-03",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "vars": {
+    "PILOT_END": "2026-11-10T07:30:00.000Z",
+    "CLOUDFLARE_AI_MODEL": "@cf/meta/llama-3.1-8b-instruct-fast",
+    "CLOUDFLARE_AI_MAX_TOKENS": "512"
+  },
+  "d1_databases": [{
+    "binding": "HYPERDRIVE",
+    "database_name": "geo-seo-system-db",
+    "database_id": "c5389b9d-218e-4e11-bb64-6659233d812f"
+  }],
+  "ai": { "binding": "AI" },
+  "observability": { "enabled": true }
+}
