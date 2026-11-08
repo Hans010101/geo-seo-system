@@ -10,6 +10,7 @@ import {
 import { sendEmailAlert } from "../server/monitor/email-alert";
 import { dispatchNotification } from "../server/_core/notification";
 import { boundedJson } from "./bounded-json";
+import { cycleFailureReason } from "./cycle-failure";
 import {
   SOURCE_HEALTH_KEY,
   buildOutageMessage,
@@ -273,6 +274,8 @@ type PostCycleTask = {
   inserted: number;
   briefingItems: CoordinatorStats["briefingItems"];
   xErrors?: string[];
+  /** Set only when the batch failed broadly (see cycle-failure.ts); drives the failure push. */
+  failureReason?: string;
 };
 
 export type QueueTask =
@@ -600,10 +603,8 @@ async function enqueuePostCycleIfEnabled(
   state: CoordinatorStats,
 ): Promise<void> {
   const flags = getCloudflareFeatureFlags(env);
-  if (
-    !flags.briefing &&
-    !(flags.failureNotifications && state.status === "partial_failure")
-  ) {
+  const failureReason = cycleFailureReason(state);
+  if (!flags.briefing && !(flags.failureNotifications && failureReason)) {
     return;
   }
   const claim = await coordinatorPost<{
@@ -620,6 +621,7 @@ async function enqueuePostCycleIfEnabled(
     inserted: state.inserted,
     briefingItems: state.briefingItems,
     xErrors: state.sourceDiagnostics?.x?.errors,
+    ...(failureReason ? { failureReason } : {}),
   } satisfies PostCycleTask);
 }
 
@@ -2765,11 +2767,11 @@ async function postCycle(task: PostCycleTask, env: QueueEnv): Promise<void> {
       errors.push(`briefing: ${String(error).slice(0, 200)}`);
     }
   }
-  if (flags.failureNotifications && task.status === "partial_failure") {
+  if (flags.failureNotifications && task.failureReason) {
     record.failureNotificationAttempted = true;
     try {
       const title = `Cloudflare 舆情批次异常 · ${task.profile}`;
-      const content = `批次 ${task.cycleId} 以 partial_failure 结束，请检查 Worker 状态与日志。`
+      const content = `批次 ${task.cycleId} 严重异常：${task.failureReason}。请检查 Worker 状态与日志。`
         + (task.xErrors?.length ? `\nX 采集异常：${task.xErrors[0]}` : "");
       const [telegram, email] = await Promise.all([
         dispatchNotification({
