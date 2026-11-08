@@ -15,9 +15,12 @@ import {
   buildOutageMessage,
   evaluateOutages,
   markNotified,
+  mergeLocalHealth,
   parseSourceHealthState,
   recordDiagnostics,
 } from "./source-health";
+
+const LOCAL_HEALTH_KEY = "cf_local_source_health";
 import { rawRows } from "../server/monitor/penetration";
 import { sql } from "drizzle-orm";
 import * as budget from "../server/monitor/budget";
@@ -662,6 +665,12 @@ async function trackSourceHealth(env: QueueEnv, state: CoordinatorStats): Promis
   let health = parseSourceHealthState(await db.getSysConfig(SOURCE_HEALTH_KEY));
   const isNew = Object.keys(diagnostics).some(name => !health.sources[name]);
   health = recordDiagnostics(health, diagnostics, now, isNew ? await lastArticleTimes() : {});
+  try {
+    const local = JSON.parse((await db.getSysConfig(LOCAL_HEALTH_KEY)) || "{}");
+    if (local && typeof local === "object") health = mergeLocalHealth(health, local, now);
+  } catch {
+    // a corrupt heartbeat must not block the cloud sources' alerts
+  }
   const { down, due, recovered } = evaluateOutages(health, now);
   if ((due.length > 0 || recovered.length > 0) && getCloudflareFeatureFlags(env).failureNotifications) {
     const message = buildOutageMessage(down, recovered);

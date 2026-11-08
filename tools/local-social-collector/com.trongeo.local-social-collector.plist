@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.trongeo.local-social-collector</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>__ROOT__/venv/bin/python</string>
+		<string>__ROOT__/collector.py</string>
+		<string>run</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PYTHONUNBUFFERED</key>
+		<string>1</string>
+	</dict>
+	<!-- Hourly at :05; a run missed while the Mac sleeps fires once on wake. -->
+	<key>StartCalendarInterval</key>
+	<dict>
+		<key>Minute</key>
+		<integer>5</integer>
+	</dict>
+	<key>ProcessType</key>
+	<string>Background</string>
+	<key>StandardOutPath</key>
+	<string>__ROOT__/launchd.log</string>
+	<key>StandardErrorPath</key>
+	<string>__ROOT__/launchd-error.log</string>
+</dict>
+</plist>

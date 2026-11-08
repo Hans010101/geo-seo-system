@@ -3,7 +3,7 @@
 interface __BaseEnv_AgentReachEnv {
 	HYPERDRIVE: D1Database;
 	AI: Ai;
-	PILOT_END: "2026-11-10T07:30:00.000Z";
+	PILOT_END: "2027-11-10T07:30:00.000Z";
 	CLOUDFLARE_AI_MODEL: "@cf/meta/llama-3.1-8b-instruct-fast";
 	CLOUDFLARE_AI_MAX_TOKENS: "512";
 }

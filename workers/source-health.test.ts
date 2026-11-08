@@ -4,6 +4,7 @@ import {
   buildOutageMessage,
   evaluateOutages,
   markNotified,
+  mergeLocalHealth,
   parseSourceHealthState,
   recordDiagnostics,
 } from "./source-health";
@@ -98,5 +99,20 @@ describe("source health", () => {
 
   it("recovers from a corrupt stored state", () => {
     expect(parseSourceHealthState("{not json").sources).toEqual({});
+  });
+  it("alerts when the Mac collector stops reporting, with a local hint", () => {
+    let state = mergeLocalHealth(parseSourceHealthState(null), { weibo: { lastRunAt: T0, lastDiscoveredAt: T0 } }, T0);
+    expect(evaluateOutages(state, T0 + 47 * H).down).toEqual([]);
+    // No heartbeat for 49 hours (Mac asleep): still judged, unlike a switched-off cloud source.
+    state = mergeLocalHealth(state, { weibo: { lastRunAt: T0, lastDiscoveredAt: T0 } }, T0 + 49 * H);
+    const { due, down } = evaluateOutages(state, T0 + 49 * H);
+    expect(due.map(i => i.name)).toEqual(["local_weibo"]);
+    const message = buildOutageMessage(down, []);
+    expect(message.title).toBe("信源断流提醒 · 微博（本机采集）");
+    expect(message.content).toContain("collector.py login weibo");
+    // alertedAt survives the next heartbeat merge
+    state = markNotified(state, ["local_weibo"], [], T0 + 49 * H);
+    state = mergeLocalHealth(state, { weibo: { lastRunAt: T0 + 50 * H } }, T0 + 50 * H);
+    expect(state.sources.local_weibo.alertedAt).toBe(T0 + 49 * H);
   });
 });

@@ -16,6 +16,7 @@ export const SOURCE_LABELS: Record<string, string> = {
   gate_square: "Gate 广场", telegram: "Telegram", x: "X / Twitter",
   binance_square: "币安广场", xiaohongshu: "小红书", douyin: "抖音",
   kuaishou: "快手", bilibili: "B站", weibo: "微博", tieba: "百度贴吧", zhihu: "知乎",
+  local_weibo: "微博（本机采集）", local_tieba: "百度贴吧（本机采集）",
 };
 
 /** Diagnostic source name → monitor_articles.sourcePlatform, used once to seed history. */
@@ -28,7 +29,11 @@ export type SourceHealthEntry = {
   lastStatus?: string;
   lastError?: string;
   alertedAt?: number;
+  /** Fed by the Mac collector heartbeat; a stopped Mac must alert too, so no "active" gate. */
+  external?: boolean;
 };
+
+export type LocalHealthEntry = { lastRunAt: number; lastDiscoveredAt?: number; lastError?: string };
 
 export type SourceHealthState = {
   version: 1;
@@ -85,12 +90,35 @@ export function recordDiagnostics(
   return { version: 1, seeded: true, sources };
 }
 
+/** Mirror the Mac collector heartbeat (cf_local_source_health) in as `local_<platform>`. */
+export function mergeLocalHealth(
+  previous: SourceHealthState,
+  local: Record<string, LocalHealthEntry>,
+  now: number,
+): SourceHealthState {
+  const sources = { ...previous.sources };
+  for (const [platform, entry] of Object.entries(local)) {
+    if (!entry || typeof entry.lastRunAt !== "number") continue;
+    const name = `local_${platform}`;
+    const before = sources[name];
+    sources[name] = {
+      firstTrackedAt: before?.firstTrackedAt ?? Math.min(now, entry.lastRunAt),
+      lastRunAt: entry.lastRunAt,
+      ...(entry.lastDiscoveredAt ? { lastDiscoveredAt: entry.lastDiscoveredAt } : {}),
+      ...(entry.lastError ? { lastError: entry.lastError } : {}),
+      ...(before?.alertedAt ? { alertedAt: before.alertedAt } : {}),
+      external: true,
+    };
+  }
+  return { ...previous, sources };
+}
+
 function silentHours(entry: SourceHealthEntry, now: number): number {
   return (now - (entry.lastDiscoveredAt ?? entry.firstTrackedAt)) / HOUR;
 }
 
 export function isDown(entry: SourceHealthEntry, now: number): boolean {
-  return now - entry.lastRunAt <= ACTIVE_WITHIN_HOURS * HOUR
+  return (entry.external || now - entry.lastRunAt <= ACTIVE_WITHIN_HOURS * HOUR)
     && silentHours(entry, now) >= OUTAGE_HOURS;
 }
 
@@ -166,6 +194,9 @@ export function buildOutageMessage(
       if (source.lastError) lines.push(`  最近错误：${source.lastError.slice(0, 140)}`);
     }
     lines.push("常见原因：登录失效、接口额度用尽、浏览器容量不足。请到运维中心查看。");
+    if (down.some(source => source.name.startsWith("local_"))) {
+      lines.push("本机采集：请确认 Mac 已开机未睡眠；微博若提示登录，运行 collector.py login weibo 重新扫码。");
+    }
   }
   if (recovered.length > 0) {
     if (lines.length > 0) lines.push("");

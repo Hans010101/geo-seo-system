@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({ run: vi.fn() }));
 vi.mock("../server/monitor/pipeline", () => ({ runMonitorCycle: mocks.run }));
 vi.mock("../server/db", () => ({ withHyperdriveDatabase: (_db: unknown, fn: () => unknown) => fn() }));
-import worker, { authorized, parsePost, DAILY_CAP } from "./agent-reach-ingest";
+import worker, { authorized, parsePost, DAILY_CAP, dailyCap, mergeLocalHealth, parseReport } from "./agent-reach-ingest";
 
 const token = "a".repeat(64);
 const validPost = () => ({
@@ -79,5 +79,30 @@ describe("Agent-Reach pilot boundary", () => {
     for (let i = 0; i < DAILY_CAP; i++) receipts.set(String(i), { status: "filtered_or_duplicate" });
     expect((await worker.fetch(request(validPost()), env)).status).toBe(429);
     expect(mocks.run).not.toHaveBeenCalled();
+  });
+  it("accepts Weibo and Tieba permalinks from the local browser collector", () => {
+    const base = { ...validPost(), title: "孙宇晨", text: "孙宇晨今天又上热搜了，波场相关" };
+    const weibo = parsePost({ ...base, channel: "weibo", url: "https://m.weibo.cn/detail/5360563145411531" });
+    expect(weibo).toMatchObject({ sourcePlatform: "weibo", sourceName: "local_browser", fetchEngineHint: "local_browser" });
+    expect(parsePost({ ...base, channel: "weibo", url: "https://weibo.com/1234567/PqRsTuV" }).sourcePlatform).toBe("weibo");
+    expect(parsePost({ ...base, channel: "tieba", url: "https://tieba.baidu.com/p/11005526850" }).sourcePlatform).toBe("tieba");
+    for (const patch of [
+      { channel: "weibo", url: "https://s.weibo.com/weibo?q=TRON" },
+      { channel: "weibo", url: "https://weibo.com/u/1234567" },
+      { channel: "tieba", url: "https://tieba.baidu.com/f?kw=孙宇晨" },
+      { channel: "web", url: "https://m.weibo.cn/detail/5360563145411531" },
+      { channel: "weibo", url: "https://m.weibo.cn/detail/5360563145411531", text: "短" },
+    ]) expect(() => parsePost({ ...base, ...patch })).toThrow();
+    expect(dailyCap("weibo")).toBe(150);
+    expect(dailyCap("reddit")).toBe(DAILY_CAP);
+  });
+  it("validates collector heartbeats and keeps the last discovery time", () => {
+    expect(() => parseReport({ platforms: { x: { discovered: 1 } } })).toThrow();
+    expect(() => parseReport({ platforms: { weibo: { discovered: -1 } } })).toThrow();
+    const first = mergeLocalHealth(null, parseReport({ platforms: { weibo: { discovered: 3 }, tieba: { discovered: 0, error: "安全验证" } } }), 1000);
+    expect(first).toEqual({ weibo: { lastRunAt: 1000, lastDiscoveredAt: 1000 }, tieba: { lastRunAt: 1000, lastError: "安全验证" } });
+    const second = mergeLocalHealth(JSON.stringify(first), { weibo: { discovered: 0, error: "需要登录" } }, 2000);
+    expect(second.weibo).toEqual({ lastRunAt: 2000, lastDiscoveredAt: 1000, lastError: "需要登录" });
+    expect(second.tieba).toEqual(first.tieba);
   });
 });
