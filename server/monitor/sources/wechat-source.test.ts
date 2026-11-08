@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mapWeChatSearchItems, parseWeChatRss } from "./wechat-source";
+import { mapAidataWeChatResponse, mapWeChatSearchItems, parseWeChatRss } from "./wechat-source";
 
 describe("parseWeChatRss", () => {
   it("parses articles without leaking HTML", async () => {
@@ -31,5 +31,24 @@ describe("mapWeChatSearchItems", () => {
       sourcePlatform: "wechat",
       fetchEngineHint: "serper_site_search",
     });
+  });
+});
+
+it("maps AIDATA WeChat search articles", () => {
+  expect(mapAidataWeChatResponse({
+    data: { articles: [{
+      title: "孙宇晨谈波场 TRON",
+      url: "http://mp.weixin.qq.com/s?id=current",
+      abstract: "孙宇晨一小时前发布",
+      source: "测试公众号",
+      publish_time: 1787450400,
+    }] },
+  })[0]).toMatchObject({
+    title: "孙宇晨谈波场 TRON",
+    url: "https://mp.weixin.qq.com/s?id=current",
+    contentSnippet: "孙宇晨一小时前发布",
+    author: "测试公众号",
+    publishedAt: 1787450400000,
+    fetchEngineHint: "aidata_wechat_search",
   });
 });
