@@ -155,6 +155,12 @@
     {
       "tag": "v3-migration-acceptance-ledger",
       "new_sqlite_classes": ["MigrationAcceptanceLedger"]
+    },
+    // Marker only: on 2026-10-09 the 002 account copy created all three classes through the
+    // script API under this tag. Keeping it last tells Wrangler production is current, so no
+    // earlier migration is replayed (replaying fails with code 10074).
+    {
+      "tag": "copy002-empty-state-v1"
     }
   ],
   "d1_databases": [
