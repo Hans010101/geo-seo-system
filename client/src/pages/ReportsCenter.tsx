@@ -40,7 +40,7 @@ export default function ReportsCenter() {
           </CardHeader>
           <CardContent>
             <div className="mb-4 flex gap-2"><Badge variant="secondary" className="font-normal">CSV</Badge><Badge variant="secondary" className="font-normal">JSON</Badge></div>
-            <div className="divide-y">{geoReports?.length ? geoReports.map(report => <div key={report.reportWeek} className="flex items-center justify-between gap-4 py-3 first:pt-0 last:pb-0"><div><p className="text-sm font-medium">{report.reportWeek}</p><p className="mt-1 text-xs text-muted-foreground">{report.reportPeriod || dateTime(report.generatedAt)}</p></div><Badge variant="outline">周报</Badge></div>) : <Empty />}</div>
+            <div className="divide-y">{geoReports?.length ? geoReports.map(report => <div key={report.reportWeek} className="flex items-center justify-between gap-4 py-3 first:pt-0 last:pb-0"><div><p className="text-sm font-medium">{report.reportPeriod || report.reportWeek}</p><p className="mt-1 text-xs text-muted-foreground">{dateTime(report.generatedAt)}</p></div><Badge variant="outline">周报</Badge></div>) : <Empty />}</div>
           </CardContent>
         </Card>
       </section>

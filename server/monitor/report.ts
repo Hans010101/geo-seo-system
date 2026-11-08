@@ -1,4 +1,4 @@
-// 舆情周报/月报 — aggregates the sentiment-monitor side per calendar week/month.
+// 舆情周报/月报 — Friday–Thursday weeks and calendar months, in Beijing time.
 // INDEPENDENT from the GEO weeklyReports (那是 AI 平台情感周报); stored in monitor_reports.
 // Dimensions: 总览 / 信源 / 威胁(含环比) / GEO穿透 / 成本. Pure DB aggregation — no LLM cost.
 import { sql } from "drizzle-orm";
@@ -6,77 +6,18 @@ import * as db from "../db";
 import { dispatchNotification } from "../_core/notification";
 import { normSql, rawRows } from "./penetration";
 import { log } from "./util";
-
-// Asia/Shanghai is fixed UTC+8 (no DST) — safe to shift by a constant and use UTC getters.
-const TZ_MS = 8 * 3_600_000;
-const DAY_MS = 86_400_000;
-
-export type ReportType = "weekly" | "monthly";
-
-export interface ReportPeriod {
-  reportType: ReportType;
-  reportPeriod: string; // '2026-W27' | '2026-07'
-  startMs: number; // inclusive, epoch ms
-  endMs: number; // exclusive
-}
-
-// ISO week (Monday start; week's year/number determined by its Thursday), boundaries at
-// Asia/Shanghai midnight.
-export function weeklyPeriodOf(refMs: number): ReportPeriod {
-  const d = new Date(refMs + TZ_MS);
-  const dow = (d.getUTCDay() + 6) % 7; // Mon=0
-  const mondayShifted = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - dow);
-  const startMs = mondayShifted - TZ_MS;
-  const thu = new Date(mondayShifted + 3 * DAY_MS);
-  const jan1 = Date.UTC(thu.getUTCFullYear(), 0, 1);
-  const week = Math.ceil(((thu.getTime() - jan1) / DAY_MS + 1) / 7);
-  return {
-    reportType: "weekly",
-    reportPeriod: `${thu.getUTCFullYear()}-W${String(week).padStart(2, "0")}`,
-    startMs,
-    endMs: startMs + 7 * DAY_MS,
-  };
-}
-
-export function monthlyPeriodOf(refMs: number): ReportPeriod {
-  const d = new Date(refMs + TZ_MS);
-  const y = d.getUTCFullYear();
-  const m = d.getUTCMonth();
-  return {
-    reportType: "monthly",
-    reportPeriod: `${y}-${String(m + 1).padStart(2, "0")}`,
-    startMs: Date.UTC(y, m, 1) - TZ_MS,
-    endMs: Date.UTC(y, m + 1, 1) - TZ_MS,
-  };
-}
-
-// Parse an explicit period string ('2026-W27' / '2026-07'); throws on bad format.
-export function parsePeriod(reportType: ReportType, period: string): ReportPeriod {
-  if (reportType === "monthly") {
-    const m = period.match(/^(\d{4})-(\d{2})$/);
-    if (!m) throw new Error(`月报周期格式应为 YYYY-MM,收到: ${period}`);
-    return monthlyPeriodOf(Date.UTC(Number(m[1]), Number(m[2]) - 1, 15) - TZ_MS);
-  }
-  const m = period.match(/^(\d{4})-W(\d{1,2})$/i);
-  if (!m) throw new Error(`周报周期格式应为 YYYY-Wnn,收到: ${period}`);
-  const year = Number(m[1]);
-  const week = Number(m[2]);
-  // Jan 4 is always in ISO week 1; walk to its Monday, then offset weeks.
-  const jan4 = Date.UTC(year, 0, 4);
-  const jan4Dow = (new Date(jan4).getUTCDay() + 6) % 7;
-  const week1Monday = jan4 - jan4Dow * DAY_MS;
-  const mondayShifted = week1Monday + (week - 1) * 7 * DAY_MS;
-  const startMs = mondayShifted - TZ_MS;
-  // Canonicalize and reject label mismatches: catches W00/W99 and W53 in 52-week years
-  // (otherwise '2027-W53' would silently persist a report labeled W53 over the 2028-W01 window).
-  const canonical = weeklyPeriodOf(startMs);
-  if (canonical.reportPeriod !== `${year}-W${String(week).padStart(2, "0")}`) {
-    throw new Error(`无效的周报周期(该年不存在此周): ${period}`);
-  }
-  return canonical;
-}
-
-const fmtDate = (ms: number) => new Date(ms + TZ_MS).toISOString().slice(0, 10);
+import {
+  dateRangePeriod,
+  formatReportDate as fmtDate,
+  monthlyPeriodOf,
+  parsePeriod,
+  weeklyPeriodOf,
+  type ReportDateRange,
+  type ReportPeriod,
+  type ReportType,
+} from "../../shared/report-period";
+export { monthlyPeriodOf, parsePeriod, weeklyPeriodOf } from "../../shared/report-period";
+export type { ReportPeriod, ReportType } from "../../shared/report-period";
 
 // Reports follow the source publication time. Discovery time must never make recirculated
 // historical content appear in the current week/month.
@@ -293,7 +234,7 @@ export function buildReportDigest(p: ReportPeriod, d: MonitorReportData): { titl
   const c = d.threats.compare;
   const delta = (a: number, b: number) => (a === b ? "持平" : a > b ? `↑${a - b}` : `↓${b - a}`);
   const L: string[] = [];
-  L.push(`📈 舆情${typeLabel} ${p.reportPeriod} (${d.periodLabel})`);
+  L.push(`📈 舆情${typeLabel} ${d.periodLabel}`);
   L.push("━━━━━━━━━━━━━━");
   L.push(`新增 ${d.overview.total} 篇(有效 ${d.overview.effective}) | 环比 ${delta(c.total, c.prevTotal)}`);
   L.push(`🟢正 ${d.overview.sentiment.positive} 🟡中 ${d.overview.sentiment.neutral} 🔴负 ${d.overview.sentiment.negative}(环比 ${delta(c.negatives, c.prevNegatives)})`);
@@ -309,10 +250,12 @@ export function buildReportDigest(p: ReportPeriod, d: MonitorReportData): { titl
 // Generate + persist (+ optional push). period omitted => the period containing `now`.
 export async function generateMonitorReport(
   reportType: ReportType,
-  period?: string
+  period?: string,
+  dateRange?: ReportDateRange
 ): Promise<{ reportPeriod: string; periodLabel: string; data: MonitorReportData }> {
   const now = Date.now();
-  const p = period
+  if (dateRange && reportType !== "weekly") throw new Error("自定义日期仅用于周报");
+  const p = dateRange ? dateRangePeriod(dateRange) : period
     ? parsePeriod(reportType, period)
     : reportType === "weekly"
       ? weeklyPeriodOf(now)

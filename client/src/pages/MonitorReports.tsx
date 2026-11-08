@@ -2,6 +2,8 @@ import { useRef, useState } from "react";
 import { Link } from "wouter";
 import { trpc } from "@/lib/trpc";
 import { useRole } from "@/hooks/useRole";
+import { ReportDateRange } from "@/components/ReportDateRange";
+import { reportDateRangeSchema, reportPeriodDates, weeklyPeriodOf } from "@shared/report-period";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -88,6 +90,7 @@ export default function MonitorReports() {
   const { isAdmin } = useRole();
   const utils = trpc.useUtils();
   const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [dateRange, setDateRange] = useState(() => reportPeriodDates(weeklyPeriodOf(Date.now())));
   const [exporting, setExporting] = useState<"excel" | "pdf" | null>(null);
   const reportExportRef = useRef<HTMLDivElement>(null);
 
@@ -103,10 +106,12 @@ export default function MonitorReports() {
   const { data: pushCfg } = trpc.monitor.getReportPushConfig.useQuery();
 
   const generate = trpc.monitor.generateReport.useMutation({
-    onSuccess: r => {
-      toast.success(`已生成 ${r.reportPeriod} (${r.periodLabel})`);
-      utils.monitor.listReports.invalidate();
-      utils.monitor.getReport.invalidate();
+    onSuccess: async r => {
+      toast.success(`已生成 ${r.periodLabel}`);
+      await Promise.all([utils.monitor.listReports.invalidate(), utils.monitor.getReport.invalidate()]);
+      const refreshed = utils.monitor.listReports.getData({ limit: 60 });
+      const generated = refreshed?.find(report => report.reportPeriod === r.reportPeriod);
+      if (generated) setSelectedId(generated.id);
     },
     onError: e => toast.error(`生成失败: ${e.message}`),
   });
@@ -200,15 +205,15 @@ export default function MonitorReports() {
             <Button
               size="sm"
               variant="outline"
-              disabled={generate.isPending}
-              onClick={() => generate.mutate({ reportType: "weekly" })}
+              disabled={generate.isPending || !reportDateRangeSchema.safeParse(dateRange).success}
+              onClick={() => generate.mutate({ reportType: "weekly", dateRange })}
             >
               {generate.isPending ? (
                 <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />
               ) : (
                 <RefreshCw className="h-3.5 w-3.5 mr-1" />
               )}
-              生成本周周报
+              生成所选周期周报
             </Button>
             <Button
               size="sm"
@@ -226,6 +231,8 @@ export default function MonitorReports() {
           </div>
         )}
       </div>
+
+      {isAdmin && <ReportDateRange value={dateRange} onChange={setDateRange} disabled={generate.isPending} />}
 
       <div className="grid gap-4 lg:grid-cols-[240px_1fr]">
         {/* Report list */}
@@ -338,9 +345,9 @@ export default function MonitorReports() {
                     <CardTitle className="text-base">
                       {report.reportType === "weekly" ? "舆情周报" : "舆情月报"}{" "}
                       {report.reportPeriod}
-                      <span className="text-sm font-normal text-muted-foreground ml-2">
+                      {report.reportPeriod !== d.periodLabel && <span className="text-sm font-normal text-muted-foreground ml-2">
                         {d.periodLabel}
-                      </span>
+                      </span>}
                     </CardTitle>
                   </CardHeader>
                   <CardContent>

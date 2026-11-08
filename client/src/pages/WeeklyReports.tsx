@@ -4,7 +4,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { useState, useMemo } from "react";
+import { useState } from "react";
+import { ReportDateRange } from "@/components/ReportDateRange";
+import { reportDateRangeSchema, reportPeriodDates, weeklyPeriodOf } from "@shared/report-period";
 import { FileBarChart, Download, RefreshCw, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { PLATFORM_LABELS, SEVERITY_LABELS, SEVERITY_COLORS, type Platform } from "@shared/geo-types";
@@ -12,6 +14,8 @@ import { PLATFORM_LABELS, SEVERITY_LABELS, SEVERITY_COLORS, type Platform } from
 export default function WeeklyReports() {
   const { canEdit } = useRole();
   const [selectedWeek, setSelectedWeek] = useState<string>("");
+  const [dateRange, setDateRange] = useState(() => reportPeriodDates(weeklyPeriodOf(Date.now())));
+  const utils = trpc.useUtils();
   const { data: reportsList, isLoading } = trpc.weeklyReports.list.useQuery({ limit: 24 });
   const { data: reportDetail } = trpc.weeklyReports.get.useQuery(
     { reportWeek: selectedWeek },
@@ -19,8 +23,11 @@ export default function WeeklyReports() {
   );
 
   const generateMutation = trpc.weeklyReports.generate.useMutation({
-    onSuccess: () => {
+    onSuccess: result => {
       toast.success("周报生成成功");
+      utils.weeklyReports.list.invalidate();
+      utils.weeklyReports.get.invalidate({ reportWeek: result.reportWeek });
+      setSelectedWeek(result.reportWeek);
     },
     onError: (err) => {
       console.error("GEO weekly report generation failed", err);
@@ -28,24 +35,8 @@ export default function WeeklyReports() {
     },
   });
 
-  const utils = trpc.useUtils();
-
   const handleGenerate = () => {
-    const now = new Date();
-    const startOfYear = new Date(now.getFullYear(), 0, 1);
-    const days = Math.floor((now.getTime() - startOfYear.getTime()) / (24 * 60 * 60 * 1000));
-    const weekNum = Math.ceil((days + startOfYear.getDay() + 1) / 7);
-    const weekStr = `${now.getFullYear()}-W${String(weekNum).padStart(2, "0")}`;
-
-    generateMutation.mutate(
-      { reportWeek: weekStr },
-      {
-        onSuccess: () => {
-          utils.weeklyReports.list.invalidate();
-          setSelectedWeek(weekStr);
-        },
-      }
-    );
+    generateMutation.mutate({ dateRange });
   };
 
   const handleExportJSON = () => {
@@ -64,7 +55,7 @@ export default function WeeklyReports() {
     const summary = reportDetail.summaryMetrics as any;
     const platforms = (reportDetail.platformBreakdown as any[]) || [];
 
-    let csv = "指标,数值\n";
+    let csv = `报告周期,${reportDetail.reportPeriod}\n指标,数值\n`;
     if (summary) {
       csv += `情感均值,${summary.overallSentimentAvg}\n`;
       csv += `友好来源率,${summary.friendlySourceRate}%\n`;
@@ -93,25 +84,27 @@ export default function WeeklyReports() {
           <h1 className="text-2xl font-bold tracking-tight">周报</h1>
           <p className="text-muted-foreground text-sm mt-1">GEO监测周度报告</p>
         </div>
-        <Button onClick={handleGenerate} disabled={!canEdit || generateMutation.isPending}>
+        <Button onClick={handleGenerate} disabled={!canEdit || generateMutation.isPending || !reportDateRangeSchema.safeParse(dateRange).success}>
           {generateMutation.isPending ? (
             <Loader2 className="h-4 w-4 mr-2 animate-spin" />
           ) : (
             <RefreshCw className="h-4 w-4 mr-2" />
           )}
-          生成本周报告
+          生成所选周期周报
         </Button>
       </div>
 
+      {canEdit && <ReportDateRange value={dateRange} onChange={setDateRange} disabled={generateMutation.isPending} />}
+
       <div className="flex gap-3 items-center">
         <Select value={selectedWeek} onValueChange={setSelectedWeek}>
-          <SelectTrigger className="w-[200px]">
-            <SelectValue placeholder="选择周次..." />
+          <SelectTrigger className="w-[280px]">
+            <SelectValue placeholder="选择报告周期..." />
           </SelectTrigger>
           <SelectContent>
             {reportsList?.map((r) => (
               <SelectItem key={r.reportWeek} value={r.reportWeek}>
-                {r.reportWeek} ({r.reportPeriod})
+                {r.reportPeriod || r.reportWeek}
               </SelectItem>
             ))}
           </SelectContent>
@@ -136,10 +129,10 @@ export default function WeeklyReports() {
           <CardContent className="py-12 text-center">
             <FileBarChart className="h-12 w-12 mx-auto text-muted-foreground/30 mb-4" />
             <h3 className="text-lg font-medium mb-2">
-              {reportsList && reportsList.length > 0 ? "请选择一个周次查看报告" : "暂无周报数据"}
+              {reportsList && reportsList.length > 0 ? "请选择一个周期查看报告" : "暂无周报数据"}
             </h3>
             <p className="text-sm text-muted-foreground">
-              点击「生成本周报告」按钮创建新的周报
+              选择起止日期后，点击「生成所选周期周报」创建报告
             </p>
           </CardContent>
         </Card>
@@ -151,7 +144,7 @@ export default function WeeklyReports() {
           <Card>
             <CardHeader className="pb-3">
               <CardTitle className="text-base font-semibold">
-                {reportDetail.reportWeek} 周报总览
+                GEO 周报总览
               </CardTitle>
               <p className="text-xs text-muted-foreground">{reportDetail.reportPeriod}</p>
             </CardHeader>
@@ -222,7 +215,7 @@ export default function WeeklyReports() {
             return (
               <Card>
                 <CardHeader className="pb-3">
-                  <CardTitle className="text-base font-semibold">本周预警</CardTitle>
+                  <CardTitle className="text-base font-semibold">本期预警</CardTitle>
                 </CardHeader>
                 <CardContent>
                   <div className="space-y-2">
