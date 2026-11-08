@@ -44,6 +44,7 @@ import {
   unbindTelegram,
 } from "./monitor/telegram-connect";
 import { isCloudflareRuntime } from "./runtime";
+import { emptyAnswerError, shouldLimitReasoning } from "./llm-answer";
 import { dateRangePeriod, geoReportKey, parsePeriod, reportDateRangeSchema } from "../shared/report-period";
 
 // ==================== Structured Logger ====================
@@ -413,6 +414,7 @@ async function callExternalLLM(
   const timeoutMs = 200000;
 
   const provider = detectProviderFromBaseUrl(config.baseUrl);
+  let limitReasoning = false;
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     const controller = new AbortController();
@@ -433,13 +435,14 @@ async function callExternalLLM(
         headers["HTTP-Referer"] = "https://geo-system.app";
         headers["X-Title"] = "GEO System";
       }
-      const response = await fetch(`${config.baseUrl.replace(/\/$/, "")}/chat/completions`, {
+      const response: Response = await fetch(`${config.baseUrl.replace(/\/$/, "")}/chat/completions`, {
         method: "POST",
         headers,
         body: JSON.stringify({
           model: config.model,
           messages,
           max_tokens: Math.min(4096, Math.max(256, maxTokens)),
+          ...(isOpenRouter && limitReasoning ? { reasoning: { effort: "low" } } : {}),
         }),
         signal: controller.signal,
       });
@@ -456,11 +459,17 @@ async function callExternalLLM(
         throw new Error(`API ${response.status}: ${errText.slice(0, 200)}`);
       }
 
-      const data = await response.json();
+      const data: any = await response.json();
       // Clear timer only after body fully consumed — guarantees timeoutMs covers the entire request
       clearTimeout(timer);
       const latencyMs = Date.now() - t0;
       const content = data.choices?.[0]?.message?.content || "";
+      const finishReason: string | null = data.choices?.[0]?.finish_reason ?? null;
+      const contentError = emptyAnswerError(content, finishReason);
+      if (contentError) {
+        limitReasoning = limitReasoning || shouldLimitReasoning(finishReason, content);
+        throw new Error(contentError);
+      }
 
       const promptTokens = data.usage?.prompt_tokens ?? null;
       const completionTokens = data.usage?.completion_tokens ?? null;
