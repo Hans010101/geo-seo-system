@@ -16,7 +16,7 @@ export async function sendFeishu(webhookUrl: string, payload: { title: string; c
       body: JSON.stringify(body),
     });
     if (!res.ok) return { success: false, error: `HTTP ${res.status}` };
-    const data = await res.json();
+    const data = (await res.json()) as { code?: number; StatusCode?: number; msg?: string };
     if (data.code !== 0 && data.StatusCode !== 0) return { success: false, error: data.msg || JSON.stringify(data) };
     return { success: true };
   } catch (err: any) {

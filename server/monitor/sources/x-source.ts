@@ -48,7 +48,7 @@ async function getCfg(): Promise<{ apiKey: string | null; base: string; minEng: 
 async function apiGet(base: string, path: string, params: Record<string, string>, apiKey: string): Promise<any> {
   const qs = new URLSearchParams(params).toString();
   const resp = await fetchWithTimeout(`${base}${path}?${qs}`, { headers: { "X-API-Key": apiKey } }, 20000);
-  const body = await resp.json().catch(() => null);
+  const body = (await resp.json().catch(() => null)) as Record<string, any> | null;
   if (!resp.ok || body?.status === "error" || body?.status === "failed" || body?.success === false || body?.error) {
     const hint = `${body?.message || ""} ${body?.msg || ""} ${body?.error || ""}`;
     const reason = resp.status === 402 || /insufficient|not enough|recharge|balance|credits/i.test(hint)
