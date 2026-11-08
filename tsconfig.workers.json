@@ -1,6 +1,8 @@
 {
   "extends": "./tsconfig.json",
   "include": [
+    "workers/agent-reach-ingest.ts",
+    "workers/agent-reach-worker-configuration.d.ts",
     "workers/binance-browser.ts",
     "workers/binance-square-browser.ts",
     "workers/binance-worker-configuration.d.ts",
@@ -10,6 +12,8 @@
     "workers/chinese-social-browser.ts",
     "workers/chinese-social-browser-helpers.ts",
     "workers/chinese-social-browser-configuration.d.ts",
+    "workers/wechat-collector.ts",
+    "workers/wechat-worker-configuration.d.ts",
     "workers/migration-acceptance-ledger.ts",
     "workers/migration-acceptance-types.ts"
   ],

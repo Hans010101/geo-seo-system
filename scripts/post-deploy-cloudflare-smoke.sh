@@ -3,8 +3,8 @@
 # 用法: scripts/post-deploy-cloudflare-smoke.sh [PAGES_URL] [CRON_URL]
 set -u
 
-PAGES_URL="${1:-https://geo-seo-system.pages.dev}"
-CRON_URL="${2:-https://geo-seo-system-cron.hans-pan007.workers.dev}"
+PAGES_URL="${1:-https://geo-seo-system-faq.pages.dev}"
+CRON_URL="${2:-https://geo-seo-system-cron.bitman001.workers.dev}"
 FAIL=0
 
 say() { printf '%s\n' "$*"; }
@@ -53,10 +53,8 @@ CRON_CODE="$(http_code "${CRON_URL}/")"
 if [ "$CRON_CODE" = "200" ] \
   && printf '%s' "$CRON_BODY" | grep -q '"standby":false' \
   && printf '%s' "$CRON_BODY" | grep -q '"mode":"primary"' \
-  && printf '%s' "$CRON_BODY" | grep -q '"geoDaily":true' \
-  && printf '%s' "$CRON_BODY" | grep -q '"geoWeekly":true' \
-  && printf '%s' "$CRON_BODY" | grep -q '"openRouterPreflight":true'; then
-  ok "Cron Worker 可达，主运行模式与迁移模块开关正常"
+  && printf '%s' "$CRON_BODY" | grep -q '"execution":"queue_sharded"'; then
+  ok "Cron Worker 可达，主运行模式与队列执行模式正常"
 else
   bad "Cron Worker 状态异常：HTTP ${CRON_CODE} $(printf '%s' "$CRON_BODY" | head -c 300)"
 fi

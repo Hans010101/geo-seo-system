@@ -22,10 +22,10 @@
 | 币安广场 | Cookie/WAF 方式 | 私有 Browser Worker；403 时由 Cloudflare 内部 Serper 回退 | 已进入写入阶段，7 天验收未完成 | `CLOUDFLARE_BINANCE_*`；阶段 3/4 |
 | 正文抓取 | self → Firecrawl → snippet | 复用同一抓取路由 | 功能已有，缺逐次尝试可观测性 | `CLOUDFLARE_FETCH_OBSERVABILITY_ENABLED`；阶段 1 |
 | Browser 正文兜底 | 无 Cloudflare Browser | 独立私有 Browser Worker，snippet 后进入串行专用 Queue | 已部署影子链路，不写生产正文；预算 token 日内幂等校验；全局 75 秒冷却并延迟重试 | `CLOUDFLARE_BROWSER_FULLTEXT_SHADOW_ENABLED`；阶段 2 |
-| AI 舆情分析 | OpenRouter | Workers AI 优先，失败时 OpenRouter | 已运行；当天无新增时不会产生 AI 调用 | `CLOUDFLARE_OPENROUTER_FALLBACK_ENABLED` |
+| AI 舆情分析 | OpenRouter | Workers AI（不回退 OpenRouter） | 已运行；当天无新增时不会产生 AI 调用 | `CLOUDFLARE_AI_MODEL` |
 | 高威胁实时预警 | pipeline 内建，按配置推送 | Queue 候选链已接入，生产开关关闭 | 代码就绪，未启用 | `CLOUDFLARE_REALTIME_ALERTS_ENABLED`；阶段 5 |
 | 每轮舆情简报 | pipeline 周期结束后生成/推送 | Coordinator 收集素材，幂等 Post-cycle Queue 已接入 | 代码就绪，未启用 | `CLOUDFLARE_BRIEFING_ENABLED`；阶段 5 |
-| 舆情周报 | 周一 08:30（北京） | 周一 03:40 Queue | 已运行；共享库 upsert 幂等，推送需防双发 | `CLOUDFLARE_WEEKLY_REPORT_ENABLED` |
+| 舆情周报 | 周五 08:30（北京） | 周五 03:40 Queue | 统计上一完整周五至周四；手动生成支持起止日期；共享库 upsert 幂等，推送需防双发 | `CLOUDFLARE_WEEKLY_REPORT_ENABLED` |
 | 舆情月报 | 每月 1 日 08:40（北京） | 每月 1 日 03:40 Queue | 已运行；共享库 upsert 幂等，推送需防双发 | `CLOUDFLARE_MONTHLY_REPORT_ENABLED` |
 | 30 天信源滚动保留 | 每日 04:30（北京） | 每日 Queue | 已运行；删除超期/无有效发布日期记录，操作幂等 | `CLOUDFLARE_CLEANUP_ENABLED` |
 | GEO 日常采集 | DB 动态 Cron，全部启用问题 × 平台 | 已接入幂等 Queue 分片，默认 4 cells/片、并发 2 | 代码与调度就绪，生产开关关闭 | `CLOUDFLARE_GEO_DAILY_ENABLED`；阶段 5 |

@@ -75,3 +75,6 @@ temp/
 # Cloudflare Wrangler
 .wrangler/
 _worker.bundle
+
+# Python
+__pycache__/
