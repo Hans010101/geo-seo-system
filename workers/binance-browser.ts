@@ -2,13 +2,15 @@ import { launch, type Response as PlaywrightResponse } from "@cloudflare/playwri
 import { WorkerEntrypoint } from "cloudflare:workers";
 import {
   isBinanceSquarePayload,
+  isBinancePostSearch,
+  binanceSearchUrl,
   parseBinanceSquareResponse,
   type BinanceBrowserQueryDiagnostic,
   type BinanceBrowserSearchRequest,
   type BinanceBrowserSearchResult,
 } from "./binance-square-browser";
 
-const MAX_QUERIES = 4;
+const MAX_QUERIES_PER_REQUEST = 1;
 const DEFAULT_PAGE_SIZE = 10;
 const MAX_PAGE_SIZE = 20;
 const NAVIGATION_TIMEOUT_MS = 22_000;
@@ -22,7 +24,7 @@ function cleanQueries(values: string[]): string[] {
     values
       .map((value) => value.trim())
       .filter(Boolean),
-  )).slice(0, MAX_QUERIES);
+  ));
 }
 
 function pageSize(value: number | undefined): number {
@@ -54,7 +56,8 @@ export default class BinanceBrowserWorker extends WorkerEntrypoint<BinanceWorker
 
   async search(input: BinanceBrowserSearchRequest): Promise<BinanceBrowserSearchResult> {
     const startedAt = Date.now();
-    const queries = cleanQueries(Array.isArray(input?.queries) ? input.queries : []);
+    const requestedQueries = cleanQueries(Array.isArray(input?.queries) ? input.queries : []);
+    const queries = requestedQueries.slice(0, MAX_QUERIES_PER_REQUEST);
     if (queries.length === 0) throw new Error("at least one Binance search query is required");
 
     const diagnostics: BinanceBrowserQueryDiagnostic[] = [];
@@ -79,8 +82,7 @@ export default class BinanceBrowserWorker extends WorkerEntrypoint<BinanceWorker
           const apiResponses: PlaywrightResponse[] = [];
           const captureResponse = (response: PlaywrightResponse) => {
             try {
-              const url = new URL(response.url());
-              if (url.hostname.endsWith("binance.com") && url.pathname.startsWith("/bapi/")) {
+              if (isBinancePostSearch(response.url(), response.request().postData(), query)) {
                 apiResponses.push(response);
               }
             } catch {
@@ -91,7 +93,7 @@ export default class BinanceBrowserWorker extends WorkerEntrypoint<BinanceWorker
           let navigationError = "";
           try {
             await page.goto(
-              `https://www.binance.com/zh-CN/square/search?q=${encodeURIComponent(query)}`,
+              binanceSearchUrl(query),
               { waitUntil: "domcontentloaded", timeout: NAVIGATION_TIMEOUT_MS },
             );
           } catch (error) {
@@ -102,7 +104,7 @@ export default class BinanceBrowserWorker extends WorkerEntrypoint<BinanceWorker
             await page.waitForTimeout(NETWORK_SETTLE_MS);
             let matchedResponse: PlaywrightResponse | null = null;
             let payload: unknown = null;
-            for (const response of apiResponses.slice(-40)) {
+            for (const response of apiResponses.slice(-40).reverse()) {
               if (!response.ok()) continue;
               try {
                 const candidate = await response.json();
@@ -175,6 +177,9 @@ export default class BinanceBrowserWorker extends WorkerEntrypoint<BinanceWorker
       posts: Array.from(postsByUrl.values()),
       durationMs: Date.now() - startedAt,
       sessionId,
+      queriesRequested: requestedQueries.length,
+      queriesExecuted: diagnostics.length,
+      queriesTruncated: Math.max(0, requestedQueries.length - queries.length),
       queriesAttempted: queries.length,
       queriesSucceeded,
       diagnostics,
@@ -185,6 +190,9 @@ export default class BinanceBrowserWorker extends WorkerEntrypoint<BinanceWorker
       posts: result.posts.length,
       durationMs: result.durationMs,
       sessionId: result.sessionId,
+      queriesRequested: result.queriesRequested,
+      queriesExecuted: result.queriesExecuted,
+      queriesTruncated: result.queriesTruncated,
       diagnostics: result.diagnostics,
     }));
     return result;

@@ -1,6 +1,7 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "geo-seo-system-binance-browser",
+  "account_id": "a828bebda1f352216c7d7da425bad17a",
   "main": "workers/binance-browser.ts",
   "compatibility_date": "2026-07-30",
   "compatibility_flags": ["nodejs_compat"],

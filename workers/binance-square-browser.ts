@@ -24,6 +24,9 @@ export type BinanceBrowserSearchResult = {
   posts: DiscoveredPost[];
   durationMs: number;
   sessionId: string;
+  queriesRequested: number;
+  queriesExecuted: number;
+  queriesTruncated: number;
   queriesAttempted: number;
   queriesSucceeded: number;
   diagnostics: BinanceBrowserQueryDiagnostic[];
@@ -49,6 +52,23 @@ function numericTimestamp(value: unknown): number | null {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) return null;
   return parsed < 10_000_000_000 ? parsed * 1000 : parsed;
+}
+
+function firstNumericTimestamp(values: unknown[]): number | null {
+  for (const value of values) {
+    const timestamp = numericTimestamp(value);
+    if (timestamp != null) return timestamp;
+  }
+  return null;
+}
+
+export function binanceQueryBatches(queries: string[], concurrency = 2): string[][] {
+  const batchSize = Math.max(1, Math.floor(concurrency));
+  const batches: string[][] = [];
+  for (let index = 0; index < queries.length; index += batchSize) {
+    batches.push(queries.slice(index, index + batchSize));
+  }
+  return batches;
 }
 
 function responseItems(payload: unknown): unknown[] {
@@ -88,7 +108,14 @@ export function parseBinanceSquareResponse(payload: unknown): DiscoveredPost[] {
       title: content.replace(/\s+/g, " ").slice(0, 80),
       fullContent: content.slice(0, 20_000),
       author: text(item.authorName) || text(item.username) || null,
-      publishedAt: numericTimestamp(item.date),
+      publishedAt: firstNumericTimestamp([
+        item.date,
+        item.publishTime,
+        item.publish_time,
+        item.createTime,
+        item.create_time,
+        item.postTime,
+      ]),
       sourceName: "binance_square",
       sourcePlatform: "binance_square",
       fetchEngineHint: "cloudflare_browser",
@@ -101,4 +128,19 @@ export function parseBinanceSquareResponse(payload: unknown): DiscoveredPost[] {
 export function isBinanceSearchResponse(url: string): boolean {
   if (!url.startsWith("https://www.binance.com/bapi/")) return false;
   return /\/(?:feed\/)?search\/list(?:\?|$)/.test(url);
+}
+
+export function binanceSearchUrl(query: string): string {
+  return `https://www.binance.com/zh-CN/square/search?s=${encodeURIComponent(query)}`;
+}
+
+export function isBinancePostSearch(url: string, body: string | null, query: string): boolean {
+  if (!isBinanceSearchResponse(url) || !body) return false;
+  try {
+    const request = JSON.parse(body);
+    // The same endpoint serves creators (2), hashtags (3), and posts (1).
+    return request?.type === 1 && request.searchContent === query;
+  } catch {
+    return false;
+  }
 }
