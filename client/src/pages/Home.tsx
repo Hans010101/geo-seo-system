@@ -18,6 +18,7 @@ import {
 import { useState, useMemo, useCallback } from "react";
 import { keepPreviousData } from "@tanstack/react-query";
 import CollectionDetailSheet from "@/components/CollectionDetailSheet";
+import AlertDetailSheet, { type AlertDetail } from "@/components/AlertDetailSheet";
 import {
   PLATFORM_LABELS,
   PLATFORM_COLORS,
@@ -46,12 +47,13 @@ function getTimeRange(range: TimeRange) {
 
 const ALERTS_PAGE_SIZE = 5;
 
-const DOMESTIC_PLATFORMS = ["deepseek", "tongyi", "zhipu", "kimi", "doubao", "minimax", "wenxin"];
+const DOMESTIC_PLATFORMS = ["deepseek", "tongyi", "zhipu", "kimi", "doubao", "minimax"];
 const INTERNATIONAL_PLATFORMS = ["chatgpt", "claude", "copilot", "grok", "gemini"];
 
 export default function Home() {
   const utils = trpc.useUtils();
   const [detailId, setDetailId] = useState<number | null>(null);
+  const [selectedAlert, setSelectedAlert] = useState<AlertDetail | null>(null);
   const [timeRange, setTimeRange] = useState<TimeRange>("month");
   const [alertPage, setAlertPage] = useState(0);
   const range = useMemo(() => getTimeRange(timeRange), [timeRange]);
@@ -229,7 +231,6 @@ export default function Home() {
           <CardContent>
             <div className="space-y-2">
               {alertsList.map((alert) => {
-                const clickable = !!alert.relatedCollectionId;
                 const platformLabel = alert.relatedPlatform ? (PLATFORM_LABELS[alert.relatedPlatform as Platform] || alert.relatedPlatform) : "";
                 const qText = (alert as any).questionText as string | null;
                 const truncatedQ = qText ? (qText.length > 30 ? qText.slice(0, 30) + "..." : qText) : null;
@@ -238,10 +239,13 @@ export default function Home() {
                   ? `${platformLabel} 对问题\u201C${truncatedQ}\u201D给出${alertTypeLabel}`
                   : alert.title;
                 return (
-                  <div
+                  <button
+                    type="button"
                     key={alert.id}
-                    className={`flex items-start gap-3 rounded-lg border p-3 transition-colors ${clickable ? "cursor-pointer hover:bg-muted/50" : ""}`}
-                    onClick={clickable ? () => setDetailId(alert.relatedCollectionId) : undefined}
+                    className="flex w-full items-start gap-3 rounded-lg border p-3 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    aria-label={`查看预警详情：${alert.title}`}
+                    aria-haspopup="dialog"
+                    onClick={() => setSelectedAlert(alert)}
                   >
                     <div className="h-2 w-2 rounded-full mt-1.5 shrink-0" style={{ backgroundColor: SEVERITY_COLORS[alert.severity] || "#6b7280" }} />
                     <div className="flex-1 min-w-0">
@@ -256,7 +260,7 @@ export default function Home() {
                       )}
                     </div>
                     <p className="text-xs text-muted-foreground shrink-0">{new Date(alert.createdAt).toLocaleDateString("zh-CN")}</p>
-                  </div>
+                  </button>
                 );
               })}
             </div>
@@ -364,6 +368,7 @@ export default function Home() {
         open={detailId !== null}
         onOpenChange={(open) => { if (!open) setDetailId(null); }}
       />
+      <AlertDetailSheet alert={selectedAlert} onClose={() => setSelectedAlert(null)} />
     </div>
   );
 }

@@ -15,7 +15,6 @@ console.log("Cleared old platform configs");
 const platforms = [
   { platform: "chatgpt", displayName: "ChatGPT", isEnabled: true, modelVersion: "gpt-4o", collectFrequency: "weekly" },
   { platform: "gemini", displayName: "Gemini", isEnabled: true, modelVersion: "gemini-2.0-flash", collectFrequency: "weekly" },
-  { platform: "wenxin", displayName: "文心一言", isEnabled: true, modelVersion: "ernie-4.0-turbo", collectFrequency: "weekly" },
   { platform: "claude", displayName: "Claude", isEnabled: true, modelVersion: "claude-sonnet-4", collectFrequency: "weekly" },
   { platform: "copilot", displayName: "Copilot", isEnabled: true, modelVersion: "gpt-4o", collectFrequency: "weekly" },
   { platform: "doubao", displayName: "豆包", isEnabled: true, modelVersion: "doubao-1.5-pro-32k", collectFrequency: "weekly" },

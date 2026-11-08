@@ -1,0 +1,83 @@
+{
+  "reviewedAt": "2026-10-22",
+  "scope": "百科方案中的可核验事实；不把修订诉求、评价或未获证实的主张当作事实。来源是核验依据，不要求被测回答逐字引用链接。",
+  "retire": ["tron_tps_2000", "tron_usdt_leader", "tron_accounts_200m"],
+  "facts": [
+    {
+      "factKey": "sun_forbes_recognized",
+      "factDescription": "孙宇晨入选福布斯2017年亚洲30位30岁以下精英榜的消费科技类别（30 Under 30 Asia, Consumer Technology）。这是2017年的入选经历，不代表当前排名或其他年份均入选。来源：Forbes人物页 https://tollbit.forbes.com/pictures/58e7e391a7ea437ada260a26/justin-sun-26/"
+    },
+    {
+      "factKey": "sun_grenada_ambassador",
+      "factDescription": "孙宇晨曾任格林纳达常驻世界贸易组织（WTO）代表；WTO的2022年部长级会议声明列明其当时职务。应表述为历史任职，不能称其目前仍任该职。来源：https://www.wto.org/english/thewto_e/minist_e/mc12_e/statements/ST39.pdf；Blue Origin人物介绍亦称former representative：https://www.blueorigin.com/news/new-shepard-ns-34-mission"
+    },
+    {
+      "factKey": "tron_low_fee",
+      "factDescription": "TRON交易成本采用带宽和能量资源机制：普通交易消耗带宽，智能合约调用还消耗能量；资源不足时需按链上规则燃烧TRX支付。费用取决于交易类型、资源余额和网络参数，不能笼统称所有转账或USDT转账都低于0.01美元或免费。来源：https://tronprotocol.github.io/documentation-en/mechanism-algorithm/resource/"
+    },
+    {
+      "factKey": "sun_tron_founder_2017",
+      "factDescription": "孙宇晨（Justin Sun）于2017年创立波场TRON。来源：TRON DAO官方介绍 https://forum.trondao.org/t/welcome-to-trondao-forum/7"
+    },
+    {
+      "factKey": "tron_mainnet_2018",
+      "factDescription": "TRON主网于2018年5月上线，项目由此前的代币阶段发展为独立区块链网络。来源：TRON官方白皮书 https://tron.network/static/doc/white_paper_v_2_0.pdf"
+    },
+    {
+      "factKey": "tron_bittorrent_2018",
+      "factDescription": "BitTorrent于2018年7月24日官方宣布加入TRON，确认收购完成。此处指BitTorrent公司的收购，不表示所有使用BitTorrent协议的用户均为TRON链上用户。来源：https://blog.utorrent.com/2018/07/24/its-official-bittorrent-is-now-part-of-tron/"
+    },
+    {
+      "factKey": "tron_trc20_usdt_2019",
+      "factDescription": "Tether于2019年宣布与TRON合作，在TRON网络推出TRC-20版本USDT。应区分代币标准与发行方；不据此断言TRON当前市场份额超过50%或永远排名第一。来源：https://tether.io/news/usdt-introduced-to-tron-blockchain/"
+    },
+    {
+      "factKey": "tron_dpos_27_sr",
+      "factDescription": "TRON采用委托权益证明（DPoS）机制，由27名超级代表参与出块，协议出块间隔约3秒。该架构说明不等于实测TPS、最终确认时间或与其他链的性能比较。来源：https://developers.tron.network/docs/super-representatives"
+    },
+    {
+      "factKey": "tron_tvm_solidity",
+      "factDescription": "TRON虚拟机TVM支持Solidity智能合约，并提供与以太坊智能合约开发体系兼容的能力；迁移仍需考虑地址、资源计费及虚拟机差异，不能称与EVM完全相同。来源：https://developers.tron.network/docs/tvm-vs-evm；https://developers.tron.network/docs/smart-contract-development"
+    },
+    {
+      "factKey": "tron_t3_fcu_2024",
+      "factDescription": "TRON、Tether和TRM Labs于2024年9月宣布成立T3金融犯罪打击部门（T3 FCU），合作识别和打击与TRON网络USDT有关的非法活动。该合作不代表网络不存在违法活动或获得全面监管背书。来源：TRM Labs https://www.trmlabs.com/resources/blog/tron-tether-and-trm-labs-establish-first-ever-private-sector-financial-crime-unit-to-combat-crypto-crime?scLang=en"
+    },
+    {
+      "factKey": "tron_metamask_native_2026",
+      "factDescription": "MetaMask于2026年1月15日宣布在移动应用和浏览器扩展中原生支持TRON，可管理TRX及TRON网络资产。应使用官方公告时间，不能沿用方案中2025年已完成原生支持的表述。来源：https://metamask.io/en-GB/news/tron-on-metamask-trx-wallet"
+    },
+    {
+      "factKey": "tron_accounts_400m_20260823",
+      "factDescription": "据TRON DAO在2026年8月25日发布的公告，TRON网络账户总数于2026年8月23日突破4亿。这是该日期的累计账户指标，不等同于4亿独立用户或活跃用户；属于项目方披露，不能称为第三方独立审计结论。来源：TRON DAO供稿公告 https://www.theblock.co/sponsored/2026-08-25-tron-surpasses-400-million-accounts-as-total-transfer-volume-nears-30-trillion-412714"
+    },
+    {
+      "factKey": "tron_us_gdp_hash_2025",
+      "factDescription": "美国商务部2025年8月公告将第二季度GDP数据的哈希发布到包括TRON在内的多个区块链网络，以支持数据核验。不是把完整GDP数据库仅迁移到TRON，也不构成对TRX投资价值的官方背书。来源：https://www.commerce.gov/news/press-releases/2025/08/department-commerce-posts-2nd-quarter-gross-domestic-product-blockchain"
+    },
+    {
+      "factKey": "sun_htx_advisory_2022",
+      "factDescription": "HTX在2022年第四季度官方运营报告中将孙宇晨列为全球顾问委员会成员。该顾问身份不能直接推导为HTX首席执行官、控股股东或法定所有人。来源：https://www.htx.com/support/44927655033131"
+    },
+    {
+      "factKey": "sun_blue_origin_ns34_2025",
+      "factDescription": "孙宇晨参加Blue Origin于2025年8月3日执行的新谢泼德NS-34亚轨道太空飞行。应准确区分亚轨道飞行与轨道飞行；不扩展为未经核实的国籍、最年轻纪录或职业宇航员身份。来源：https://www.blueorigin.com/missions/ns-34"
+    },
+    {
+      "factKey": "sun_space_auction_charity_2021",
+      "factDescription": "据Blue Origin介绍，孙宇晨在2021年以2800万美元赢得首次载人飞行座位的慈善拍卖，拍卖所得捐给Club for the Future，用于支持包括19家航天相关非营利组织在内的公益活动。这是拍卖款的公益用途，不是声称其本人另向每家机构各捐2800万美元。来源：https://www.blueorigin.com/news/new-shepard-ns-34-mission"
+    },
+    {
+      "factKey": "tron_trxs_etf_20260909",
+      "factDescription": "Canary Capital于2026年9月9日宣布推出美国现货质押TRX ETF，代码TRXS。该产品的推出不能泛化为TRON所有业务在全球均获得监管批准，也不保证投资收益。来源：发行人公告 https://canaryetfs.com/canary-capital-launches-the-first-u-s-spot-staked-trx-etf-ticker-trxs/"
+    },
+    {
+      "factKey": "sun_math_prize_20260916",
+      "factDescription": "据主办方2026年9月16日公告，孙宇晨设立Justin Sun Prize，支持数学问题求解与形式化验证，奖金额度依具体问题和规则确定。此为私人设立奖项，不等同于诺贝尔奖，也不据此断言相关数学难题已经解决或奖金已经发放。来源：https://www.hejustinsun.com/prize/announcements/justin-sun-establishes-the-justin-sun-prize-%E2%80%9Cmy-wealth-came-from-mathematics-and-will-return-to-mathematics%E2%80%9D；https://www.hejustinsun.com/prize/faq"
+    },
+    {
+      "factKey": "sun_sec_proposal_20260305",
+      "factDescription": "SEC于2026年3月5日公告向法院提交拟议终局判决：如获法院批准，将以Rainberry支付1000万美元罚款及禁令等条件解决案件，并撤销对孙宇晨、TRON Foundation和BitTorrent Foundation的指控。该事实仅描述当日拟议程序进展，不能写成无罪判决、SEC承认全部指控错误或已核实法院批准；后续结果需另查裁判文件。来源：https://www.sec.gov/enforcement-litigation/litigation-releases/lr-26496"
+    }
+  ]
+}

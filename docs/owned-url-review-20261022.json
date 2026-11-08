@@ -1,0 +1,29 @@
+{
+  "reviewedAt": "2026-10-22",
+  "scope": "沿用现有库的孙宇晨/TRON及生态官方发布口径；不代表这些站点由当前登录用户直接控制。第三方百科、媒体、行情及话题聚合页保留参考记录，但停用己方布局统计。",
+  "referenceOnlyIds": [13,14,15,16,17,21,22,23,24,25],
+  "pendingVerificationIds": [20],
+  "corrections": [
+    {"id":19,"url":"https://x.com/trondao","title":"TRON DAO 官方 X 账号","evidence":"https://forum.trondao.org/t/tron-grand-hackathon-2022-season-1-winners-announcement-congrats-to-all-winners/2029?page=2"},
+    {"id":10,"title":"JUST 生态官网（非 JustLend 单一产品页）"}
+  ],
+  "additions": [
+    {"url":"https://www.hejustinsun.com/","title":"孙宇晨官方网站：人物经历与项目入口","publishPlatform":"孙宇晨官网","factKeys":["sun_tron_founder_2017","sun_math_prize_20260916"]},
+    {"url":"https://www.hejustinsun.com/prize/faq","title":"Justin Sun Prize：官方规则与常见问题","publishPlatform":"孙宇晨官网","factKeys":["sun_math_prize_20260916"]},
+    {"url":"https://www.hejustinsun.com/prize/announcements/justin-sun-establishes-the-justin-sun-prize-%E2%80%9Cmy-wealth-came-from-mathematics-and-will-return-to-mathematics%E2%80%9D","title":"Justin Sun Prize 设立公告（2026-09-16）","publishPlatform":"孙宇晨官网","factKeys":["sun_math_prize_20260916"]},
+    {"url":"https://developers.tron.network/docs/super-representatives","title":"TRON 官方文档：27 名超级代表与 DPoS","publishPlatform":"TRON 开发者文档","factKeys":["tron_dpos_27_sr"]},
+    {"url":"https://developers.tron.network/docs/tvm-vs-evm","title":"TRON 官方文档：TVM 与 EVM 的兼容性和差异","publishPlatform":"TRON 开发者文档","factKeys":["tron_tvm_solidity"]},
+    {"url":"https://developers.tron.network/docs/smart-contract-development","title":"TRON 官方文档：Solidity 智能合约开发","publishPlatform":"TRON 开发者文档","factKeys":["tron_tvm_solidity"]},
+    {"url":"https://tronprotocol.github.io/documentation-en/mechanism-algorithm/resource/","title":"java-tron 官方文档：能量、带宽与交易费用","publishPlatform":"TRON 协议文档","factKeys":["tron_low_fee"]},
+    {"url":"https://tron.network/static/doc/white_paper_v_2_0.pdf","title":"TRON 官方白皮书 2.0（2018 历史版本）","publishPlatform":"TRON 官网","factKeys":["tron_mainnet_2018"]},
+    {"url":"https://forum.trondao.org/t/welcome-to-trondao-forum/7","title":"TRON DAO 官方论坛介绍：创立与主网上线","publishPlatform":"TRON DAO 官方公告","factKeys":["sun_tron_founder_2017","tron_mainnet_2018"]},
+    {"url":"https://blog.utorrent.com/2018/07/24/its-official-bittorrent-is-now-part-of-tron/","title":"BitTorrent 加入 TRON 官方公告（2018-07-24）","publishPlatform":"µTorrent 官方博客","factKeys":["tron_bittorrent_2018"]}
+  ],
+  "limitations": [
+    "新增 URL 逐一验证内容；TRONScan、JUST、APENFT 等旧入口本次出现反爬或超时，不据此判定网站下线。",
+    "微博旧短名无法核验，保留并停用，待确认官方账号数字 UID 后恢复。",
+    "现有 UI 没有独立参考资料字段，因此以标题前缀和停用状态区分，不删除历史记录。编辑这些记录时请勿直接重新启用为己方内容。",
+    "仅更新 URL 库与引用匹配配置；不重算历史引用、报表，不触发付费 GEO 采集。",
+    "事实映射保存在本清单供追溯；未增加产品内的 URL—目标事实关联字段。"
+  ]
+}

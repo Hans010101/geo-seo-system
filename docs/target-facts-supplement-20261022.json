@@ -1,0 +1,50 @@
+[
+  {
+    "factKey": "sun_glide_charity_2019",
+    "factDescription": "孙宇晨在2019年以4,567,888美元赢得GLIDE与沃伦·巴菲特的慈善午餐拍卖，拍卖所得用于支持GLIDE公益服务。此为慈善拍卖经历，不构成巴菲特对TRON或加密资产投资价值的背书。来源：GLIDE https://www.glide.org/lunch-with-benioff/；https://www.glide.org/press-releases/glide-ebay-and-warren-buffett-celebrate-the-grand-finale-power-of-one-charity-auction-lunch-with-record-breaking-winning-bid/"
+  },
+  {
+    "factKey": "sun_tron_inc_advisor_2025",
+    "factDescription": "Tron Inc.在2025年7月23日公司公告中将孙宇晨列为全球顾问（Global Advisor）。Tron Inc.是上市公司主体，与TRON区块链网络、TRON DAO并非同一概念；顾问身份不等于该公司CEO，也不能表述为TRON区块链本身在纳斯达克上市。来源：公司供稿公告 https://www.nasdaq.com/press-release/tron-inc-ring-nasdaq-opening-bell-july-24-2025-2025-07-23"
+  },
+  {
+    "factKey": "tron_stake2_resource_delegation",
+    "factDescription": "TRON的Stake 2.0机制支持将质押TRX获得的带宽或能量委托给其他账户使用，质押和资源委托为独立操作，质押TRX所有权仍属于委托方。资源委托不等于转移TRX本金或投票权，也不保证固定收益。来源：TRON开发者文档 https://developers.tron.network/docs/delegation"
+  },
+  {
+    "factKey": "tron_account_multisignature",
+    "factDescription": "TRON账户支持分级权限及多签机制，可配置Owner、Witness、Active权限，使用密钥权重与阈值控制交易授权。该能力适用于多人审批和权限分离，但安全性仍取决于密钥保管及权限配置，不能表述为账户绝对安全。来源：TRON开发者文档 https://developers.tron.network/docs/multi-signature"
+  },
+  {
+    "factKey": "tron_gasfree_token_fee",
+    "factDescription": "GasFree支持在TRON上无需持有原生TRX进行受支持的TRC-20代币转账：服务提供方承担链上资源费用，用户以受支持代币支付服务费用，支持场景包括USDT。无需持有TRX不等于免费；账户激活费、转账费及支持代币取决于服务提供方规则。来源：GasFree官方文档 https://docs.gasfree.io/"
+  },
+  {
+    "factKey": "tron_bttc_crosschain",
+    "factDescription": "BitTorrent Chain（BTTC）提供跨链基础设施，支持TRON、Ethereum和BNB Smart Chain之间的资产转移，并采用兼容EVM的执行环境。BTTC与TRON主网是不同网络；跨链桥涉及合约和桥接安全风险，不能称为无风险转移。来源：BTTC官方文档 https://doc.bt.io/docs/basics/bttc-basics/what-is-bttc；https://doc.bt.io/docs/bridge/overview/"
+  },
+  {
+    "factKey": "tron_java_tron_opensource",
+    "factDescription": "java-tron是公开托管在tronprotocol组织下的TRON协议Java实现，代码仓库采用LGPL-3.0许可证，并提供构建、节点运行和贡献说明。开源意味着代码可公开审阅，不等于所有代码已通过独立安全审计或没有漏洞。来源：https://github.com/tronprotocol/java-tron"
+  },
+  {
+    "factKey": "tron_google_cloud_bigquery",
+    "factDescription": "截至2026年10月核验，Google Cloud Blockchain Analytics支持的数据集包含TRON，可通过BigQuery开展链上数据查询与分析。此为数据分析服务的支持范围，不代表Google对TRX投资价值或TRON全部业务作出背书。来源：Google Cloud官方支持列表 https://docs.cloud.google.com/blockchain-analytics/docs/supported-datasets"
+  },
+  {
+    "factKey": "tron_chainlink_scale_2024",
+    "factDescription": "TRON DAO于2024年10月宣布加入Chainlink Scale，并公布采用Chainlink Data Feeds支持生态DeFi应用的计划；Chainlink在SmartCon 2024回顾中列出了TRON的Data Feeds与Scale合作。该历史合作公告不代表TRON全部DeFi应用均已接入或不存在风险。来源：Chainlink https://chain.link/blog/smartcon-2024-recap；双方公告 https://www.prnewswire.com/news-releases/tron-dao-joins-chainlink-scale-chainlink-data-feeds-to-secure-6-5-billion-in-tron-defi-tvl-302292245.html"
+  },
+  {
+    "factKey": "tron_builders_league_2025",
+    "factDescription": "TRON DAO在2025年2月宣布TRON Builders League（TBL），公布1000万美元资金池，以资金、指导及生态支持帮助开发团队。该数字是计划资金池，不等于已全部发放，也不代表每个项目都能获得资助或取得商业成功。来源：TRON DAO公告 https://trondao.org/announcements/tron-builders-league-launches-with-10m-in-funding-to-accelerate-ecosystem-growth"
+  },
+  {
+    "factKey": "tron_grand_hackathon_2022",
+    "factDescription": "TRON DAO于2022年推出TRON Grand Hackathon，面向智能合约和区块链应用开发者，鼓励在TRON及BTTC生态构建项目，涉及Web3、DeFi、GameFi等方向。这是开发者活动的历史事实，不据此推断当前参赛规模或获奖项目均已落地。来源：TRON DAO官方发布 https://trondao.medium.com/tron-grand-hackathon-2022-f75a5c5fee35"
+  },
+  {
+    "factKey": "tron_vaneck_vtrx_etn",
+    "factDescription": "VanEck发行TRON ETN，代码VTRX、ISIN为DE000A3GSUE1，通过以TRX支持的交易所交易票据提供TRX价格敞口。ETN与ETF及直接持有链上TRX不同，存在价格、发行人等风险，不能将产品发行解释为收益保证或TRON全面获得监管批准。来源：VanEck产品页 https://www.vaneck.com/es/en/investments/tron-etp"
+  }
+]

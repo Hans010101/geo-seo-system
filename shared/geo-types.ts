@@ -1,8 +1,7 @@
-// Platform types - 12 monitored AI platforms
+// Platform types - 11 monitored AI platforms
 export const PLATFORMS = [
   "chatgpt",
   "gemini",
-  "wenxin",
   "claude",
   "copilot",
   "doubao",
@@ -15,7 +14,8 @@ export const PLATFORMS = [
 ] as const;
 export type Platform = (typeof PLATFORMS)[number];
 
-export const PLATFORM_LABELS: Record<Platform, string> = {
+// Retain Wenxin's display metadata for historical collection records.
+export const PLATFORM_LABELS: Record<Platform | "wenxin", string> = {
   chatgpt: "ChatGPT",
   gemini: "Gemini",
   wenxin: "文心一言",
@@ -30,7 +30,7 @@ export const PLATFORM_LABELS: Record<Platform, string> = {
   grok: "Grok",
 };
 
-export const PLATFORM_COLORS: Record<Platform, string> = {
+export const PLATFORM_COLORS: Record<Platform | "wenxin", string> = {
   chatgpt: "#10a37f",
   gemini: "#8e44ad",
   wenxin: "#2080f0",
@@ -47,30 +47,28 @@ export const PLATFORM_COLORS: Record<Platform, string> = {
 
 // OpenRouter model mapping for each platform
 export const PLATFORM_OPENROUTER_MODELS: Record<Platform, string> = {
-  chatgpt: "openai/gpt-4o",
-  // gemini-2.0-flash-001 was retired from OpenRouter; gemini-2.5-flash is the current stable replacement
-  gemini: "google/gemini-2.5-flash",
-  // baidu/ernie-4.5-300b-a47b was delisted; only vision-language variants remain on OpenRouter
-  // 424b is the larger/more-capable variant comparable to the prior 300b
-  wenxin: "baidu/ernie-4.5-vl-424b-a47b",
-  claude: "anthropic/claude-sonnet-4",
-  copilot: "openai/gpt-4o",
-  // seed-2.0-lite was ~150s/cell; seed-1.6-flash benchmarks 6.6× faster (23s) with longer + cheaper output
-  doubao: "bytedance-seed/seed-1.6-flash",
-  kimi: "moonshotai/kimi-k2",
-  deepseek: "deepseek/deepseek-chat-v3-0324",
+  // Free users' default model: representative of the broadest public ChatGPT experience.
+  chatgpt: "openai/gpt-5.6-luna",
+  // Stable Flash track: representative of Gemini's mainstream consumer experience, not the newest flagship.
+  gemini: "google/gemini-3.5-flash",
+  // Sonnet is Claude's default Free/Pro tier; Opus is intentionally excluded.
+  claude: "anthropic/claude-sonnet-5",
+  // Microsoft Copilot uses an undisclosed dynamic router. Luna is the closest broad-consumer proxy.
+  copilot: "openai/gpt-5.6-luna",
+  doubao: "bytedance-seed/seed-2-1-turbo",
+  kimi: "moonshotai/kimi-k2.6",
+  // Flash matches the public Instant experience; Pro is intentionally excluded.
+  deepseek: "deepseek/deepseek-v4-flash-0731",
   minimax: "minimax/minimax-m2.5",
-  tongyi: "qwen/qwen-plus",
-  zhipu: "z-ai/glm-4.7",
-  // Grok 3 deprecated per xAI notice; Grok 4.20 is the current stable non-multi-agent revision
-  grok: "x-ai/grok-4.20",
+  tongyi: "qwen/qwen3.7-plus",
+  zhipu: "z-ai/glm-5.2",
+  grok: "x-ai/grok-4.6",
 };
 
 // Platforms that are better served by Bailian (百炼) than OpenRouter
 // doubao on OpenRouter uses Seed models (not actual Doubao), results may differ
 export const PLATFORM_RECOMMENDED_PROVIDER: Partial<Record<Platform, string>> = {
   doubao: "百炼",
-  wenxin: "百炼",
   tongyi: "百炼",
 };
 
@@ -82,7 +80,6 @@ export const PLATFORM_BAILIAN_MODELS: Partial<Record<Platform, string>> = {
   tongyi: "qwen-plus",
   zhipu: "glm-4-plus",
   minimax: "minimax-01",
-  wenxin: "ernie-4.0-turbo-128k",
   gemini: "gemini-2.0-flash",
 };
 

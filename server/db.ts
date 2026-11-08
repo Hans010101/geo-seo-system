@@ -627,10 +627,16 @@ export async function listAlerts(filters?: { severity?: string; isRead?: boolean
   const db = await getDb();
   if (!db) return { data: [], total: 0 };
   const conditions = [];
+  const targetStatus = filters?.status ?? "active";
   if (filters?.severity) conditions.push(eq(alerts.severity, filters.severity as any));
   if (filters?.isRead !== undefined) conditions.push(eq(alerts.isRead, filters.isRead));
-  // H2 (2026-06): default to active-only when no status given, so resolved/dismissed are hidden.
-  conditions.push(eq(alerts.status, (filters?.status ?? "active") as any));
+  conditions.push(eq(alerts.status, targetStatus as any));
+  // A dedup key represents one event. Older occurrences remain auditable, but only
+  // the latest row is shown and counted in the action queue.
+  conditions.push(sql`(${alerts.dedupKey} IS NULL OR ${alerts.id} = (
+    SELECT MAX(a2.id) FROM alerts a2
+    WHERE a2.dedupKey = ${alerts.dedupKey} AND a2.status = ${targetStatus}
+  ))`);
   const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
   const [data, totalResult] = await Promise.all([
@@ -641,11 +647,24 @@ export async function listAlerts(filters?: { severity?: string; isRead?: boolean
       title: alerts.title,
       description: alerts.description,
       relatedCollectionId: alerts.relatedCollectionId,
+      relatedArticleId: sql<number | null>`CASE
+        WHEN ${alerts.alertType} = 'negative_article' THEN (
+          SELECT ${monitorArticles.id} FROM ${monitorArticles}
+          WHERE ${monitorArticles.urlHash} = substr(${alerts.dedupKey}, 18)
+          LIMIT 1
+        ) ELSE NULL END`,
       relatedQuestionId: alerts.relatedQuestionId,
       relatedPlatform: alerts.relatedPlatform,
       isRead: alerts.isRead,
       status: alerts.status,
       dedupKey: alerts.dedupKey,
+      resolvedAt: alerts.resolvedAt,
+      resolvedBy: alerts.resolvedBy,
+      resolutionNote: alerts.resolutionNote,
+      occurrenceCount: sql<number>`CASE WHEN ${alerts.dedupKey} IS NULL THEN 1 ELSE (
+        SELECT COUNT(*) FROM alerts a3
+        WHERE a3.dedupKey = ${alerts.dedupKey} AND a3.status = ${targetStatus}
+      ) END`,
       createdAt: alerts.createdAt,
       questionText: questions.text,
     })
@@ -681,13 +700,30 @@ export async function markAllAlertsRead() {
 }
 
 // H2 (2026-06): explicit workflow status mutations.
-export async function setAlertStatus(id: number, status: "active" | "resolved" | "dismissed") {
+export async function setAlertStatus(
+  id: number,
+  status: "active" | "resolved" | "dismissed",
+  resolution?: { by?: string | null; note?: string | null },
+) {
   const db = await getDb();
   if (!db) return;
-  // resolving/dismissing implies read
+  const [current] = await db
+    .select({ dedupKey: alerts.dedupKey })
+    .from(alerts)
+    .where(eq(alerts.id, id))
+    .limit(1);
+  if (!current) return;
   const patch: Record<string, unknown> = { status };
-  if (status !== "active") patch.isRead = true;
-  await db.update(alerts).set(patch).where(eq(alerts.id, id));
+  if (status !== "active") {
+    patch.isRead = true;
+    patch.resolvedAt = Date.now();
+    patch.resolvedBy = resolution?.by || null;
+    patch.resolutionNote = resolution?.note || null;
+  }
+  const eventWhere = current.dedupKey
+    ? and(eq(alerts.dedupKey, current.dedupKey), eq(alerts.status, "active"))
+    : eq(alerts.id, id);
+  await db.update(alerts).set(patch).where(eventWhere);
 }
 
 // H3 (2026-06): "has the same (qid×platform×type) been alerted recently?" check.
@@ -699,7 +735,10 @@ export async function findRecentAlertByDedupKey(dedupKey: string, withinHours = 
   const rows = await db
     .select({ id: alerts.id, createdAt: alerts.createdAt })
     .from(alerts)
-    .where(and(eq(alerts.dedupKey, dedupKey), gte(alerts.createdAt, cutoff)))
+    .where(and(
+      eq(alerts.dedupKey, dedupKey),
+      or(eq(alerts.status, "active"), gte(alerts.createdAt, cutoff)),
+    ))
     .orderBy(desc(alerts.createdAt))
     .limit(1);
   return rows[0] ?? null;
@@ -731,7 +770,9 @@ export async function getPriorSentimentScore(questionId: string, platform: strin
 export async function listPlatformConfigs() {
   const db = await getDb();
   if (!db) return [];
-  return db.select().from(platformConfigs).orderBy(asc(platformConfigs.platform));
+  return db.select().from(platformConfigs)
+    .where(sql`${platformConfigs.platform} <> 'wenxin'`)
+    .orderBy(asc(platformConfigs.platform));
 }
 
 export async function getPlatformConfig(platform: string) {
@@ -828,7 +869,15 @@ export async function getWeeklyReport(reportWeek: string) {
 export async function listWeeklyReports(limit: number = 12) {
   const db = await getDb();
   if (!db) return [];
-  return db.select().from(weeklyReports).orderBy(desc(weeklyReports.reportWeek)).limit(limit);
+  return db.select().from(weeklyReports).orderBy(desc(weeklyReports.generatedAt), desc(weeklyReports.id)).limit(limit);
+}
+
+export async function getReportAlerts(startTime: number, endTime: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(alerts)
+    .where(and(gte(alerts.createdAt, new Date(startTime)), lte(alerts.createdAt, new Date(endTime))))
+    .orderBy(desc(alerts.createdAt)).limit(10);
 }
 
 export async function upsertWeeklyReport(data: InsertWeeklyReport) {
@@ -1022,6 +1071,48 @@ export async function setSysConfig(key: string, value: string): Promise<void> {
   } else {
     await db.insert(sysConfigs).values({ configKey: key, configValue: value });
   }
+}
+
+export async function incrementSysConfig(key: string, amount = 1): Promise<void> {
+  const db = await getDb();
+  if (!db || amount === 0) return;
+  await db
+    .insert(sysConfigs)
+    .values({ configKey: key, configValue: String(amount) })
+    .onConflictDoUpdate({
+      target: sysConfigs.configKey,
+      set: {
+        configValue: sql`CAST(CAST(COALESCE(${sysConfigs.configValue}, '0') AS INTEGER) + ${amount} AS TEXT)`,
+      },
+    });
+}
+
+export async function resetMonitorBudgetMonth(month: string): Promise<void> {
+  const database = await getDb();
+  if (!database) throw new Error("Budget database unavailable");
+  const client = database.$client;
+  // The month check and all resets must commit together across queue isolates.
+  await client.batch([
+    ...["firecrawl", "serper", "x"].map((name) => client.prepare(
+      `INSERT INTO sysConfigs (configKey, configValue) VALUES (?, '0')
+       ON CONFLICT(configKey) DO UPDATE SET configValue = '0'
+       WHERE COALESCE((SELECT configValue FROM sysConfigs WHERE configKey = 'monitor_counters_month'), '') <> ?`,
+    ).bind(`monitor_${name}_used_this_month`, month)),
+    client.prepare(`INSERT INTO sysConfigs (configKey, configValue) VALUES ('monitor_counters_month', ?)
+      ON CONFLICT(configKey) DO UPDATE SET configValue = excluded.configValue`).bind(month),
+  ]);
+}
+
+export async function reserveSysConfigCredit(key: string, limitKey: string, defaultLimit: number): Promise<boolean> {
+  const database = await getDb();
+  if (!database) throw new Error("Budget database unavailable");
+  const result = await database.$client.prepare(
+    `UPDATE sysConfigs SET configValue = CAST(CAST(configValue AS INTEGER) + 1 AS TEXT)
+     WHERE configKey = ? AND CAST(configValue AS INTEGER) <
+       COALESCE((SELECT CAST(configValue AS INTEGER) FROM sysConfigs WHERE configKey = ?), ?)
+     RETURNING configValue`,
+  ).bind(key, limitKey, defaultLimit).first();
+  return result !== null;
 }
 
 // ==================== Notification Config Helpers ====================
@@ -1331,7 +1422,7 @@ export async function listMonitorArticles(filters?: {
         ]
       : filters?.sort === "sentiment"
         ? [sql`${monitorArticles.sentimentScore} IS NULL`, asc(monitorArticles.sentimentScore), desc(monitorArticles.publishedAt)]
-        : [desc(monitorArticles.publishedAt)];
+        : [desc(monitorArticles.firstSeenAt)];
   const [data, totalResult] = await Promise.all([
     db
       .select(listSelect)
@@ -1358,49 +1449,45 @@ export async function getMonitorStats() {
   const weekStart = now - 7 * 24 * 60 * 60 * 1000;
   const monthStart = now - 30 * 24 * 60 * 60 * 1000;
 
-  const [totalRow] = await db
-    .select({ c: count() })
-    .from(monitorArticles)
-    .where(gte(monitorArticles.publishedAt, monthStart));
-  const [todayRow] = await db
-    .select({ c: count() })
-    .from(monitorArticles)
-    .where(gte(monitorArticles.publishedAt, dayStart));
-  const [weekRow] = await db
-    .select({ c: count() })
-    .from(monitorArticles)
-    .where(gte(monitorArticles.publishedAt, weekStart));
-  const [highThreatRow] = await db
-    .select({ c: count() })
-    .from(monitorArticles)
-    .where(and(
-      gte(monitorArticles.publishedAt, monthStart),
-      eq(monitorArticles.threatLevel, "high"),
-    ));
-  const threatDist = await db
-    .select({ threatLevel: monitorArticles.threatLevel, c: count() })
-    .from(monitorArticles)
-    .where(gte(monitorArticles.publishedAt, monthStart))
-    .groupBy(monitorArticles.threatLevel);
-  const [costRow] = await db
-    .select({
-      analysis: sql<string>`COALESCE(SUM(${monitorArticles.costUsd}), 0)`,
-      fetch: sql<string>`COALESCE(SUM(${monitorArticles.fetchCostUsd}), 0)`,
-    })
-    .from(monitorArticles)
-    .where(gte(monitorArticles.publishedAt, monthStart));
-
-  // Engine distribution (all-time) — shows how much the free L1 path absorbs vs paid L4.
-  const engineRows = await db
-    .select({ engine: monitorArticles.fetchEngine, c: count() })
-    .from(monitorArticles)
-    .where(gte(monitorArticles.publishedAt, monthStart))
-    .groupBy(monitorArticles.fetchEngine);
-  const sourceRows = await db
-    .select({ src: monitorArticles.sourcePlatform, c: count() })
-    .from(monitorArticles)
-    .where(gte(monitorArticles.publishedAt, monthStart))
-    .groupBy(monitorArticles.sourcePlatform);
+  const [qualityRows, threatDist, engineRows, sourceRows] = await Promise.all([
+    db
+      .select({
+        total: count(),
+        todayNew: sql<number>`SUM(CASE WHEN ${monitorArticles.publishedAt} >= ${dayStart} THEN 1 ELSE 0 END)`,
+        weekTotal: sql<number>`SUM(CASE WHEN ${monitorArticles.publishedAt} >= ${weekStart} THEN 1 ELSE 0 END)`,
+        highThreat: sql<number>`SUM(CASE WHEN ${monitorArticles.threatLevel} = 'high' THEN 1 ELSE 0 END)`,
+        focused: sql<number>`SUM(CASE WHEN ${monitorArticles.relevance} IN ('high', 'medium') THEN 1 ELSE 0 END)`,
+        fullText: sql<number>`SUM(CASE WHEN ${monitorArticles.fetchStatus} = 'full' THEN 1 ELSE 0 END)`,
+        analyzed: sql<number>`SUM(CASE WHEN ${monitorArticles.analyzedAt} IS NOT NULL THEN 1 ELSE 0 END)`,
+        analysisCost: sql<string>`COALESCE(SUM(${monitorArticles.costUsd}), 0)`,
+        fetchCost: sql<string>`COALESCE(SUM(${monitorArticles.fetchCostUsd}), 0)`,
+      })
+      .from(monitorArticles)
+      .where(gte(monitorArticles.publishedAt, monthStart)),
+    db
+      .select({ threatLevel: monitorArticles.threatLevel, c: count() })
+      .from(monitorArticles)
+      .where(gte(monitorArticles.publishedAt, monthStart))
+      .groupBy(monitorArticles.threatLevel),
+    db
+      .select({ engine: monitorArticles.fetchEngine, c: count() })
+      .from(monitorArticles)
+      .where(gte(monitorArticles.publishedAt, monthStart))
+      .groupBy(monitorArticles.fetchEngine),
+    db
+      .select({
+        src: monitorArticles.sourcePlatform,
+        c: count(),
+        focused: sql<number>`SUM(CASE WHEN ${monitorArticles.relevance} IN ('high', 'medium') THEN 1 ELSE 0 END)`,
+        fullText: sql<number>`SUM(CASE WHEN ${monitorArticles.fetchStatus} = 'full' THEN 1 ELSE 0 END)`,
+        analyzed: sql<number>`SUM(CASE WHEN ${monitorArticles.analyzedAt} IS NOT NULL THEN 1 ELSE 0 END)`,
+        lastSeenAt: sql<number>`MAX(${monitorArticles.firstSeenAt})`,
+      })
+      .from(monitorArticles)
+      .where(gte(monitorArticles.publishedAt, monthStart))
+      .groupBy(monitorArticles.sourcePlatform),
+  ]);
+  const quality = qualityRows[0];
 
   const threatDistribution: Record<string, number> = {};
   for (const r of threatDist) threatDistribution[r.threatLevel ?? "unanalyzed"] = r.c;
@@ -1409,16 +1496,42 @@ export async function getMonitorStats() {
   const sourceDistribution: Record<string, number> = {};
   for (const r of sourceRows) sourceDistribution[r.src ?? "unknown"] = r.c;
 
-  const monthAnalysisCostUsd = Number(costRow?.analysis || 0);
-  const monthFetchCostUsd = Number(costRow?.fetch || 0);
+  const total = Number(quality?.total || 0);
+  const focused = Number(quality?.focused || 0);
+  const fullText = Number(quality?.fullText || 0);
+  const analyzed = Number(quality?.analyzed || 0);
+  const rate = (value: number, denominator = total) => denominator > 0
+    ? Math.round((value / denominator) * 1000) / 10
+    : 0;
+  const sourceQuality = sourceRows.map((row) => {
+    const sourceTotal = Number(row.c || 0);
+    return {
+      sourcePlatform: row.src ?? "unknown",
+      total: sourceTotal,
+      focused: Number(row.focused || 0),
+      focusRate: rate(Number(row.focused || 0), sourceTotal),
+      fullTextRate: rate(Number(row.fullText || 0), sourceTotal),
+      analysisRate: rate(Number(row.analyzed || 0), sourceTotal),
+      lastSeenAt: Number(row.lastSeenAt || 0),
+    };
+  });
+  const monthAnalysisCostUsd = Number(quality?.analysisCost || 0);
+  const monthFetchCostUsd = Number(quality?.fetchCost || 0);
   return {
-    total: totalRow?.c || 0,
-    todayNew: todayRow?.c || 0,
-    weekTotal: weekRow?.c || 0,
-    highThreat: highThreatRow?.c || 0,
+    total,
+    todayNew: Number(quality?.todayNew || 0),
+    weekTotal: Number(quality?.weekTotal || 0),
+    highThreat: Number(quality?.highThreat || 0),
+    focused,
+    focusRate: rate(focused),
+    fullText,
+    fullTextRate: rate(fullText),
+    analyzed,
+    analysisRate: rate(analyzed),
     threatDistribution,
     engineDistribution,
     sourceDistribution,
+    sourceQuality,
     monthAnalysisCostUsd,
     monthFetchCostUsd,
     monthCostUsd: Math.round((monthAnalysisCostUsd + monthFetchCostUsd) * 1_000_000) / 1_000_000,

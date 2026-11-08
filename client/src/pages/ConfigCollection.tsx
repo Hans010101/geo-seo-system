@@ -18,7 +18,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 
-import { useState, useMemo, useEffect, useRef, useCallback } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import {
   Play,
   Zap,
@@ -42,75 +42,13 @@ import {
 } from "@shared/geo-types";
 import { useRole } from "@/hooks/useRole";
 import CollectionDetailSheet from "@/components/CollectionDetailSheet";
+import { useBatchPoller } from "@/hooks/useBatchPoller";
 
 const log_warn = (...args: any[]) => console.warn("[ConfigCollection]", ...args);
 
 type StatusFilter = "all" | "success" | "pending" | "failed";
 
 const PAGE_SIZE = 50;
-
-// Standalone polling engine — uses raw fetch to avoid tRPC mutation re-render issues
-function useBatchPoller() {
-  const [batchId, setBatchId] = useState<string | null>(null);
-  const [total, setTotal] = useState(0);
-  const [done, setDone] = useState(0);
-  const [failed, setFailed] = useState(0);
-  const activeRef = useRef(false);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const stop = useCallback(() => {
-    activeRef.current = false;
-    if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
-  }, []);
-
-  const start = useCallback((id: string, totalCount: number) => {
-    stop();
-    setBatchId(id);
-    setTotal(totalCount);
-    setDone(0);
-    setFailed(0);
-    activeRef.current = true;
-
-    const poll = async () => {
-      if (!activeRef.current) return;
-      try {
-        // Use raw fetch to call tRPC mutation — avoids React re-render dependency loop
-        const res = await fetch("/api/trpc/collections.executeNextBatch", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          credentials: "include",
-          body: JSON.stringify({ json: { batchId: id, concurrency: 5 } }),
-        });
-        const json = await res.json();
-        const result = json?.result?.data?.json || json?.result?.data || {};
-        console.log("[Poller]", id, result);
-
-        if (result.completed != null) setDone((p) => p + result.completed);
-        if (result.failed != null) setFailed((p) => p + result.failed);
-
-        if (result.remaining === 0 || result.remaining == null) {
-          activeRef.current = false;
-          setBatchId(null);
-          return;
-        }
-      } catch (err: any) {
-        console.warn("[Poller] error:", err.message);
-      }
-      if (activeRef.current) {
-        timerRef.current = setTimeout(poll, 2000);
-      }
-    };
-    poll();
-  }, [stop]);
-
-  const isRunning = !!batchId;
-  const pct = total > 0 ? Math.round(((done + failed) / total) * 100) : 0;
-
-  // Cleanup on unmount
-  useEffect(() => () => stop(), [stop]);
-
-  return { batchId, total, done, failed, pct, isRunning, start, stop };
-}
 
 export default function ConfigCollection() {
   const { canEdit } = useRole();
@@ -151,7 +89,15 @@ export default function ConfigCollection() {
     limit: PAGE_SIZE,
     offset: page * PAGE_SIZE,
   }), [statusFilter, page]);
-  const { data: collectionsList, isLoading: collectionsLoading, refetch: refetchCollections } = trpc.collections.list.useQuery(listInput);
+  const { data: collectionsList, isLoading: collectionsLoading, refetch: refetchCollections } = trpc.collections.list.useQuery(listInput, { refetchInterval: anyRunning ? 5000 : false });
+  const restored = useRef(false);
+  useEffect(() => {
+    if (!collectionsList || restored.current) return;
+    restored.current = true;
+    const pending = collectionsList.data.find(c => c.status === "pending" && c.batchId);
+    // Reopening the page observes existing work, never starts duplicate model calls.
+    if (!anyRunning && pending?.batchId) batch.start(pending.batchId, 0, false);
+  }, [collectionsList, anyRunning, batch.start]);
   const { data: platformConfigs } = trpc.platformConfigs.list.useQuery();
   const { data: globalApiKeys } = trpc.globalApiKeys.list.useQuery();
   const hasAnyApiKey = (globalApiKeys && globalApiKeys.length > 0) ||
@@ -238,6 +184,8 @@ export default function ConfigCollection() {
       utils.collections.list.invalidate();
       if (data.analyzed > 0) {
         toast.success(`已补充分析 ${data.analyzed} 条记录${data.total > data.analyzed ? `，剩余 ${data.total - data.analyzed} 条` : ""}`);
+      } else if (data.total > 0) {
+        toast.error(`本轮 ${data.failed} 条分析失败，请重试`);
       } else {
         toast.info("所有成功记录已有分析结果");
       }
@@ -354,6 +302,10 @@ export default function ConfigCollection() {
         <h1 className="text-2xl font-bold tracking-tight">采集管理</h1>
         <p className="text-muted-foreground text-sm mt-1">手动触发采集任务，查看采集记录和详情</p>
       </div>
+
+      {(singleQ.syncError || singleP.syncError || batch.syncError) && (
+        <p role="status" className="text-sm text-amber-700">进度同步暂时失败，正在重试；保留上次进度，请勿重复启动采集。</p>
+      )}
 
       {!hasAnyApiKey && (
         <div className="rounded-lg border border-orange-300 bg-orange-50 p-3 text-sm text-orange-800 flex items-start gap-2">
@@ -639,7 +591,7 @@ export default function ConfigCollection() {
                       size="sm"
                       className="text-xs h-7"
                       disabled={reanalyzeAllMutation.isPending}
-                      onClick={() => reanalyzeAllMutation.mutate({ limit: 20 })}
+                      onClick={() => reanalyzeAllMutation.mutate({ limit: 50 })}
                     >
                       {reanalyzeAllMutation.isPending ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <RefreshCw className="h-3 w-3 mr-1" />}
                       补充分析
@@ -780,6 +732,18 @@ export default function ConfigCollection() {
                               >
                                 <Eye className="h-3 w-3 mr-1" />
                                 详情
+                              </Button>
+                            )}
+                            {c.status === "pending" && c.batchId && canEdit && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 px-2 text-xs"
+                                disabled={batch.isRunning}
+                                onClick={() => batch.start(c.batchId!, totalRecords)}
+                              >
+                                <Play className="h-3 w-3 mr-1" />
+                                继续批次
                               </Button>
                             )}
                           </td>

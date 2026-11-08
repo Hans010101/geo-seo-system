@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { appRouter } from "./routers";
+import * as db from "./db";
 import type { TrpcContext } from "./_core/context";
 
 type AuthenticatedUser = NonNullable<TrpcContext["user"]>;
@@ -52,6 +53,11 @@ function createUserContext(): TrpcContext {
       clearCookie: () => {},
     } as TrpcContext["res"],
   };
+}
+
+function createDeveloperContext(email: string): TrpcContext {
+  const ctx = createAdminContext();
+  return { ...ctx, user: { ...ctx.user!, email, role: "developer" } };
 }
 
 function createUnauthContext(): TrpcContext {
@@ -261,6 +267,47 @@ describe("GEO Platform API", () => {
         })
       ).rejects.toThrow();
     });
+
+    it("restricts batch collection to the 007 developer account", async () => {
+      const caller = appRouter.createCaller(createDeveloperContext("other@example.com"));
+      await expect(caller.collections.batchTrigger()).rejects.toThrow("批量采集仅限 007 开发者账户");
+    });
+
+    it("rejects Wenxin collection and re-enabling before any database write", async () => {
+      const caller = appRouter.createCaller(createDeveloperContext("hans.pan007@gmail.com"));
+      await expect(caller.collections.trigger({ questionId: "SYC-CN-01", platform: "wenxin" })).rejects.toThrow("文心一言已停用");
+      await expect(caller.collections.triggerAllQuestions({ platform: "wenxin" })).rejects.toThrow("文心一言已停用");
+      await expect(caller.platformConfigs.upsert({ platform: "wenxin", displayName: "文心一言", isEnabled: true })).rejects.toThrow("文心一言已停用");
+    });
+
+    it("preserves historical Wenxin rows when retry is requested", async () => {
+      const caller = appRouter.createCaller(createDeveloperContext("hans.pan007@gmail.com"));
+      vi.spyOn(db, "getCollectionsByIds").mockResolvedValue([{ id: 7, platform: "wenxin", status: "failed" }] as any);
+      const update = vi.spyOn(db, "updateCollection").mockResolvedValue(undefined);
+      try {
+        await expect(caller.collections.batchRetry({ ids: [7] })).rejects.toThrow("文心一言已停用");
+        expect(update).not.toHaveBeenCalled();
+      } finally {
+        vi.restoreAllMocks();
+      }
+    });
+
+    it("blocks old pending Wenxin work without calling any model provider", async () => {
+      const caller = appRouter.createCaller(createDeveloperContext("hans.pan007@gmail.com"));
+      vi.spyOn(db, "getBatchProgress").mockResolvedValue({ total: 1, completed: 0, failed: 0, pending: 1 } as any);
+      vi.spyOn(db, "listCollections").mockResolvedValue({ data: [{ id: 7, questionId: "Q1", platform: "wenxin" }], total: 1 } as any);
+      vi.spyOn(db, "getQuestionById").mockResolvedValue({ questionId: "Q1", text: "Test", language: "zh-CN" } as any);
+      const update = vi.spyOn(db, "updateCollection").mockResolvedValue(undefined);
+      const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("Unexpected paid request"));
+      try {
+        const result = await caller.collections.executeNextBatch({ batchId: "old-batch" });
+        expect(result.failed).toBe(1);
+        expect(update).toHaveBeenCalledWith(7, { status: "failed", errorMessage: "文心一言已停用，不再采集" });
+        expect(fetch).not.toHaveBeenCalled();
+      } finally {
+        vi.restoreAllMocks();
+      }
+    });
   });
 
   // ==================== URL Match Rules Tests ====================
@@ -374,7 +421,31 @@ describe("GEO Platform API", () => {
     it("lets admins generate a weekly report", async () => {
       const caller = appRouter.createCaller(createAdminContext());
       await expect(caller.weeklyReports.generate({ reportWeek: "2026-W34" }))
-        .resolves.toEqual({ success: true, reportWeek: "2026-W34" });
+        .resolves.toEqual({ success: true, reportWeek: "2026082120260827" });
+    });
+
+    it("uses the selected dates for every GEO report aggregate and rejects invalid ranges", async () => {
+      const caller = appRouter.createCaller(createAdminContext());
+      const summary = vi.spyOn(db, "getDashboardSummary");
+      const heatmap = vi.spyOn(db, "getHeatmapData");
+      const citations = vi.spyOn(db, "getTopCitedUrls");
+      const alerts = vi.spyOn(db, "getReportAlerts");
+      const save = vi.spyOn(db, "upsertWeeklyReport");
+      try {
+        await expect(caller.weeklyReports.generate({ dateRange: { startDate: "2026-09-25", endDate: "2026-10-01" } }))
+          .resolves.toEqual({ success: true, reportWeek: "2026092520261001" });
+        const start = Date.parse("2026-09-25T00:00:00+08:00");
+        const end = Date.parse("2026-10-01T23:59:59.999+08:00");
+        expect(summary).toHaveBeenCalledWith(start, end);
+        expect(heatmap).toHaveBeenCalledWith(start, end);
+        expect(citations).toHaveBeenCalledWith(20, start, end);
+        expect(alerts).toHaveBeenCalledWith(start, end);
+        expect(save).toHaveBeenCalledWith(expect.objectContaining({ reportPeriod: "2026-09-25 ~ 2026-10-01" }));
+        await expect(caller.weeklyReports.generate({ dateRange: { startDate: "2026-10-02", endDate: "2026-10-01" } })).rejects.toThrow();
+        await expect(caller.monitor.generateReport({ reportType: "monthly", dateRange: { startDate: "2026-09-25", endDate: "2026-10-01" } })).rejects.toThrow();
+      } finally {
+        vi.restoreAllMocks();
+      }
     });
   });
 });

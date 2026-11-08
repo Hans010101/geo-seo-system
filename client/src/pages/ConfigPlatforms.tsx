@@ -20,10 +20,10 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { useState, useMemo } from "react";
+import { useEffect, useState, useMemo } from "react";
 import {
   Settings, Loader2, Eye, EyeOff, Key, Globe2, Plus, Trash2, ChevronRight, Check, ChevronDown,
-  Zap, ArrowRightLeft, ShieldCheck,
+  Zap, ArrowRightLeft, ShieldCheck, QrCode,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -89,7 +89,8 @@ export default function ConfigPlatforms() {
       modelVersion: config?.modelVersion || PLATFORM_OPENROUTER_MODELS[platform as Platform] || "",
       collectFrequency: config?.collectFrequency || "weekly",
       isEnabled: config?.isEnabled ?? true,
-      apiKeyEncrypted: config?.apiKeyEncrypted || "",
+      apiKeyEncrypted: "",
+      hasApiKey: config?.hasApiKey || false,
       apiBaseUrl: config?.apiBaseUrl || "",
     });
     setShowApiKey(false);
@@ -116,7 +117,7 @@ export default function ConfigPlatforms() {
   }, [platformList]);
 
   // Platforms to show per tab
-  const cnPlatforms = ["wenxin", "doubao", "kimi", "deepseek", "minimax", "tongyi", "zhipu", "baichuan", "tiangong"];
+  const cnPlatforms = ["doubao", "kimi", "deepseek", "minimax", "tongyi", "zhipu", "baichuan", "tiangong"];
   const intlPlatforms = ["chatgpt", "gemini", "claude", "copilot", "mistral", "grok"];
 
   const enabledCount = platformList?.filter((p) => p.isEnabled).length || 0;
@@ -136,6 +137,8 @@ export default function ConfigPlatforms() {
 
       {/* Sentiment monitor data-source keys (Serper / Firecrawl) */}
       <MonitorSourceKeysCard />
+
+      <SocialSourceAuthCard canEdit={canEdit} />
 
       {/* Global API Config Card - clickable */}
       <Card
@@ -305,7 +308,7 @@ export default function ConfigPlatforms() {
                   <Label className="text-xs">模型版本 / Model ID</Label>
                   <Input
                     name="modelVersion"
-                    placeholder={PLATFORM_OPENROUTER_MODELS[editingPlatform.platform as Platform] || "如 openai/gpt-4o"}
+                    placeholder={PLATFORM_OPENROUTER_MODELS[editingPlatform.platform as Platform] || "如 openai/gpt-5.6-luna"}
                     defaultValue={editingPlatform.modelVersion}
                     className="h-8 text-sm font-mono"
                   />
@@ -335,7 +338,7 @@ export default function ConfigPlatforms() {
                     <Input
                       name="apiKeyEncrypted"
                       type={showApiKey ? "text" : "password"}
-                      placeholder="sk-... 留空则使用全局 API Key"
+                      placeholder={editingPlatform.hasApiKey ? "已配置，留空保持不变" : "sk-... 留空则使用全局 API Key"}
                       defaultValue={editingPlatform.apiKeyEncrypted}
                       className="h-8 text-sm font-mono pr-9"
                     />
@@ -396,6 +399,181 @@ export default function ConfigPlatforms() {
   );
 }
 
+type SocialAuthPlatform = "xiaohongshu" | "weibo";
+type SocialAuthResponse = {
+  platforms?: Record<SocialAuthPlatform, { saved: boolean; savedAt: number | null }>;
+  sessionId?: string;
+  screenshot?: string;
+  saved?: boolean;
+  challenge?: "sms" | "cookie";
+  error?: string;
+};
+
+function SocialSourceAuthCard({ canEdit }: { canEdit: boolean }) {
+  const [status, setStatus] = useState<SocialAuthResponse>({});
+  const [active, setActive] = useState<SocialAuthPlatform | null>(null);
+  const [sessionId, setSessionId] = useState("");
+  const [screenshot, setScreenshot] = useState("");
+  const [challenge, setChallenge] = useState<"sms" | "cookie" | null>(null);
+  const [smsCode, setSmsCode] = useState("");
+  const [cookieText, setCookieText] = useState("");
+  const [loading, setLoading] = useState<SocialAuthPlatform | null>(null);
+
+  const loadStatus = async () => {
+    const response = await fetch("/api/chinese-social/auth/status");
+    if (response.ok) setStatus(await response.json());
+  };
+
+  useEffect(() => { void loadStatus(); }, []);
+  useEffect(() => {
+    if (!active || !sessionId) return;
+    const timer = window.setInterval(async () => {
+      const response = await fetch("/api/chinese-social/auth/poll", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ platform: active, sessionId }),
+      });
+      const result = await response.json() as SocialAuthResponse;
+      if (!response.ok) {
+        window.clearInterval(timer);
+        setActive(null);
+        setSessionId("");
+        setScreenshot("");
+        toast.error(result.error || "登录状态检查失败");
+      } else if (result.saved) {
+        window.clearInterval(timer);
+        setActive(null);
+        setSessionId("");
+        toast.success("登录状态已加密保存");
+        void loadStatus();
+      } else if (result.challenge === "sms") {
+        window.clearInterval(timer);
+        setChallenge("sms");
+        if (result.screenshot) setScreenshot(result.screenshot);
+      } else if (result.screenshot) {
+        setScreenshot(result.screenshot);
+      }
+    }, 3_000);
+    return () => window.clearInterval(timer);
+  }, [active, sessionId]);
+
+  const start = async (platform: SocialAuthPlatform) => {
+    setLoading(platform);
+    setChallenge(null);
+    setSmsCode("");
+    const response = await fetch("/api/chinese-social/auth/start", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ platform }),
+    });
+    const result = await response.json() as SocialAuthResponse;
+    setLoading(null);
+    if (!response.ok || !result.sessionId || !result.screenshot) {
+      if (platform === "xiaohongshu" && result.error?.includes("XHS_IP_RISK_300012")) {
+        setActive(platform);
+        setChallenge("cookie");
+        setScreenshot("");
+        return;
+      }
+      toast.error(result.error || "无法启动扫码登录");
+      return;
+    }
+    setActive(platform);
+    setSessionId(result.sessionId);
+    setScreenshot(result.screenshot);
+  };
+
+  const importCookie = async () => {
+    setLoading("xiaohongshu");
+    const response = await fetch("/api/chinese-social/auth/import", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ platform: "xiaohongshu", cookie: cookieText }),
+    });
+    const result = await response.json() as SocialAuthResponse;
+    setLoading(null);
+    if (!response.ok || !result.saved) return toast.error(result.error || "Cookie 保存失败");
+    setActive(null);
+    setChallenge(null);
+    setCookieText("");
+    toast.success("小红书登录状态已加密保存");
+    void loadStatus();
+  };
+
+  const verifySms = async () => {
+    if (!/^\d{4,8}$/.test(smsCode)) return toast.error("请输入短信验证码");
+    setLoading("xiaohongshu");
+    const response = await fetch("/api/chinese-social/auth/verify", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ platform: "xiaohongshu", sessionId, code: smsCode }),
+    });
+    const result = await response.json() as SocialAuthResponse;
+    setLoading(null);
+    if (!response.ok) return toast.error(result.error || "验证码提交失败");
+    if (!result.saved) return toast.error(result.error || "验证码尚未通过，请检查后重试");
+    setActive(null);
+    setSessionId("");
+    setChallenge(null);
+    toast.success("小红书登录状态已加密保存");
+    void loadStatus();
+  };
+
+  return (
+    <>
+      <Card>
+        <CardContent className="p-4 flex items-center gap-4">
+          <div className="h-10 w-10 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
+            <QrCode className="h-5 w-5 text-primary" />
+          </div>
+          <div className="flex-1">
+            <h3 className="text-sm font-semibold">中文社交平台登录</h3>
+            <p className="text-xs text-muted-foreground mt-0.5">一次扫码，加密保存于 Cloudflare；用于微博、小红书关键词采集。</p>
+          </div>
+          {(["weibo", "xiaohongshu"] as const).map(platform => {
+            const saved = status.platforms?.[platform]?.saved;
+            return (
+              <Button key={platform} variant="outline" size="sm" disabled={!canEdit || loading !== null} onClick={() => void start(platform)}>
+                {loading === platform && <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />}
+                {platform === "weibo" ? "微博" : "小红书"} · {saved ? "已保存" : "扫码登录"}
+              </Button>
+            );
+          })}
+        </CardContent>
+      </Card>
+      <Dialog open={active !== null} onOpenChange={open => {
+        if (!open) { setActive(null); setSessionId(""); setChallenge(null); setSmsCode(""); setCookieText(""); }
+      }}>
+        <DialogContent className="max-w-4xl">
+          <DialogHeader><DialogTitle>{challenge === "sms" ? "请输入小红书短信验证码" : challenge === "cookie" ? "导入小红书登录状态" : `请使用${active === "weibo" ? "微博" : "小红书"} App 扫码登录`}</DialogTitle></DialogHeader>
+          {challenge === "sms" ? (
+            <div className="space-y-3">
+              <p className="text-sm text-muted-foreground">验证码已发送到绑定手机，验证通过后才会保存登录状态。</p>
+              <Input value={smsCode} onChange={event => setSmsCode(event.target.value.replace(/\D/g, "").slice(0, 8))} inputMode="numeric" autoComplete="one-time-code" placeholder="短信验证码" />
+              <Button className="w-full" disabled={loading !== null} onClick={() => void verifySms()}>
+                {loading === "xiaohongshu" && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}提交验证码
+              </Button>
+            </div>
+          ) : challenge === "cookie" ? (
+            <div className="space-y-3">
+              <p className="text-sm text-muted-foreground">小红书已拦截 Cloudflare 浏览器出口（300012）。在已登录的小红书网页按 F12，打开 Application → Cookies → xiaohongshu.com，复制 web_session 的 Value；也兼容完整 Cookie。</p>
+              <Input type="password" value={cookieText} onChange={event => setCookieText(event.target.value)} autoComplete="off" placeholder="粘贴 web_session 的 Value 或完整 Cookie" />
+              <Button className="w-full" disabled={loading !== null || !cookieText.trim()} onClick={() => void importCookie()}>
+                {loading === "xiaohongshu" && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}加密保存到 Cloudflare
+              </Button>
+            </div>
+          ) : (
+            <>
+              <p className="text-xs text-muted-foreground">二维码会自动刷新；扫码确认后，本窗口将自动关闭并保存登录状态。</p>
+              {screenshot ? <img src={screenshot} alt="登录二维码" className="w-full max-w-[420px] mx-auto object-contain [image-rendering:pixelated] rounded border" /> : <Loader2 className="h-8 w-8 animate-spin mx-auto" />}
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
 /* ==================== Platform Grid & Collapsible ==================== */
 
 function PlatformCard({
@@ -411,7 +589,7 @@ function PlatformCard({
 }) {
   const config = getConfig(platform);
   const isEnabled = config?.isEnabled ?? false;
-  const hasCustomApi = !!(config?.apiKeyEncrypted || config?.apiBaseUrl);
+  const hasCustomApi = !!(config?.hasApiKey || config?.apiBaseUrl);
   const label = config?.displayName || PLATFORM_LABELS[platform as Platform] || platform;
   const color = PLATFORM_COLORS[platform as Platform] || "#6b7280";
 
@@ -887,7 +1065,7 @@ function AddPlatformDialog({
               <Input
                 value={customModel}
                 onChange={(e) => setCustomModel(e.target.value)}
-                placeholder="openai/gpt-4o 或 qwen-plus"
+                placeholder="openai/gpt-5.6-luna 或 qwen3.7-plus"
                 className="h-8 text-sm font-mono"
               />
             </div>
