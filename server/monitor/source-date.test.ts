@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   extractSourcePublishedAt,
+  isTrustedDiscoveryPublishedAt,
   isSearchIntermediaryUrl,
   sourceDateFreshness,
   verifySourcePublishedAt,
@@ -106,6 +107,16 @@ describe("source publication date verification", () => {
     } finally {
       fetchSpy.mockRestore();
     }
+  });
+
+  it("trusts only fresh dates from bounded discovery providers", () => {
+    const now = Date.parse("2026-08-31T16:00:00Z");
+    const fresh = now - 60_000;
+    const stale = now - 8 * 24 * 60 * 60_000;
+    expect(isTrustedDiscoveryPublishedAt("binance_square_serper", "serper_site_search", fresh, now)).toBe(true);
+    expect(isTrustedDiscoveryPublishedAt("binance_square_serper", "serper_site_search", stale, now)).toBe(false);
+    expect(isTrustedDiscoveryPublishedAt("news_serper", "serper_site_search", fresh, now)).toBe(false);
+    expect(isTrustedDiscoveryPublishedAt("xiaohongshu_browser", "social_browser", fresh, now)).toBe(true);
   });
 
   it("holds generic render-time metadata until it is stable", async () => {

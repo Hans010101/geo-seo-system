@@ -1,13 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const dbMocks = vi.hoisted(() => ({
-  getGlobalApiKeyByName: vi.fn(),
   getMonitorSourceRuleByDomain: vi.fn(),
 }));
 
 vi.mock("../db", () => dbMocks);
 
-import { analyzeArticle, parseMonitorAnalysisPayload } from "./analyzer";
+import { analyzeArticle, parseMonitorAnalysisPayload, shouldStoreMonitorAnalysis } from "./analyzer";
 import { withCloudflareEnv } from "../_core/cloudflare-env";
 
 const validPayload = {
@@ -42,6 +41,12 @@ describe("monitor analyzer", () => {
     ).toThrow("key_entities");
   });
 
+  it("does not store content classified as irrelevant", () => {
+    expect(shouldStoreMonitorAnalysis({ relevance: "irrelevant" })).toBe(false);
+    expect(shouldStoreMonitorAnalysis({ relevance: "low" })).toBe(true);
+    expect(shouldStoreMonitorAnalysis(null)).toBe(true);
+  });
+
   it("uses the Workers AI binding without reading the OpenRouter key", async () => {
     const run = vi.fn().mockResolvedValue({
       response: validPayload,
@@ -71,7 +76,6 @@ describe("monitor analyzer", () => {
         response_format: expect.objectContaining({ type: "json_schema" }),
       })
     );
-    expect(dbMocks.getGlobalApiKeyByName).not.toHaveBeenCalled();
     expect(result).toMatchObject({
       provider: "cloudflare_workers_ai",
       model: "@cf/meta/llama-3.1-8b-instruct-fast",
@@ -102,45 +106,18 @@ describe("monitor analyzer", () => {
     expect(result.provider).toBe("cloudflare_workers_ai");
   });
 
-  it("falls back to OpenRouter when Workers AI quota is exhausted", async () => {
+  it("does not spend OpenRouter credit when Workers AI is unavailable", async () => {
     const run = vi.fn().mockRejectedValue(new Error("daily quota exceeded: 10000 neurons"));
-    dbMocks.getGlobalApiKeyByName.mockResolvedValue({
-      apiKey: "or-test-key",
-      baseUrl: "https://openrouter.ai/api/v1",
-    });
-    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
-      model: "deepseek/deepseek-chat",
-      choices: [{ index: 0, message: { role: "assistant", content: JSON.stringify(validPayload) }, finish_reason: "stop" }],
-      usage: { prompt_tokens: 800, completion_tokens: 90, total_tokens: 890 },
-    }), { status: 200, headers: { "content-type": "application/json" } }));
-    vi.stubGlobal("fetch", fetchMock);
-    const env = {
-      AI: { run },
-      CLOUDFLARE_OPENROUTER_FALLBACK_ENABLED: "true",
-      CLOUDFLARE_OPENROUTER_FALLBACK_MODEL: "deepseek/deepseek-chat",
-      CLOUDFLARE_AI_MAX_TOKENS: "512",
-    };
-
-    const result = await withCloudflareEnv(env, () =>
+    await expect(withCloudflareEnv({ AI: { run } }, () =>
       analyzeArticle({
-        url: "https://example.com/tron-fallback",
+        url: "https://example.com/tron-no-fallback",
         title: "TRON update",
         contentMd: "TRON update content",
         snippet: "",
         fetchStatus: "full",
       }),
-    );
+    )).rejects.toThrow("Workers AI analysis failed");
 
     expect(run).toHaveBeenCalledTimes(1);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const requestBody = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
-    expect(requestBody.max_tokens).toBe(512);
-    expect(result).toMatchObject({
-      provider: "openrouter",
-      model: "deepseek/deepseek-chat",
-      fallbackReason: expect.stringContaining("quota exceeded"),
-      promptTokens: 800,
-      completionTokens: 90,
-    });
   });
 });

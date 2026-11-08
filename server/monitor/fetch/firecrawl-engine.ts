@@ -11,13 +11,13 @@ export const firecrawlEngine: FetchEngine = {
   name: "firecrawl",
   level: 4,
   costPerPage: budget.FIRECRAWL_USD_PER_CREDIT, // 1 credit / page
-  // Guardrail: don't even attempt when the monthly budget is exhausted.
-  canHandle(): boolean {
-    return budget.hasFirecrawlBudget();
-  },
   async fetch(url: string): Promise<FetchResult> {
+    const key = await db.getGlobalApiKeyByName("Firecrawl");
+    if (!key?.apiKey || key.isActive === false) {
+      return { success: false, engine: "firecrawl", costUsd: 0, status: "failed", error: "no active firecrawl key", failureReason: "missing_key" };
+    }
     // Atomic reserve of one credit (race-safe). If the budget is gone, bail → router falls to snippet.
-    if (!budget.tryConsumeFirecrawl()) {
+    if (!await budget.tryConsumeFirecrawl()) {
       return {
         success: false,
         engine: "firecrawl",
@@ -27,19 +27,8 @@ export const firecrawlEngine: FetchEngine = {
         failureReason: "budget_exhausted",
       };
     }
-    const cost = budget.FIRECRAWL_USD_PER_CREDIT; // charged per attempt (firecrawl bills per call)
+    const cost = budget.FIRECRAWL_USD_PER_CREDIT; // Conservative reservation; provider billing may differ on failures.
     try {
-      const key = await db.getGlobalApiKeyByName("Firecrawl");
-      if (!key?.apiKey) {
-        return {
-          success: false,
-          engine: "firecrawl",
-          costUsd: 0,
-          status: "failed",
-          error: "no firecrawl key",
-          failureReason: "missing_key",
-        };
-      }
       const base = (key.baseUrl || "https://api.firecrawl.dev").replace(/\/$/, "");
       const resp = await fetchWithTimeout(`${base}/v1/scrape`, {
         method: "POST",

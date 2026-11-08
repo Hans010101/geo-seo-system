@@ -1,7 +1,5 @@
-// English crypto-media RSS as a SocialSource. Zero cost: pull each feed's XML once per cycle (cached),
-// keyword-filter items for 孙宇晨/波场/TRON, hand the pipeline the item text as fullContent → no Serper
-// call, no Firecrawl render. Feeds validated 2026-07-03 (see web3-sources-survey.md); Cointelegraph's
-// TRON-tag feed is TRON-dedicated. Adding/removing a feed = edit FEEDS.
+// Public crypto-media RSS: discovery needs no paid search API. Full feed bodies skip fetching;
+// short snippets still use the shared L1 / Firecrawl fallback and its budget.
 import Parser from "rss-parser";
 import { log, keywordMatchesText, monitorPublishedAtFreshness } from "../util";
 import type { SocialSource, DiscoveredPost, SearchOpts } from "./types";
@@ -15,7 +13,7 @@ export const RSS_FEEDS = [
   "https://tronweekly.com/feed/",
   "https://cointelegraph.com/rss/tag/tron",
   "https://cointelegraph.com/rss/tag/justin-sun",
-  "https://www.newsbtc.com/tag/tron/feed/", // freshest dedicated feed (often <2d)
+  "https://www.newsbtc.com/tag/tron/feed/",
   "https://www.newsbtc.com/tag/justin-sun/feed/",
   "https://cryptopotato.com/tag/tron/feed/",
   "https://coingape.com/tag/tron/feed/",
@@ -30,10 +28,11 @@ export const RSS_FEEDS = [
   "https://decrypt.co/feed",
   "https://www.theblock.co/rss.xml",
   "https://thedefiant.io/feed",
+  "https://www.panewslab.com/rss.xml?lang=zh",
 ];
 const CACHE_TTL_MS = 8 * 60 * 1000; // one monitor cycle shares one pull of all feeds
-const MAX_ITEMS_PER_FEED = 40;
-const MIN_FULL_CHARS = 200; // shorter than this → let the pipeline fetch the full article (self L1, free)
+const MAX_ITEMS_PER_FEED = 100;
+const MIN_FULL_CHARS = 200; // shorter than this → use the shared, budgeted full-text fallback
 
 // Fetch the XML ourselves with AbortController (rss-parser's own timeout rejects the promise but leaks
 // the socket on a hung feed — abort() actually destroys the connection), then parseString.
@@ -52,7 +51,7 @@ async function fetchFeed(url: string) {
 }
 
 type FeedItem = { url: string; title: string; text: string; publishedAt: number | null };
-const caches = new Map<string, { at: number; items: FeedItem[] }>();
+const caches = new Map<string, { at: number; items: FeedItem[]; error?: string }>();
 
 const stripHtml = (s: string) =>
   (s || "").replace(/<[^>]+>/g, " ").replace(/&[a-z#0-9]+;/gi, " ").replace(/\s+/g, " ").trim();
@@ -61,9 +60,13 @@ async function ensureFeeds(shard?: string): Promise<FeedItem[]> {
   const selected = shard && RSS_FEEDS.includes(shard) ? [shard] : RSS_FEEDS;
   const cacheKey = shard || "*";
   const cache = caches.get(cacheKey);
-  if (cache && Date.now() - cache.at < CACHE_TTL_MS) return cache.items;
+  if (cache && Date.now() - cache.at < CACHE_TTL_MS) {
+    if (cache.error) throw new Error(cache.error);
+    return cache.items;
+  }
   const items: FeedItem[] = [];
   const seen = new Set<string>();
+  const errors: string[] = [];
   await Promise.all(
     selected.map(async (url) => {
       try {
@@ -81,11 +84,15 @@ async function ensureFeeds(shard?: string): Promise<FeedItem[]> {
           });
         }
       } catch (e: any) {
-        log.warn(`rss: feed failed ${url}: ${String(e?.message || e).slice(0, 120)}`);
+        const error = `rss: feed failed ${url}: ${String(e?.message || e).slice(0, 120)}`;
+        errors.push(error);
+        log.warn(error);
       }
     })
   );
-  caches.set(cacheKey, { at: Date.now(), items });
+  const error = errors.length === selected.length ? errors.join("; ") : undefined;
+  caches.set(cacheKey, { at: Date.now(), items, error });
+  if (error) throw new Error(error);
   log.info(`rss: pulled ${selected.length} feeds → ${items.length} unique items`);
   return items;
 }
@@ -109,7 +116,7 @@ export const rssSource: SocialSource = {
       return {
         url: it.url,
         title: it.title || it.text.slice(0, 80),
-        // Long RSS body → use as fullContent (zero fetch). Short → contentSnippet, pipeline self-fetches (L1, free).
+        // Long RSS body → no fetch. Short → the pipeline's budgeted full-text fallback.
         ...(full ? { fullContent: it.text, fetchEngineHint: "rss", fetchCostUsdHint: 0 } : { contentSnippet: it.text }),
         publishedAt: it.publishedAt,
         sourceName: "rss",

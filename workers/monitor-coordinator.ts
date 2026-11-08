@@ -1,4 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
+import { mergeSourceDiagnostic, type SourceDiagnostic } from "./source-diagnostic";
+export type { SourceDiagnostic } from "./source-diagnostic";
 
 export type MonitorProfile = "monitor_primary_news" | "monitor_primary_social";
 
@@ -10,21 +12,6 @@ export type BriefingRecord = {
   relevance: "high" | "medium";
   sentimentScore: number;
   threatLevel: "high" | "medium" | "low" | "none";
-};
-
-export type SourceDiagnostic = {
-  status: "success" | "empty" | "partial" | "failed";
-  mode?: "shadow" | "write";
-  provider?: "browser" | "serper";
-  discovered: number;
-  enqueued: number;
-  durationMs?: number;
-  browserMs?: number;
-  fallbacks?: number;
-  queriesAttempted?: number;
-  queriesSucceeded?: number;
-  errors?: string[];
-  updatedAt: number;
 };
 
 export type FetchTelemetryStats = {
@@ -180,6 +167,14 @@ export class MonitorCoordinator extends DurableObject<CoordinatorEnv> {
     const body = (await request.json()) as Record<string, any>;
 
     if (path === "/start") {
+      const current = await this.state();
+      if (
+        current &&
+        (current.status === "queued" || current.status === "running") &&
+        Date.now() - current.startedAt < 15 * 60_000
+      ) {
+        return json({ accepted: false, running: true, state: current }, 409);
+      }
       await this.ctx.storage.deleteAll();
       const state = emptyState(body as Parameters<typeof emptyState>[0]);
       await this.save(state);
@@ -201,8 +196,11 @@ export class MonitorCoordinator extends DurableObject<CoordinatorEnv> {
         if (body.failed) state.discoveryFailed++;
         state.sourceDiagnostics ||= {};
         if (body.sourceName && body.diagnostic) {
-          state.sourceDiagnostics[String(body.sourceName)] =
-            body.diagnostic as SourceDiagnostic;
+          const sourceName = String(body.sourceName);
+          state.sourceDiagnostics[sourceName] = mergeSourceDiagnostic(
+            state.sourceDiagnostics[sourceName],
+            body.diagnostic as SourceDiagnostic,
+          );
         }
         this.finalize(state);
         await this.save(state);

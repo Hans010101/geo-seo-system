@@ -1,6 +1,5 @@
 // Cost guardrails for the monitor. Limits + monthly usage counters live in sysConfigs (single source of
-// truth); counters lazily reset on month rollover. Within a cycle, reservations go through synchronous
-// critical sections against an in-memory snapshot so concurrent workers can't overshoot a limit.
+// truth); counters reset transactionally on month rollover. Paid scrape reservations are atomic in D1.
 import * as db from "../db";
 import { log } from "./util";
 
@@ -14,10 +13,10 @@ const KEYS = {
   xUsed: "monitor_x_used_this_month",
   month: "monitor_counters_month",
 };
-export const DEFAULTS = { firecrawlLimit: 800, serperLimit: 2000, xLimit: 20000, maxPerCycle: 50 };
+export const DEFAULTS = { firecrawlLimit: 800, serperLimit: 30000, xLimit: 60000, maxPerCycle: 80 };
 // Firecrawl scrape = 1 credit/page. Rough USD conversion for cost accounting (Hobby $16 / ~19k credits).
 export const FIRECRAWL_USD_PER_CREDIT = 0.00083;
-// twitterapi.io: $0.15 / 1000 tweets. Default cap 20000 tweets/month ≈ $3/mo.
+// twitterapi.io: $0.15 / 1000 tweets. Default cap 60000 tweets/month ≈ $9/mo.
 export const X_USD_PER_TWEET = 0.00015;
 
 // Live in-memory snapshot for the current cycle (populated by beginCycle()).
@@ -50,12 +49,8 @@ async function ensureMonth(): Promise<{ firecrawlUsed: number; serperUsed: numbe
   const cur = currentMonth();
   const stored = await db.getSysConfig(KEYS.month);
   if (stored !== cur) {
-    await db.setSysConfig(KEYS.firecrawlUsed, "0");
-    await db.setSysConfig(KEYS.serperUsed, "0");
-    await db.setSysConfig(KEYS.xUsed, "0");
-    await db.setSysConfig(KEYS.month, cur);
+    await db.resetMonitorBudgetMonth(cur);
     log.info(`Monitor budget counters reset for ${cur}`);
-    return { firecrawlUsed: 0, serperUsed: 0, xUsed: 0 };
   }
   return { firecrawlUsed: await num(KEYS.firecrawlUsed, 0), serperUsed: await num(KEYS.serperUsed, 0), xUsed: await num(KEYS.xUsed, 0) };
 }
@@ -76,23 +71,21 @@ export async function beginCycle(): Promise<void> {
   log.info(`Monitor budget: firecrawl ${live.firecrawlUsed}/${live.firecrawlLimit}, serper ${live.serperUsed}/${live.serperLimit}, x ${live.xUsed}/${live.xLimit}, max/cycle ${live.maxPerCycle}`);
 }
 
-export function hasFirecrawlBudget(): boolean {
-  return live.firecrawlUsed < live.firecrawlLimit;
+export async function tryConsumeFirecrawl(): Promise<boolean> {
+  await ensureMonth();
+  return db.reserveSysConfigCredit(KEYS.firecrawlUsed, KEYS.firecrawlLimit, DEFAULTS.firecrawlLimit);
 }
 
-// Atomic reserve (synchronous critical section — no await between check and increment).
-export function tryConsumeFirecrawl(): boolean {
-  if (live.firecrawlUsed >= live.firecrawlLimit) return false;
-  live.firecrawlUsed++;
-  db.setSysConfig(KEYS.firecrawlUsed, String(live.firecrawlUsed)).catch(() => {});
-  return true;
+export async function hasSerperBudget(): Promise<boolean> {
+  const state = await readBudget();
+  return state.serper.used < state.serper.limit;
 }
 
-export function tryConsumeSerper(): boolean {
-  if (live.serperUsed >= live.serperLimit) return false;
+// Count provider usage only after Serper accepted the request. Queue reservations
+// are capacity hints and must never be reported as consumed API credits.
+export async function recordSerperUsage(): Promise<void> {
+  await db.incrementSysConfig(KEYS.serperUsed);
   live.serperUsed++;
-  db.setSysConfig(KEYS.serperUsed, String(live.serperUsed)).catch(() => {});
-  return true;
 }
 
 // X (twitterapi.io) is pulled ONCE per cycle (single-threaded, cached) — no per-worker race, so a plain
@@ -123,29 +116,21 @@ export async function readBudget() {
   };
 }
 
-// Queue-backed Cloudflare cycles span many isolates, so the in-memory `live`
-// snapshot cannot coordinate their paid-source counters. The bootstrap message
-// reserves the small, known number of calls up front and discovery messages run
-// with `budgetReserved=true`.
+// Queue-backed Cloudflare cycles span many isolates, so this grants only the
+// currently available task capacity. Actual Serper usage is recorded centrally
+// by searchNews/searchWeb after a successful provider response.
 export async function reserveQueuedBudget(requested: {
   firecrawl?: number;
   serper?: number;
 }): Promise<{ firecrawl: number; serper: number; xAvailable: boolean }> {
   const state = await readBudget();
-  const firecrawl = Math.max(
-    0,
-    Math.min(requested.firecrawl || 0, state.firecrawl.limit - state.firecrawl.used),
-  );
+  let firecrawl = 0;
+  const wanted = Math.max(0, Math.floor(requested.firecrawl || 0));
+  while (firecrawl < wanted && await tryConsumeFirecrawl()) firecrawl++;
   const serper = Math.max(
     0,
     Math.min(requested.serper || 0, state.serper.limit - state.serper.used),
   );
-  if (firecrawl > 0) {
-    await db.setSysConfig(KEYS.firecrawlUsed, String(state.firecrawl.used + firecrawl));
-  }
-  if (serper > 0) {
-    await db.setSysConfig(KEYS.serperUsed, String(state.serper.used + serper));
-  }
   return {
     firecrawl,
     serper,

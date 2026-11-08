@@ -1,17 +1,15 @@
-// Cloudflare Workers AI is preferred when its binding is present; Node/Cloud Run keeps the OpenRouter path.
+// Monitoring analysis stays on Workers AI. OpenRouter is reserved for GEO model observation.
 // Prompt structure mirrors the production analyzeCollection, extended for monitoring.
 // threatLevel is computed deterministically from source authority × sentiment intensity × stance × relevance.
-import { invokeLLM, type Message } from "../_core/llm";
-import { calcCostUsd } from "@shared/llm-pricing";
+import { type Message } from "../_core/llm";
 import * as db from "../db";
 import {
   getCloudflareEnv,
   type CloudflareRuntimeEnv,
   type WorkersAiBinding,
 } from "../_core/cloudflare-env";
-import { domainOf, log } from "./util";
+import { domainOf } from "./util";
 
-const ANALYSIS_MODEL = "deepseek/deepseek-chat";
 const CLOUDFLARE_ANALYSIS_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast";
 const CLOUDFLARE_MAX_TOKENS = 512;
 
@@ -40,11 +38,17 @@ export type MonitorAnalysis = {
   promptTokens: number | null;
   completionTokens: number | null;
   costUsd: number | null;
-  provider: "cloudflare_workers_ai" | "openrouter";
+  provider: "cloudflare_workers_ai";
   model: string;
   neurons: number | null;
   fallbackReason: string | null;
 };
+
+export function shouldStoreMonitorAnalysis(
+  analysis: Pick<MonitorAnalysis, "relevance"> | null | undefined,
+): boolean {
+  return analysis?.relevance !== "irrelevant";
+}
 
 type ParsedAnalysis = {
   relevance: Relevance;
@@ -54,7 +58,7 @@ type ParsedAnalysis = {
   keyEntities: string[];
 };
 
-function runtimeEnv(): CloudflareRuntimeEnv | undefined {
+function runtimeEnv(): CloudflareRuntimeEnv {
   return getCloudflareEnv();
 }
 
@@ -154,61 +158,6 @@ async function analyzeWithWorkersAi(
   throw new Error(`Workers AI analysis failed after retry: ${String(lastError instanceof Error ? lastError.message : lastError).slice(0, 300)}`);
 }
 
-async function resolveOpenRouterFallback(env: CloudflareRuntimeEnv): Promise<{
-  apiKey: string;
-  baseUrl: string;
-  model: string;
-} | null> {
-  const configured = await db.getGlobalApiKeyByName("OpenRouter");
-  const apiKey = configured?.apiKey || env.OPENROUTER_API_KEY?.trim();
-  if (!apiKey) return null;
-  return {
-    apiKey,
-    baseUrl: configured?.baseUrl || env.OPENROUTER_BASE_URL?.trim() || "https://openrouter.ai/api/v1",
-    model: env.CLOUDFLARE_OPENROUTER_FALLBACK_MODEL?.trim() || ANALYSIS_MODEL,
-  };
-}
-
-async function analyzeWithOpenRouter(
-  env: CloudflareRuntimeEnv,
-  messages: Message[],
-): Promise<{
-  parsed: ParsedAnalysis;
-  promptTokens: number | null;
-  completionTokens: number | null;
-  costUsd: number | null;
-  model: string;
-}> {
-  const config = await resolveOpenRouterFallback(env);
-  if (!config) {
-    throw new Error("OpenRouter key 未配置：请配置 Cloudflare Secret 或全局 API 配置中的 OpenRouter");
-  }
-  const result = await invokeLLM({
-    ...config,
-    messages,
-    max_tokens: boundedMaxTokens(env.CLOUDFLARE_AI_MAX_TOKENS),
-    response_format: { type: "json_object" },
-    timeoutMs: 60_000,
-  });
-  const content = typeof result.choices?.[0]?.message?.content === "string"
-    ? result.choices[0].message.content as string
-    : "";
-  const parsed = parseMonitorAnalysisPayload(content);
-  const usage = (result.usage || {}) as Record<string, unknown>;
-  const promptTokens = typeof usage.prompt_tokens === "number" ? usage.prompt_tokens : null;
-  const completionTokens = typeof usage.completion_tokens === "number" ? usage.completion_tokens : null;
-  const reportedCost = usage.cost;
-  return {
-    parsed,
-    promptTokens,
-    completionTokens,
-    costUsd: typeof reportedCost === "number"
-      ? reportedCost
-      : calcCostUsd(config.model, promptTokens, completionTokens),
-    model: config.model,
-  };
-}
-
 // Deterministic threat = negative-sentiment intensity × source authority × relevance weight, shifted by stance.
 function computeThreat(
   sentimentScore: number,
@@ -235,14 +184,16 @@ function buildPrompt(title: string, body: string, partial: boolean): string {
 ## 相关性(relevance)判定标准 —— 严格按"文章的主体/核心议题"判断，不是"有没有提到"：
 - high: 文章的**主体/核心议题就是孙宇晨本人，或波场 TRON/TRX/其官方项目的重大声誉事件**（诉讼、监管、和解、上市、重大合作、安全事故、重大负面指控等）。标题或首段就在讲他们。
 - medium: 孙宇晨/波场是文章的**重要角色之一，但不是唯一主体**（例如"特朗普加密项目遇冷，孙宇晨是主要投资人之一"）。
-- low: 只是**顺带提及 / 背景引用 / 行情噪音**（讲整个加密行业时列举到名字；或 TRX 币价预测、涨跌、网络指标、交易量/活跃地址创新高这类纯行情文章）。
-- irrelevant: 完全无关、同名误匹配、或仅在无关榜单/制裁名单里被列一笔。
+- low: **主体仍是波场/TRON/TRX 本身，但只是低影响内容**（币价预测、涨跌、网络指标、交易量/活跃地址等），不是单纯“出现过关键词”。
+- irrelevant: 完全无关、同名误匹配，或文章主体是娱乐/汽车/体育等其他事件，只在图片、标签、榜单、背景文字中顺带出现监控对象。
 
 ## 判定示例(few-shot)：
 - "Why one of Trump crypto's biggest backers is sounding the alarm"（主体是特朗普币，孙宇晨只是backer之一）→ medium
 - "Justin Sun takes Trump family crypto firm to court"（主体就是孙宇晨的起诉行为）→ high
 - "TRX Price Prediction: Treasury Tops 700M Tokens"（主体是币价/持仓预测，孙宇晨/波场顺带）→ low
 - "US Treasury Sanctions 134 Wallets Linked to ISIS-K"（主体是反恐制裁，TRX 仅被列名）→ irrelevant
+- "观看 ViVi 模特超话分享，拍摄团队提到孙宇晨"（主体是模特活动）→ irrelevant
+- "奥迪 e-tron / 迪士尼 TRON 极速光轮 / TRON Legacy 电影或游戏"（同名产品）→ irrelevant
 
 ## 文章标题
 ${title || "(无标题)"}
@@ -256,7 +207,7 @@ ${body}
   "relevance_reason": "<一句话说明为什么判这个等级，点明文章主体是谁>",
   "sentiment_score": <1-5的整数，对监控对象的立场：1=强负面，2=偏负面，3=中性，4=偏正面，5=强正面；若 irrelevant 填 3>,
   "summary": "<100字以内中文摘要，说明文章讲了什么、对品牌是利好还是利空>",
-  "key_entities": ["<涉及的关键实体，最多5个>"]
+  "key_entities": ["<正文实际出现的关键实体，严禁根据监控对象自行补全，最多5个>"]
 }`;
 }
 
@@ -274,50 +225,9 @@ export async function analyzeArticle(input: {
     { role: "user", content: buildPrompt(input.title || "", body, partial) },
   ];
   const env = runtimeEnv();
-  let parsed: ParsedAnalysis;
-  let promptTokens: number | null;
-  let completionTokens: number | null;
-  let costUsd: number | null;
-  let provider: MonitorAnalysis["provider"];
-  let model: string;
-  let neurons: number | null;
-  let fallbackReason: string | null = null;
-
-  if (env?.AI) {
-    try {
-      const result = await analyzeWithWorkersAi(env.AI, env, messages);
-      parsed = result.parsed;
-      promptTokens = result.promptTokens;
-      completionTokens = result.completionTokens;
-      costUsd = null;
-      provider = "cloudflare_workers_ai";
-      model = result.model;
-      neurons = result.neurons;
-    } catch (workersAiError) {
-      if (env.CLOUDFLARE_OPENROUTER_FALLBACK_ENABLED !== "true") throw workersAiError;
-      fallbackReason = String(
-        workersAiError instanceof Error ? workersAiError.message : workersAiError,
-      ).slice(0, 300);
-      log.warn(`Workers AI unavailable; falling back to OpenRouter: ${fallbackReason}`);
-      const result = await analyzeWithOpenRouter(env, messages);
-      parsed = result.parsed;
-      promptTokens = result.promptTokens;
-      completionTokens = result.completionTokens;
-      costUsd = result.costUsd;
-      provider = "openrouter";
-      model = result.model;
-      neurons = null;
-    }
-  } else {
-    const result = await analyzeWithOpenRouter(env || {}, messages);
-    parsed = result.parsed;
-    promptTokens = result.promptTokens;
-    completionTokens = result.completionTokens;
-    costUsd = result.costUsd;
-    provider = "openrouter";
-    model = result.model;
-    neurons = null;
-  }
+  if (!env.AI) throw new Error("Workers AI binding missing: monitoring analysis cannot run");
+  const result = await analyzeWithWorkersAi(env.AI, env, messages);
+  const { parsed, promptTokens, completionTokens, model, neurons } = result;
 
   const domain = domainOf(input.url);
   const rule = domain ? await db.getMonitorSourceRuleByDomain(domain) : undefined;
@@ -339,10 +249,10 @@ export async function analyzeArticle(input: {
     summary,
     promptTokens,
     completionTokens,
-    costUsd,
-    provider,
+    costUsd: null,
+    provider: "cloudflare_workers_ai",
     model,
     neurons,
-    fallbackReason,
+    fallbackReason: null,
   };
 }

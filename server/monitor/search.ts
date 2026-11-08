@@ -1,6 +1,7 @@
 // Serper.dev search wrapper. Uses the 'news' vertical (dated, higher news purity than web).
 // API key is read from globalApiKeys (name = 'Serper'); never hard-coded / env.
 import * as db from "../db";
+import * as budget from "./budget";
 import { fetchWithTimeout } from "./util";
 
 const SERPER_DEFAULT_BASE = "https://google.serper.dev";
@@ -28,6 +29,7 @@ export async function searchNews(
   keyword: string,
   opts?: { tbs?: string; num?: number; gl?: string; hl?: string }
 ): Promise<SerperNewsItem[]> {
+  if (!(await budget.hasSerperBudget())) throw new Error("Serper monthly budget exhausted");
   const { apiKey, base } = await getSerper();
   const body: Record<string, unknown> = { q: keyword, num: opts?.num ?? 10 };
   if (opts?.tbs) body.tbs = opts.tbs;
@@ -42,6 +44,7 @@ export async function searchNews(
     const t = await resp.text();
     throw new Error(`Serper news ${resp.status}: ${t.slice(0, 200)}`);
   }
+  await budget.recordSerperUsage();
   const json: any = await resp.json();
   return (json.news || [])
     .filter((n: any) => n?.link)
@@ -60,6 +63,7 @@ export async function searchWeb(
   keyword: string,
   opts?: { tbs?: string; num?: number; gl?: string; hl?: string },
 ): Promise<SerperWebItem[]> {
+  if (!(await budget.hasSerperBudget())) throw new Error("Serper monthly budget exhausted");
   const { apiKey, base } = await getSerper();
   const body: Record<string, unknown> = { q: keyword, num: opts?.num ?? 10 };
   if (opts?.tbs) body.tbs = opts.tbs;
@@ -74,6 +78,7 @@ export async function searchWeb(
     const errorBody = await resp.text();
     throw new Error(`Serper search ${resp.status}: ${errorBody.slice(0, 200)}`);
   }
+  await budget.recordSerperUsage();
   const json = await resp.json() as { organic?: Array<Record<string, unknown>> };
   return (json.organic || [])
     .filter((item) => typeof item.link === "string" && item.link.length > 0)

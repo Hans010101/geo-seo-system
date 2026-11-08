@@ -102,8 +102,13 @@ export function hasCJK(s: string): boolean {
 // monitor keyword only if it names one of our CORE entities that the keyword also references. Latin
 // tickers/names use word boundaries ("TRON" ≠ "electron"); CJK uses substring; generic qualifiers in
 // the keyword (SEC/lawsuit/起诉/Trump…) are ignored (they'd match unrelated items).
-const CJK_ENTITIES = ["孙宇晨", "波场链", "波场", "孙哥", "火币"];
-const LATIN_ENTITIES = ["justin sun", "tron", "trx", "usdd", "wlfi", "htx"];
+const PRIMARY_CJK_ENTITIES = ["孙宇晨", "波场链", "波场", "孙哥", "孙割"];
+const PRIMARY_LATIN_ENTITIES = ["justin sun", "tron", "trx"];
+const RELATED_CJK_ENTITIES = ["火币"];
+const RELATED_LATIN_ENTITIES = ["usdd", "wlfi", "htx"];
+const TRON_BRAND_CONTEXT = /(?:[#\$]\s*tron\b|孙宇晨|波场|trx|usdd|trondao|tronscan|tronlink|sunpump|justlend|tvm|区块链|公链|主网|链上|加密|代币|稳定币|钱包|生态|协议|币价|行情|defi|web3|blockchain|crypto|token|stablecoin|wallet|network|protocol|ecosystem|foundation|price)/i;
+const SUN_IDENTITY_CONTEXT = /(?:孙宇晨|justin sun|孙哥|孙割)/i;
+const SUN_NICKNAME_CONTEXT = /(?:孙宇晨|justin sun|孙割|波场|\btron\b|\btrx\b|火币|\bhtx\b|\busdd\b|sunpump|justlend)/i;
 function latinWordHit(lowText: string, e: string): boolean {
   const pat = e.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
   return new RegExp(`(?<![a-z0-9])\\$?${pat}(?![a-z0-9])`, "i").test(lowText);
@@ -112,9 +117,32 @@ export function keywordMatchesText(keyword: string, text: string): boolean {
   if (!keyword || !text) return false;
   const kwLow = keyword.toLowerCase();
   const low = text.toLowerCase();
-  for (const e of CJK_ENTITIES) if (keyword.includes(e) && text.includes(e)) return true;
-  for (const e of LATIN_ENTITIES) if (kwLow.includes(e) && latinWordHit(low, e)) return true;
-  return false;
+  const primaryCjk = PRIMARY_CJK_ENTITIES.filter(e => keyword.includes(e));
+  const primaryLatin = PRIMARY_LATIN_ENTITIES.filter(e => latinWordHit(kwLow, e));
+  const relatedCjk = RELATED_CJK_ENTITIES.filter(e => keyword.includes(e));
+  const relatedLatin = RELATED_LATIN_ENTITIES.filter(e => latinWordHit(kwLow, e));
+  const relatedHit = relatedCjk.some(e => text.includes(e)) || relatedLatin.some(e => latinWordHit(low, e));
+  if (primaryCjk.length || primaryLatin.length) {
+    const primaryHit = primaryCjk.some(e => text.includes(e)) || primaryLatin.some(e => latinWordHit(low, e));
+    if (!primaryHit || ((relatedCjk.length || relatedLatin.length) && !relatedHit)) return false;
+    return !primaryCjk.includes("孙哥") || SUN_NICKNAME_CONTEXT.test(text.replaceAll("孙哥", ""));
+  }
+  return relatedHit && SUN_IDENTITY_CONTEXT.test(text);
+}
+
+export function monitorArticleMatchesKeywords(
+  keywords: string[],
+  title: string,
+  content: string,
+): boolean {
+  const body = content
+    .split(/(?:^|[\n。.!！?？])\s*(?:相关推荐|相关(?:内容|推荐)|猜你喜欢|热门推荐|推荐阅读|你可能感兴趣)\s*[:：.。]?/i, 1)[0]
+    .slice(0, 8_000);
+  const text = `${title} ${body}`;
+  return keywords.some(keyword =>
+    keywordMatchesText(keyword, text) &&
+    (keyword.trim().toLowerCase() !== "tron" || TRON_BRAND_CONTEXT.test(text))
+  );
 }
 
 // Language gate for the monitor: keep 中文 + English, drop foreign-dominant posts (币安/Gate 广场是

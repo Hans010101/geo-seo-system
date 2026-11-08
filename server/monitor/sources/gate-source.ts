@@ -102,7 +102,7 @@ async function ensureFeed(opts?: SearchOpts): Promise<ParsedPost[]> {
     ? [opts.shard]
     : GATE_LIST_URLS;
   for (const url of selected) {
-    if (!opts?.budgetReserved && (!budget.hasFirecrawlBudget() || !budget.tryConsumeFirecrawl())) {
+    if (!opts?.budgetReserved && !await budget.tryConsumeFirecrawl()) {
       log.warn("gate_square: Firecrawl budget exhausted — stopping feed render early");
       errors.push("firecrawl budget unavailable");
       break;

@@ -1,9 +1,10 @@
-import { getSysConfig, withHyperdriveDatabase } from "../server/db";
+import { getGlobalApiKeyByName, getSysConfig, withHyperdriveDatabase } from "../server/db";
 import { withCloudflareEnv } from "../server/_core/cloudflare-env";
 import { MonitorCoordinator } from "./monitor-coordinator";
 import { BrowserShadowBudget } from "./browser-shadow-budget";
 import { MigrationAcceptanceLedger } from "./migration-acceptance-ledger";
 import { getCloudflareFeatureFlags } from "./feature-flags";
+import { isOperatorAuthorized } from "./operator-auth";
 import {
   enqueueScheduledMonitor,
   getBinanceProbeStatus,
@@ -14,6 +15,7 @@ import {
   getGeoQueueStatus,
   getMigrationAcceptanceStatus,
   getOpenRouterPreflightStatus,
+  getWechatProbeStatus,
   processMonitorQueue,
   type QueueEnv,
   type QueueTask,
@@ -65,6 +67,7 @@ async function status(env: Env) {
     openRouter,
     cleanup,
     freshnessAudit,
+    wechatStored,
   ] = await Promise.all([
     readKeys(STATUS_KEYS),
     readKeys(WEEKLY_KEYS),
@@ -77,7 +80,10 @@ async function status(env: Env) {
     getOpenRouterPreflightStatus(),
     getCleanupStatus(),
     getFreshnessAuditStatus(),
+    getWechatProbeStatus(),
   ]);
+  const serperConfigured = Boolean((await getGlobalApiKeyByName("Serper"))?.apiKey);
+  const wechatDiagnostic = (news as { sourceDiagnostics?: Record<string, unknown> }).sourceDiagnostics?.wechat as Record<string, unknown> | undefined;
   const features = getCloudflareFeatureFlags(env);
   return {
     ...legacy,
@@ -101,6 +107,7 @@ async function status(env: Env) {
     gate: {
       firecrawlEnabled: env.CLOUDFLARE_GATE_FIRECRAWL_ENABLED !== "false",
       fallbackProvider: "serper",
+      intervalHours: 12,
     },
     chineseSocial: {
       enabled: features.chineseSocial,
@@ -133,8 +140,18 @@ async function status(env: Env) {
     cleanup,
     freshnessAudit,
     wechat: {
+      ...wechatStored,
       enabled: env.CLOUDFLARE_WECHAT_ENABLED !== "false",
-      ...((news as { sourceDiagnostics?: Record<string, unknown> }).sourceDiagnostics?.wechat || {}),
+      status: wechatDiagnostic?.status ||
+        (news.status === "queued" || news.status === "running" ? "running" : wechatStored.status || undefined),
+      providers: {
+        serper: serperConfigured,
+        sogouBrowser: true,
+        aidata: Boolean(env.AIDATA_API_TOKEN),
+        justOne: false,
+      },
+      aidataIntervalHours: Number(env.CLOUDFLARE_WECHAT_AIDATA_INTERVAL_HOURS || 6),
+      ...(wechatDiagnostic || {}),
     },
     browserFulltext: {
       ...browserFulltext,
@@ -155,10 +172,7 @@ export default {
   async fetch(request: Request, env: Env) {
     const url = new URL(request.url);
     if (request.method === "POST" && url.pathname.startsWith("/operator/")) {
-      const token =
-        request.headers.get("x-operator-token") ||
-        request.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
-      if (!env.CLOUDFLARE_OPERATOR_TOKEN || token !== env.CLOUDFLARE_OPERATOR_TOKEN) {
+      if (!isOperatorAuthorized(request, env)) {
         return Response.json({ error: "unauthorized" }, { status: 401 });
       }
       const scheduledTime = Date.now();
@@ -179,6 +193,13 @@ export default {
         return Response.json({ ok: true, queued: "weekly", scheduledTime });
       }
       if (url.pathname === "/operator/validation-cycles") {
+        const active = (await Promise.all([
+          getCoordinatorStatus(env, "monitor_primary_news"),
+          getCoordinatorStatus(env, "monitor_primary_social"),
+        ])).some((state) => state.status === "queued" || state.status === "running");
+        if (active) {
+          return Response.json({ ok: true, queued: false, alreadyRunning: true });
+        }
         await env.MONITOR_QUEUE.sendBatch([
           {
             body: {
@@ -194,6 +215,9 @@ export default {
               cycleId: `operator_validation_social:${scheduledTime}`,
               profile: "monitor_primary_social",
               scheduledTime,
+              forceBinance: true,
+              forceChineseSocial: true,
+              forceGate: true,
             },
           },
         ]);
@@ -224,9 +248,9 @@ export default {
           inserted: 1,
           briefingItems: [{
             title: "Cloudflare 迁移验收通知测试",
-            url: "https://geo-seo-system.pages.dev",
+            url: "https://geo-seo-system-faq.pages.dev",
             sourcePlatform: "system",
-            domain: "geo-seo-system.pages.dev",
+            domain: "geo-seo-system-faq.pages.dev",
             relevance: "high",
             sentimentScore: -1,
             threatLevel: "medium",
@@ -263,6 +287,15 @@ export default {
       mode: env.CLOUDFLARE_CRON_MODE || "primary",
       execution: "queue_sharded",
     };
+    if (url.pathname === "/" || url.pathname === "/health") {
+      return Response.json(base);
+    }
+    if (url.pathname !== "/status") {
+      return Response.json({ error: "not found" }, { status: 404 });
+    }
+    if (!isOperatorAuthorized(request, env)) {
+      return Response.json({ error: "unauthorized" }, { status: 401 });
+    }
     if (!env.HYPERDRIVE) return Response.json(base);
     try {
       const result = await withCloudflareEnv(env, () =>

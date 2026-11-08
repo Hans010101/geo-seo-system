@@ -54,7 +54,7 @@ export async function probeOpenRouter(
 ): Promise<OpenRouterPreflightResult> {
   const apiKey = options.apiKey?.trim();
   const baseUrl = (options.baseUrl || "https://openrouter.ai/api/v1").replace(/\/+$/, "");
-  const model = options.model || "openai/gpt-4o-mini";
+  const model = options.model || "openai/gpt-5.6-luna";
   const checkedAt = options.checkedAt ?? Date.now();
   const fetchImpl = options.fetchImpl || fetch;
   const base = {
@@ -104,7 +104,7 @@ export async function probeOpenRouter(
       headers: {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
-        "HTTP-Referer": "https://geo-seo-system.pages.dev",
+        "HTTP-Referer": "https://geo-seo-system-faq.pages.dev",
         "X-Title": "GEO SEO System preflight",
         "User-Agent": "geo-seo-system/1.0",
       },

@@ -1,7 +1,7 @@
 import * as db from "../server/db";
 import { withHyperdriveDatabase } from "../server/db";
 import { withCloudflareEnv, type CloudflareRuntimeEnv } from "../server/_core/cloudflare-env";
-import { analyzeArticle } from "../server/monitor/analyzer";
+import { analyzeArticle, shouldStoreMonitorAnalysis } from "../server/monitor/analyzer";
 import {
   alertThresholdMet,
   dispatchHighThreatAlert,
@@ -11,8 +11,10 @@ import { sendEmailAlert } from "../server/monitor/email-alert";
 import { dispatchNotification } from "../server/_core/notification";
 import * as budget from "../server/monitor/budget";
 import { enabledSources } from "../server/monitor/sources/registry";
+import { getXErrors } from "../server/monitor/sources/x-source";
 import { RSS_FEEDS } from "../server/monitor/sources/rss-source";
 import {
+  mapAidataWeChatResponse,
   mapWeChatSearchItems,
   parseWeChatRss,
 } from "../server/monitor/sources/wechat-source";
@@ -25,6 +27,7 @@ import { TELEGRAM_CHANNELS } from "../server/monitor/sources/telegram-source";
 import {
   CHINESE_SOCIAL_PLATFORMS,
   CHINESE_SOCIAL_SOURCE_NAMES,
+  chineseSocialKeywordMatchesText,
 } from "../server/monitor/sources/chinese-social-source";
 import type { DiscoveredPost } from "../server/monitor/sources/types";
 import { searchWeb } from "../server/monitor/search";
@@ -33,6 +36,7 @@ import {
   domainOf,
   hasCJK,
   keywordMatchesText,
+  monitorArticleMatchesKeywords,
   monitorContentHash,
   monitorPublishedAtFreshness,
   normalizeUrl,
@@ -40,6 +44,7 @@ import {
   sha256,
 } from "../server/monitor/util";
 import {
+  isTrustedDiscoveryPublishedAt,
   isSearchIntermediaryUrl,
   sourceDateFreshness,
   verifySourcePublishedAt,
@@ -49,6 +54,7 @@ import {
   cleanupOldArticles,
 } from "../server/monitor/cleanup";
 import { recordFetchAttempt } from "../server/monitor/fetch/observability";
+import { fetchArticle } from "../server/monitor/fetch/router";
 import {
   generateMonitorReport,
   monthlyPeriodOf,
@@ -64,7 +70,10 @@ import type {
   BrowserShadowResultSummary,
 } from "./browser-shadow-budget";
 import type { FulltextBrowserResult } from "./fulltext-browser";
-import type { ChineseSocialBrowserResult } from "./chinese-social-browser";
+import type {
+  ChineseSocialBrowserBatchResult,
+  WeChatBrowserSearchResult,
+} from "./chinese-social-browser";
 import type {
   AcceptanceCycleRecord,
   BinanceAcceptanceRecord,
@@ -73,6 +82,7 @@ import type {
   NotificationAcceptanceRecord,
 } from "./migration-acceptance-types";
 import {
+  binanceQueryBatches,
   binanceBrowserNeedsFallback,
   type BinanceBrowserSearchResult,
 } from "./binance-square-browser";
@@ -113,6 +123,8 @@ export type QueueEnv = CloudflareRuntimeEnv & CronBindings & CloudflareFeatureEn
   CLOUDFLARE_WECHAT_ENABLED?: string;
   CLOUDFLARE_WECHAT_MAX_ARTICLES?: string;
   WECHAT_COLLECTOR_TOKEN?: string;
+  AIDATA_API_TOKEN?: string;
+  CLOUDFLARE_WECHAT_AIDATA_INTERVAL_HOURS?: string;
   CLOUDFLARE_CHINESE_SOCIAL_ENABLED?: string;
   CLOUDFLARE_CHINESE_SOCIAL_INTERVAL_HOURS?: string;
   CLOUDFLARE_CHINESE_SOCIAL_MAX_KEYWORDS?: string;
@@ -160,6 +172,8 @@ type BootstrapTask = {
   profile: MonitorProfile;
   scheduledTime: number;
   forceChineseSocial?: boolean;
+  forceBinance?: boolean;
+  forceGate?: boolean;
 };
 
 type DiscoveryTask = {
@@ -244,6 +258,7 @@ type PostCycleTask = {
   sourceCount: number;
   inserted: number;
   briefingItems: CoordinatorStats["briefingItems"];
+  xErrors?: string[];
 };
 
 export type QueueTask =
@@ -277,8 +292,13 @@ const SOURCE_LIMITS: Record<string, number> = {
 };
 
 const BINANCE_BROWSER_SOURCE = "binance_square_browser";
-const WECHAT_SEARCH_KEYWORDS = ["孙宇晨", "波场", "TRON"];
-const WECHAT_SEARCH_QUERIES = ['"孙宇晨"', '("波场" OR "TRON")'];
+const WECHAT_SEARCH_KEYWORDS = [
+  "孙宇晨", "波场", "TRON", "Justin Sun", "孙哥", "孙割", "孙宇晨 火币", "孙宇晨 HTX",
+];
+const WECHAT_SEARCH_QUERIES = [
+  '"孙宇晨"', '("波场" OR "TRON")', '"孙哥"', '"孙割"', '"孙宇晨" ("火币" OR "HTX")',
+];
+const WECHAT_AIDATA_LAST_AT_KEY = "cf_wechat_aidata_last_at";
 
 const CF_STATUS_KEYS = {
   mode: "cf_cron_mode",
@@ -298,6 +318,15 @@ const BINANCE_STATUS_KEYS = {
   finishedAt: "cf_binance_last_finished_at",
   summary: "cf_binance_last_summary",
   error: "cf_binance_last_error",
+} as const;
+
+const WECHAT_STATUS_KEYS = {
+  status: "cf_wechat_last_status",
+  provider: "cf_wechat_last_provider",
+  startedAt: "cf_wechat_last_started_at",
+  finishedAt: "cf_wechat_last_finished_at",
+  summary: "cf_wechat_last_summary",
+  error: "cf_wechat_last_error",
 } as const;
 
 const GEO_DAILY_STATUS_KEYS = {
@@ -355,8 +384,16 @@ function binanceEnabled(env: QueueEnv): boolean {
 
 function binanceDue(cycle: BootstrapTask, env: QueueEnv): boolean {
   if (cycle.profile !== "monitor_primary_social" || !binanceEnabled(env)) return false;
+  if (cycle.forceBinance) return true;
   const interval = Math.max(2, positiveInt(env.CLOUDFLARE_BINANCE_INTERVAL_HOURS, 6));
   return shanghaiParts(cycle.scheduledTime).hour % interval === 3 % interval;
+}
+
+function gateDue(cycle: BootstrapTask): boolean {
+  if (cycle.profile !== "monitor_primary_social") return false;
+  if (cycle.forceGate) return true;
+  const { hour, minute } = shanghaiParts(cycle.scheduledTime);
+  return minute === 40 && (hour === 9 || hour === 21);
 }
 
 function configuredChineseSocialSources(env: QueueEnv): string[] {
@@ -394,11 +431,6 @@ function chineseSocialDue(cycle: BootstrapTask, env: QueueEnv): boolean {
 
 function chineseSocialBrowserEnabled(env: QueueEnv): boolean {
   return env.CLOUDFLARE_CHINESE_SOCIAL_BROWSER_ENABLED !== "false";
-}
-
-function wechatSearchDue(cycle: BootstrapTask): boolean {
-  const time = shanghaiParts(cycle.scheduledTime);
-  return cycle.profile === "monitor_primary_news" && time.hour === 9;
 }
 
 function coordinator(env: QueueEnv, profile: MonitorProfile) {
@@ -573,6 +605,7 @@ async function enqueuePostCycleIfEnabled(
     sourceCount: state.sources.length,
     inserted: state.inserted,
     briefingItems: state.briefingItems,
+    xErrors: state.sourceDiagnostics?.x?.errors,
   } satisfies PostCycleTask);
 }
 
@@ -608,12 +641,12 @@ function buildDiscoveryTasks(
     profile: cycle.profile,
   };
   if (cycle.profile === "monitor_primary_news") {
-    const serper = keywords.slice(0, budgetGrant.serper).map((keyword, index) => ({
+    const serper = keywords.map((keyword, index) => ({
       ...base,
       taskId: `serper:${index}`,
       sourceName: "serper",
       keywords: [keyword],
-      budgetReserved: true,
+      budgetReserved: index < budgetGrant.serper,
     }));
     const rss = RSS_FEEDS.map((shard, index) => ({
       ...base,
@@ -629,18 +662,13 @@ function buildDiscoveryTasks(
           taskId: "wechat:0",
           sourceName: "wechat",
           keywords,
-          serperFallbacksReserved: wechatSearchDue(cycle)
-            ? Math.min(
-                WECHAT_SEARCH_QUERIES.length,
-                Math.max(0, budgetGrant.serper - serper.length),
-              )
-            : 0,
+          serperFallbacksReserved: 0,
         }];
     return [...serper, ...rss, ...wechat];
   }
 
   const gateFirecrawlEnabled = env.CLOUDFLARE_GATE_FIRECRAWL_ENABLED !== "false";
-  const gate = gateFirecrawlEnabled
+  const gate = !gateDue(cycle) ? [] : gateFirecrawlEnabled
     ? GATE_LIST_URLS.map((shard, index) => ({
         ...base,
         taskId: `gate_square:${index}`,
@@ -693,7 +721,7 @@ function buildDiscoveryTasks(
   const chineseSocial: DiscoveryTask[] = [];
   if (chineseSocialDue(cycle, env) && chineseSocialKeywords.length > 0) {
     for (const sourceName of configuredChineseSocialSources(env)) {
-      const browserKeywordCount = Math.min(chineseSocialKeywords.length, remainingBrowserCalls);
+      const browserKeywordCount = remainingBrowserCalls > 0 ? chineseSocialKeywords.length : 0;
       const fallbackKeywordCount = Math.min(chineseSocialKeywords.length, remainingSerper);
       const taskKeywordCount = Math.max(browserKeywordCount, fallbackKeywordCount);
       const taskKeywords = chineseSocialKeywords.slice(0, taskKeywordCount);
@@ -707,7 +735,7 @@ function buildDiscoveryTasks(
         serperFallbacksReserved: fallbackKeywordCount,
         browserPreferred: browserKeywordCount === taskKeywords.length,
       });
-      remainingBrowserCalls = Math.max(0, remainingBrowserCalls - browserKeywordCount);
+      remainingBrowserCalls = Math.max(0, remainingBrowserCalls - (browserKeywordCount > 0 ? 1 : 0));
       remainingSerper = Math.max(0, remainingSerper - fallbackKeywordCount);
     }
   }
@@ -732,14 +760,11 @@ async function bootstrap(task: BootstrapTask, env: QueueEnv): Promise<void> {
     ? configuredChineseSocialSources(env).length * chineseSocialKeywordCount
     : 0;
   const gateFirecrawlEnabled = env.CLOUDFLARE_GATE_FIRECRAWL_ENABLED !== "false";
-  const wechatSearchCalls = isNews && env.CLOUDFLARE_WECHAT_ENABLED !== "false" && wechatSearchDue(task)
-    ? WECHAT_SEARCH_QUERIES.length
-    : 0;
   const budgetGrant = await budget.reserveQueuedBudget({
     serper: isNews
-      ? keywords.length + wechatSearchCalls
+      ? keywords.length
       : (runBinance ? 1 : 0) + chineseSocialSerperCalls,
-    firecrawl: isNews || !gateFirecrawlEnabled ? 0 : GATE_LIST_URLS.length,
+    firecrawl: gateDue(task) && gateFirecrawlEnabled ? GATE_LIST_URLS.length : 0,
   });
   const discoveryTasks = buildDiscoveryTasks(task, keywords, budgetGrant, env);
   const maxArticles = isNews
@@ -757,7 +782,7 @@ async function bootstrap(task: BootstrapTask, env: QueueEnv): Promise<void> {
           ...(discoveryTasks.some((item) => item.sourceName === "wechat") ? ["wechat"] : []),
         ]
       : [
-          "gate_square",
+          ...(discoveryTasks.some((item) => item.sourceName === "gate_square") ? ["gate_square"] : []),
           "telegram",
           "x",
           ...(discoveryTasks.some((item) => item.sourceName === BINANCE_BROWSER_SOURCE)
@@ -781,11 +806,11 @@ function configuredBinanceTerms(env: QueueEnv): string[] {
     .split(",")
     .map((value) => value.trim())
     .filter(Boolean)
-    .slice(0, 4);
+    .slice(0, 8);
 }
 
 function binanceQueries(env: QueueEnv): string[] {
-  const max = Math.min(4, positiveInt(env.CLOUDFLARE_BINANCE_MAX_QUERIES, 1));
+  const max = Math.min(8, positiveInt(env.CLOUDFLARE_BINANCE_MAX_QUERIES, 1));
   return configuredBinanceTerms(env).slice(0, max);
 }
 
@@ -903,40 +928,64 @@ async function fetchBinancePosts(
   serperBudgetReserved: boolean,
 ): Promise<{ result: BinanceBrowserSearchResult; provider: "browser" | "serper" }> {
   const startedAt = Date.now();
-  let browserResult: BinanceBrowserSearchResult;
-  try {
-    const response = await env.BINANCE_BROWSER.fetch("https://binance-browser/search", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        queries: binanceQueries(env),
-        pageSize: 20,
-      }),
-      signal: AbortSignal.timeout(55_000),
-    });
-    if (!response.ok) {
-      throw new Error(
-        `Binance Browser Worker HTTP ${response.status}: ${(await response.text()).slice(0, 300)}`,
-      );
-    }
-    browserResult = await response.json<BinanceBrowserSearchResult>();
-  } catch (error) {
-    const message = (error instanceof Error ? error.message : String(error)).slice(0, 300);
-    browserResult = {
-      ok: false,
-      posts: [],
-      durationMs: Date.now() - startedAt,
-      sessionId: "",
-      queriesAttempted: binanceQueries(env).length,
-      queriesSucceeded: 0,
-      diagnostics: [{
-        query: "browser",
-        status: "failed",
-        posts: 0,
-        error: message,
-      }],
-    };
+  const queries = binanceQueries(env);
+  const results: BinanceBrowserSearchResult[] = [];
+  for (const batch of binanceQueryBatches(queries, 2)) {
+    results.push(...await Promise.all(batch.map(async (query): Promise<BinanceBrowserSearchResult> => {
+      const queryStartedAt = Date.now();
+      try {
+        const response = await env.BINANCE_BROWSER.fetch("https://binance-browser/search", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ queries: [query], pageSize: 20 }),
+          signal: AbortSignal.timeout(55_000),
+        });
+        if (!response.ok) {
+          throw new Error(
+            `Binance Browser Worker HTTP ${response.status}: ${(await response.text()).slice(0, 300)}`,
+          );
+        }
+        return await response.json<BinanceBrowserSearchResult>();
+      } catch (error) {
+        return {
+          ok: false,
+          posts: [],
+          durationMs: Date.now() - queryStartedAt,
+          sessionId: "",
+          queriesRequested: 1,
+          queriesExecuted: 0,
+          queriesTruncated: 0,
+          queriesAttempted: 1,
+          queriesSucceeded: 0,
+          diagnostics: [{
+            query,
+            status: "failed",
+            posts: 0,
+            error: (error instanceof Error ? error.message : String(error)).slice(0, 300),
+          }],
+        };
+      }
+    })));
   }
+  const postsByUrl = new Map(results.flatMap((result) => result.posts).map((post) => [post.url, post]));
+  const browserResult: BinanceBrowserSearchResult = {
+    ok: results.some((result) => result.ok),
+    posts: Array.from(postsByUrl.values()),
+    durationMs: Date.now() - startedAt,
+    sessionId: results.map((result) => result.sessionId).filter(Boolean).join(","),
+    queriesRequested: queries.length,
+    queriesExecuted: results.reduce(
+      (total, result) => total + (result.queriesExecuted ?? result.queriesAttempted),
+      0,
+    ),
+    queriesTruncated: results.reduce(
+      (total, result) => total + (result.queriesTruncated ?? 0),
+      0,
+    ),
+    queriesAttempted: results.reduce((total, result) => total + result.queriesAttempted, 0),
+    queriesSucceeded: results.reduce((total, result) => total + result.queriesSucceeded, 0),
+    diagnostics: results.flatMap((result) => result.diagnostics),
+  };
   if (!binanceBrowserNeedsFallback(browserResult) || !serperBudgetReserved) {
     return { result: browserResult, provider: "browser" };
   }
@@ -950,6 +999,9 @@ async function fetchBinancePosts(
         ok: true,
         posts,
         durationMs: Date.now() - startedAt,
+        queriesRequested: browserResult.queriesRequested,
+        queriesExecuted: browserResult.queriesExecuted,
+        queriesTruncated: browserResult.queriesTruncated,
         queriesAttempted: browserResult.queriesAttempted + 1,
         queriesSucceeded: 1,
         diagnostics: [
@@ -968,6 +1020,9 @@ async function fetchBinancePosts(
       result: {
         ...browserResult,
         durationMs: Date.now() - startedAt,
+        queriesRequested: browserResult.queriesRequested,
+        queriesExecuted: browserResult.queriesExecuted,
+        queriesTruncated: browserResult.queriesTruncated,
         queriesAttempted: browserResult.queriesAttempted + 1,
         diagnostics: [
           ...browserResult.diagnostics,
@@ -1017,6 +1072,15 @@ function matchBinancePosts(
 export async function getBinanceProbeStatus(): Promise<Record<string, string | null>> {
   return Object.fromEntries(await Promise.all(
     Object.entries(BINANCE_STATUS_KEYS).map(async ([name, key]) => [
+      name,
+      await db.getSysConfig(key),
+    ]),
+  ));
+}
+
+export async function getWechatProbeStatus(): Promise<Record<string, string | null>> {
+  return Object.fromEntries(await Promise.all(
+    Object.entries(WECHAT_STATUS_KEYS).map(async ([name, key]) => [
       name,
       await db.getSysConfig(key),
     ]),
@@ -1102,6 +1166,8 @@ async function runObservedGeoShard(
   task: GeoDailyShardTask | GeoWeeklyShardTask,
 ): Promise<void> {
   const daily = task.kind === "geo_daily_shard";
+  const flags = getCloudflareFeatureFlags(env);
+  if (daily ? !flags.geoDaily : !flags.geoWeekly) return;
   const keys = daily ? GEO_DAILY_STATUS_KEYS : GEO_WEEKLY_STATUS_KEYS;
   const name = daily ? "geo_daily_shard" : "geo_weekly_openrouter_shard";
   const startedAt = Date.now();
@@ -1210,7 +1276,7 @@ async function runObservedGeoShard(
       failed: 1,
       remaining: 0,
       done: false,
-      provider: daily ? "routed" : "openrouter",
+        provider: "openrouter",
       error: message,
       finishedAt: Date.now(),
     } satisfies GeoAcceptanceRecord);
@@ -1262,6 +1328,9 @@ async function binanceProbe(task: BinanceProbeTask, env: QueueEnv): Promise<void
         scheduledTime: task.scheduledTime,
         rawPosts: result.posts.length,
         matchedPosts: matched.size,
+        queriesRequested: result.queriesRequested,
+        queriesExecuted: result.queriesExecuted,
+        queriesTruncated: result.queriesTruncated,
         samples: Array.from(matched.values()).slice(0, 3).map((item) => ({
           title: item.post.title.slice(0, 160),
           url: item.post.url.slice(0, 500),
@@ -1307,6 +1376,22 @@ async function finishDiscovery(
     diagnostic?: SourceDiagnostic;
   },
 ): Promise<void> {
+  if (values.sourceName === "wechat" && values.diagnostic) {
+    const finishedAt = values.diagnostic.updatedAt || Date.now();
+    await Promise.all([
+      db.setSysConfig(WECHAT_STATUS_KEYS.status, values.diagnostic.status),
+      db.setSysConfig(WECHAT_STATUS_KEYS.provider, values.diagnostic.provider || "unknown"),
+      db.setSysConfig(WECHAT_STATUS_KEYS.startedAt, String(finishedAt - (values.diagnostic.durationMs || 0))),
+      db.setSysConfig(WECHAT_STATUS_KEYS.finishedAt, String(finishedAt)),
+      db.setSysConfig(WECHAT_STATUS_KEYS.summary, JSON.stringify({
+        discovered: values.diagnostic.discovered,
+        enqueued: values.diagnostic.enqueued,
+        queriesAttempted: values.diagnostic.queriesAttempted,
+        queriesSucceeded: values.diagnostic.queriesSucceeded,
+      })),
+      db.setSysConfig(WECHAT_STATUS_KEYS.error, (values.diagnostic.errors || []).join("; ").slice(0, 1000)),
+    ]);
+  }
   const state = await coordinatorPost<CoordinatorStats>(
     env,
     task.profile,
@@ -1361,6 +1446,9 @@ async function discoverBinance(task: DiscoveryTask, env: QueueEnv): Promise<void
       rawPosts: result.posts.length,
       matchedPosts: posts.size,
       enqueued: selected.length,
+      queriesRequested: result.queriesRequested,
+      queriesExecuted: result.queriesExecuted,
+      queriesTruncated: result.queriesTruncated,
     })),
     db.setSysConfig(BINANCE_STATUS_KEYS.error, (diagnostic.errors || []).join("; ").slice(0, 1000)),
   ]);
@@ -1381,6 +1469,9 @@ async function discoverBinance(task: DiscoveryTask, env: QueueEnv): Promise<void
     rawPosts: result.posts.length,
     matchedPosts: posts.size,
     enqueued: selected.length,
+    queriesRequested: result.queriesRequested,
+    queriesExecuted: result.queriesExecuted,
+    queriesTruncated: result.queriesTruncated,
     diagnostic,
   }));
   await finishDiscovery(task, env, {
@@ -1686,23 +1777,22 @@ async function discover(task: DiscoveryTask, env: QueueEnv): Promise<void> {
   const startedAt = Date.now();
   if (task.sourceName === "wechat") {
     const errors: string[] = [];
-    let collectorSucceeded = false;
     let found: DiscoveredPost[] = [];
-    try {
-      if (!env.WECHAT_COLLECTOR_TOKEN) throw new Error("WECHAT_COLLECTOR_TOKEN is missing");
-      const response = await env.WECHAT_COLLECTOR.fetch("https://wechat-collector/collect", {
-        headers: { authorization: `Bearer ${env.WECHAT_COLLECTOR_TOKEN}` },
-        signal: AbortSignal.timeout(60_000),
-      });
-      if (!response.ok) {
-        throw new Error(`WeChat collector HTTP ${response.status}: ${(await response.text()).slice(0, 200)}`);
+    let collectorSucceeded = 0;
+    if (env.WECHAT_COLLECTOR_TOKEN) {
+      try {
+        const response = await env.WECHAT_COLLECTOR.fetch("https://wechat-collector/collect", {
+          headers: { authorization: `Bearer ${env.WECHAT_COLLECTOR_TOKEN}` },
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}: ${(await response.text()).slice(0, 180)}`);
+        found.push(...parseWeChatRss(await response.text()));
+        collectorSucceeded = 1;
+      } catch (error) {
+        errors.push(`WeRSS: ${String(error).slice(0, 220)}`);
       }
-      found = await parseWeChatRss(await response.text());
-      collectorSucceeded = true;
-    } catch (error) {
-      errors.push(String(error).slice(0, 240));
     }
-    const searchQueries = WECHAT_SEARCH_QUERIES.slice(0, task.serperFallbacksReserved || 0);
+    const fallbackGrant = await budget.reserveQueuedBudget({ serper: WECHAT_SEARCH_QUERIES.length });
+    const searchQueries = WECHAT_SEARCH_QUERIES.slice(0, fallbackGrant.serper);
     const searchResults = await Promise.allSettled(searchQueries.map((query) => searchWeb(
       `site:mp.weixin.qq.com/s ${query}`,
       { tbs: "qdr:w", num: 10, gl: "cn", hl: "zh-cn" },
@@ -1711,11 +1801,78 @@ async function discover(task: DiscoveryTask, env: QueueEnv): Promise<void> {
       if (result.status === "fulfilled") {
         found.push(...mapWeChatSearchItems(result.value, WECHAT_SEARCH_KEYWORDS));
       } else {
-        errors.push(`${searchQueries[index]}: ${String(result.reason).slice(0, 180)}`);
+        errors.push(`Serper ${searchQueries[index]}: ${String(result.reason).slice(0, 180)}`);
       }
     }
     const searchSucceeded = searchResults.filter((result) => result.status === "fulfilled").length;
-    if (!collectorSucceeded && searchSucceeded === 0) {
+    let browserQueriesAttempted = 0;
+    let browserQueriesSucceeded = 0;
+    try {
+      const response = await env.CHINESE_SOCIAL_BROWSER.fetch(
+        "https://chinese-social-browser/wechat/search",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            queries: WECHAT_SEARCH_KEYWORDS,
+            maxResults: positiveInt(env.CLOUDFLARE_WECHAT_MAX_ARTICLES, SOURCE_LIMITS.wechat),
+          }),
+        },
+      );
+      const result = await response.json<WeChatBrowserSearchResult>();
+      browserQueriesAttempted = result.queriesAttempted || WECHAT_SEARCH_KEYWORDS.length;
+      browserQueriesSucceeded = result.queriesSucceeded || 0;
+      if (!response.ok) throw new Error(result.errors?.join("; ") || `HTTP ${response.status}`);
+      found.push(...(result.posts || []));
+      errors.push(...(result.errors || []));
+    } catch (error) {
+      errors.push(`Sogou Browser: ${String(error).slice(0, 220)}`);
+    }
+    let aidataQueriesAttempted = 0;
+    let aidataQueriesSucceeded = 0;
+    if (env.AIDATA_API_TOKEN) {
+      const intervalMs = Math.min(24, Math.max(1,
+        positiveInt(env.CLOUDFLARE_WECHAT_AIDATA_INTERVAL_HOURS, 6),
+      )) * 3_600_000;
+      const now = Date.now();
+      const lastAt = Number(await db.getSysConfig(WECHAT_AIDATA_LAST_AT_KEY)) || 0;
+      if (now - lastAt >= intervalMs) {
+        aidataQueriesAttempted = WECHAT_SEARCH_KEYWORDS.length;
+        const aidataResults = await Promise.allSettled(WECHAT_SEARCH_KEYWORDS.map(async (keyword) => {
+          const url = new URL("https://aidata.vip/api/v1/data/weixin/mp/search/article");
+          url.searchParams.set("keyword", keyword);
+          url.searchParams.set("page", "1");
+          url.searchParams.set("refresh", "false");
+          const response = await fetch(url, {
+            headers: {
+              accept: "application/json",
+              authorization: `Bearer ${env.AIDATA_API_TOKEN}`,
+            },
+            signal: AbortSignal.timeout(30_000),
+          });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          return mapAidataWeChatResponse(await response.json());
+        }));
+        for (const [index, result] of aidataResults.entries()) {
+          if (result.status === "fulfilled") {
+            aidataQueriesSucceeded += 1;
+            found.push(...result.value);
+          } else {
+            errors.push(`AIDATA ${WECHAT_SEARCH_KEYWORDS[index]}: ${String(result.reason).slice(0, 180)}`);
+          }
+        }
+        if (aidataQueriesSucceeded > 0) {
+          await db.setSysConfig(WECHAT_AIDATA_LAST_AT_KEY, String(now));
+        }
+      }
+    }
+    const providers = [
+      env.WECHAT_COLLECTOR_TOKEN && "werss",
+      searchQueries.length > 0 && "serper",
+      browserQueriesAttempted > 0 && "sogou_browser",
+      aidataQueriesAttempted > 0 && "aidata",
+    ].filter(Boolean).join("+") || "none";
+    if (collectorSucceeded === 0 && browserQueriesSucceeded === 0 && searchSucceeded === 0 && aidataQueriesSucceeded === 0) {
       await finishDiscovery(task, env, {
         discovered: 0,
         enqueued: 0,
@@ -1723,11 +1880,11 @@ async function discover(task: DiscoveryTask, env: QueueEnv): Promise<void> {
         sourceName: "wechat",
         diagnostic: {
           status: "failed",
-          provider: "cloudflare_container_werss+serper_site_search",
+          provider: providers,
           discovered: 0,
           enqueued: 0,
           durationMs: Date.now() - startedAt,
-          queriesAttempted: 1 + searchQueries.length,
+          queriesAttempted: Number(Boolean(env.WECHAT_COLLECTOR_TOKEN)) + browserQueriesAttempted + searchQueries.length + aidataQueriesAttempted,
           queriesSucceeded: 0,
           errors,
           updatedAt: Date.now(),
@@ -1785,15 +1942,13 @@ async function discover(task: DiscoveryTask, env: QueueEnv): Promise<void> {
       failed: false,
       sourceName: "wechat",
       diagnostic: {
-        status: errors.length > 0 ? "partial" : selected.length > 0 ? "success" : "empty",
-        provider: searchQueries.length > 0
-          ? "cloudflare_container_werss+serper_site_search"
-          : "cloudflare_container_werss",
+        status: selected.length > 0 ? "success" : errors.length > 0 ? "partial" : "empty",
+        provider: providers,
         discovered: found.length,
         enqueued: selected.length,
         durationMs: Date.now() - startedAt,
-        queriesAttempted: 1 + searchQueries.length,
-        queriesSucceeded: Number(collectorSucceeded) + searchSucceeded,
+        queriesAttempted: Number(Boolean(env.WECHAT_COLLECTOR_TOKEN)) + browserQueriesAttempted + searchQueries.length + aidataQueriesAttempted,
+        queriesSucceeded: collectorSucceeded + browserQueriesSucceeded + searchSucceeded + aidataQueriesSucceeded,
         ...(errors.length > 0 ? { errors } : {}),
         updatedAt: Date.now(),
       },
@@ -1819,47 +1974,57 @@ async function discover(task: DiscoveryTask, env: QueueEnv): Promise<void> {
   }>();
   const chineseSocial = CHINESE_SOCIAL_SOURCE_NAMES.includes(task.sourceName);
   let browserMs = 0;
-  let browserQueries = 0;
   let browserSuccesses = 0;
   let browserFallbacks = 0;
+  let queriesAttempted = 0;
+  let queriesSucceeded = 0;
   const browserErrors: string[] = [];
-  for (const [keywordIndex, keyword] of task.keywords.entries()) {
-    const zh = hasCJK(keyword.keyword);
-    let found: DiscoveredPost[] | null = null;
-    if (chineseSocial && task.browserPreferred) {
-      browserQueries++;
-      try {
-        const platform = task.sourceName.replace(/_serper$/, "");
-        const response = await env.CHINESE_SOCIAL_BROWSER.fetch(
-          "https://chinese-social-browser/search",
-          {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              platform,
-              keyword: keyword.keyword,
-              maxResults: SOURCE_LIMITS[task.sourceName] || 3,
-            }),
-          },
-        );
-        const result = await response.json<ChineseSocialBrowserResult>();
-        browserMs += Math.max(0, Number(result.browserMs) || 0);
-        if (response.ok && result.ok && result.posts.length > 0) {
-          found = result.posts;
+  const browserPosts = new Map<string, DiscoveredPost[]>();
+  if (chineseSocial && task.browserPreferred) {
+    const platform = task.sourceName.replace(/_serper$/, "");
+    try {
+      const response = await env.CHINESE_SOCIAL_BROWSER.fetch(
+        "https://chinese-social-browser/search-batch",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            platform,
+            keywords: task.keywords.map(keyword => keyword.keyword),
+            maxResults: SOURCE_LIMITS[task.sourceName] || 3,
+          }),
+        },
+      );
+      const result = await response.json<ChineseSocialBrowserBatchResult>();
+      browserMs = Math.max(0, Number(result.browserMs) || 0);
+      queriesAttempted += (result.results || []).length;
+      for (const item of result.results || []) {
+        if (!item.error) queriesSucceeded++;
+        const datedPosts = item.posts.filter(post => post.publishedAt != null);
+        if (datedPosts.length > 0) {
+          browserPosts.set(item.keyword, datedPosts);
           browserSuccesses++;
         } else {
           browserFallbacks++;
-          browserErrors.push(
-            `${platform}: ${result.error || result.status || `HTTP ${response.status}`}`,
-          );
+          if (item.error) browserErrors.push(`${platform}/${item.keyword}: ${item.error}`);
         }
-      } catch (error) {
-        browserFallbacks++;
-        browserErrors.push(
-          `${task.sourceName.replace(/_serper$/, "")}: ${String(error).slice(0, 180)}`,
-        );
       }
+      if (!response.ok || !result.ok) {
+        browserErrors.push(`${platform}: ${result.error || result.status || `HTTP ${response.status}`}`);
+      }
+      if (result.truncatedKeywords?.length) {
+        browserFallbacks += result.truncatedKeywords.length;
+        browserErrors.push(`${platform}: 浏览器容量不足，${result.truncatedKeywords.join("、")} 转 Serper 兜底`);
+      }
+    } catch (error) {
+      queriesAttempted += Math.min(5, task.keywords.length);
+      browserFallbacks = task.keywords.length;
+      browserErrors.push(`${platform}: ${String(error).slice(0, 180)}`);
     }
+  }
+  for (const [keywordIndex, keyword] of task.keywords.entries()) {
+    const zh = hasCJK(keyword.keyword);
+    let found: DiscoveredPost[] | null = browserPosts.get(keyword.keyword) || null;
     let serperFallbackAvailable =
       !chineseSocial || keywordIndex < (task.serperFallbacksReserved || 0);
     if (chineseSocial && !found && task.browserPreferred && !serperFallbackAvailable) {
@@ -1867,14 +2032,20 @@ async function discover(task: DiscoveryTask, env: QueueEnv): Promise<void> {
       serperFallbackAvailable = fallbackGrant.serper > 0;
     }
     if (!found && serperFallbackAvailable) {
-      found = await source.search(keyword.keyword, {
-        tbs: keyword.priority >= 8 ? "qdr:d" : "qdr:w",
-        num: 10,
-        gl: zh ? "cn" : "us",
-        hl: zh ? "zh-cn" : "en",
-        shard: task.shard,
-        budgetReserved: task.budgetReserved,
-      });
+      queriesAttempted++;
+      try {
+        found = await source.search(keyword.keyword, {
+          tbs: keyword.priority >= 8 ? "qdr:d" : "qdr:w",
+          num: 10,
+          gl: zh ? "cn" : "us",
+          hl: zh ? "zh-cn" : "en",
+          shard: task.shard,
+          budgetReserved: task.budgetReserved,
+        });
+        queriesSucceeded++;
+      } catch (error) {
+        browserErrors.push(`${task.sourceName}/${keyword.keyword}: ${String(error).slice(0, 180)}`);
+      }
     }
     if (!found) {
       found = [];
@@ -1886,6 +2057,10 @@ async function discover(task: DiscoveryTask, env: QueueEnv): Promise<void> {
     }
     for (const post of found) {
       if (!post.url || isSearchIntermediaryUrl(post.url)) continue;
+      const content = `${post.title || ""} ${post.fullContent || post.contentSnippet || ""}`;
+      if (!(chineseSocial
+        ? chineseSocialKeywordMatchesText(keyword.keyword, content)
+        : keywordMatchesText(keyword.keyword, content))) continue;
       const normalizedUrl = normalizeUrl(post.url);
       const urlHash = sha256(normalizedUrl);
       const current = posts.get(urlHash);
@@ -1897,6 +2072,8 @@ async function discover(task: DiscoveryTask, env: QueueEnv): Promise<void> {
       });
     }
   }
+  const xErrors = task.sourceName === "x" ? getXErrors() : [];
+  browserErrors.push(...xErrors);
   if (task.sourceName === "gate_square" && posts.size === 0) {
     const gateDiagnostic = getGateRenderDiagnostic(task.shard);
     if (gateDiagnostic.errors.length > 0) {
@@ -1933,10 +2110,14 @@ async function discover(task: DiscoveryTask, env: QueueEnv): Promise<void> {
   await finishDiscovery(task, env, {
     discovered: posts.size,
     enqueued: selected.length,
-    failed: false,
+    failed: (queriesAttempted > 0 && queriesSucceeded === 0) || xErrors.length > 0,
     sourceName: task.sourceName.replace(/_serper$/, ""),
     diagnostic: {
-      status: posts.size > 0 ? "success" : "empty",
+      status: queriesAttempted > 0 && queriesSucceeded === 0
+        ? "failed"
+        : browserErrors.length > 0
+          ? "partial"
+          : posts.size > 0 ? "success" : "empty",
       provider: chineseSocial && browserSuccesses > 0
         ? "browser"
         : task.sourceName.endsWith("_serper") ? "serper" : undefined,
@@ -1945,16 +2126,17 @@ async function discover(task: DiscoveryTask, env: QueueEnv): Promise<void> {
       durationMs: Date.now() - startedAt,
       browserMs,
       fallbacks: browserFallbacks,
-      queriesAttempted: task.keywords.length,
-      queriesSucceeded: task.keywords.length,
+      queriesAttempted,
+      queriesSucceeded,
       ...(browserErrors.length > 0 ? { errors: browserErrors.slice(0, 4) } : {}),
       updatedAt: Date.now(),
     },
   });
 }
 
-function toFetchMethod(engine: string): "snippet_only" | null {
-  return engine === "snippet" ? "snippet_only" : null;
+function toFetchMethod(engine: string): "snippet_only" | "self" | "firecrawl" | null {
+  if (engine === "snippet") return "snippet_only";
+  return engine === "self" || engine === "firecrawl" ? engine : null;
 }
 
 async function completeCandidate(
@@ -2009,10 +2191,14 @@ async function candidate(task: CandidateTask, env: QueueEnv): Promise<void> {
     post.sourceName === "serper" ||
     post.sourceName.endsWith("_serper") ||
     post.sourceName.endsWith("_browser");
-  const browserDateVerified = post.fetchEngineHint === "social_browser" && post.publishedAt != null;
+  const discoveryDateTrusted = isTrustedDiscoveryPublishedAt(
+    post.sourceName,
+    post.fetchEngineHint,
+    post.publishedAt,
+  );
   let sourceDate: SourceDateVerification | null = null;
   let effectivePublishedAt = post.publishedAt ?? null;
-  if (searchDerived && !browserDateVerified) {
+  if (searchDerived && !discoveryDateTrusted) {
     sourceDate = await verifySourcePublishedAt(post.url);
     if (sourceDate.status !== "verified" || sourceDate.publishedAt == null) {
       console.log(JSON.stringify({
@@ -2050,10 +2236,14 @@ async function candidate(task: CandidateTask, env: QueueEnv): Promise<void> {
     return;
   }
 
-  const contentMd = (post.fullContent || post.contentSnippet || "").slice(0, 20_000);
+  let contentMd = (post.fullContent || post.contentSnippet || "").slice(0, 20_000);
   const title = (post.title || contentMd.slice(0, 80)).slice(0, 512);
+  if (!monitorArticleMatchesKeywords(task.matchedKeywords, title, contentMd)) {
+    await settleCandidate(env, task, "content_keyword_mismatch");
+    return;
+  }
   const rawContentHash = contentMd ? sha256(contentMd) : "";
-  const contentHash = contentMd ? monitorContentHash(contentMd) : "";
+  let contentHash = contentMd ? monitorContentHash(contentMd) : "";
   if (
     contentMd &&
     await db.getRecentMonitorArticleDuplicate({
@@ -2094,19 +2284,32 @@ async function candidate(task: CandidateTask, env: QueueEnv): Promise<void> {
     );
     return;
   }
-  const fetchEngine = post.fullContent
-    ? (post.fetchEngineHint || "source_api")
-    : "snippet";
-  const fetchStatus = post.fullContent ? "full" : contentMd ? "partial" : "failed";
+  const fetched = post.fullContent ? null : await fetchArticle(post.url, post.contentSnippet || "", post.sourcePlatform);
+  const fetchEngine = fetched?.engine || post.fetchEngineHint || "source_api";
+  const fetchStatus = fetched?.status || "full";
+  const fetchCostUsd = fetched?.costUsd ?? post.fetchCostUsdHint ?? 0;
+  if (fetched) {
+    contentMd = (fetched.contentMd || "").slice(0, 20_000);
+    contentHash = contentMd ? monitorContentHash(contentMd) : "";
+    const relevant = detectContentLang(`${title} ${contentMd}`).allowed &&
+      monitorArticleMatchesKeywords(task.matchedKeywords, title, contentMd);
+    const duplicate = contentMd && await db.getRecentMonitorArticleDuplicate({
+      contentHashes: [sha256(contentMd), contentHash], title,
+    });
+    if (!relevant || duplicate) {
+      await completeCandidate(env, task, { inserted: false, dedupConflict: Boolean(duplicate), sourcePlatform: post.sourcePlatform });
+      return;
+    }
+  }
   const fetchAttempt = {
     engine: fetchEngine,
-    outcome: post.fullContent ? "success" as const : "fallback" as const,
-    reason: post.fullContent ? "success" as const : "snippet_fallback" as const,
+    outcome: fetchStatus === "full" ? "success" as const : "fallback" as const,
+    reason: fetchStatus === "full" ? "success" as const : "snippet_fallback" as const,
     durationMs: 0,
     contentChars: contentMd.length,
-    costUsd: post.fetchCostUsdHint || 0,
+    costUsd: fetchCostUsd,
   };
-  recordFetchAttempt(post.url, fetchAttempt, post.sourcePlatform);
+  if (!fetched) recordFetchAttempt(post.url, fetchAttempt, post.sourcePlatform);
   let analysis: Awaited<ReturnType<typeof analyzeArticle>> | null = null;
   let analysisFailed = false;
   if (contentMd) {
@@ -2128,32 +2331,34 @@ async function candidate(task: CandidateTask, env: QueueEnv): Promise<void> {
   let inserted = false;
   let dedupConflict = false;
   try {
-    inserted = Boolean(await db.createMonitorArticle({
-      url: task.normalizedUrl.slice(0, 768),
-      urlHash: task.urlHash,
-      domain: domain ? domain.slice(0, 128) : null,
-      title: title || null,
-      contentMd: contentMd || null,
-      contentHash: contentHash || null,
-      publishedAt: effectivePublishedAt,
-      firstSeenAt: Date.now(),
-      fetchEngine,
-      fetchMethod: toFetchMethod(fetchEngine),
-      fetchStatus,
-      fetchCostUsd: String(post.fetchCostUsdHint || 0),
-      sourcePlatform: post.sourcePlatform,
-      matchedKeywords: task.matchedKeywords,
-      sentimentScore: analysis?.sentimentScore ?? null,
-      relevance: analysis?.relevance ?? null,
-      relevanceReason: analysis?.relevanceReason ?? null,
-      threatLevel: analysis?.threatLevel ?? null,
-      analysisSummary: analysis?.summary ?? null,
-      analyzedAt: analysis ? Date.now() : null,
-      promptTokens: analysis?.promptTokens ?? null,
-      completionTokens: analysis?.completionTokens ?? null,
-      costUsd: analysis?.costUsd != null ? String(analysis.costUsd) : null,
-    }));
-    if (!inserted) dedupConflict = true;
+    if (shouldStoreMonitorAnalysis(analysis)) {
+      inserted = Boolean(await db.createMonitorArticle({
+        url: task.normalizedUrl.slice(0, 768),
+        urlHash: task.urlHash,
+        domain: domain ? domain.slice(0, 128) : null,
+        title: title || null,
+        contentMd: contentMd || null,
+        contentHash: contentHash || null,
+        publishedAt: effectivePublishedAt,
+        firstSeenAt: Date.now(),
+        fetchEngine,
+        fetchMethod: toFetchMethod(fetchEngine),
+        fetchStatus,
+        fetchCostUsd: String(fetchCostUsd),
+        sourcePlatform: post.sourcePlatform,
+        matchedKeywords: task.matchedKeywords,
+        sentimentScore: analysis?.sentimentScore ?? null,
+        relevance: analysis?.relevance ?? null,
+        relevanceReason: analysis?.relevanceReason ?? null,
+        threatLevel: analysis?.threatLevel ?? null,
+        analysisSummary: analysis?.summary ?? null,
+        analyzedAt: analysis ? Date.now() : null,
+        promptTokens: analysis?.promptTokens ?? null,
+        completionTokens: analysis?.completionTokens ?? null,
+        costUsd: analysis?.costUsd != null ? String(analysis.costUsd) : null,
+      }));
+      if (!inserted) dedupConflict = true;
+    }
   } catch (error) {
     // A concurrent shard can win the unique URL race. Treat that as a clean
     // dedup outcome; unexpected database failures still retry the queue message.
@@ -2220,7 +2425,7 @@ async function candidate(task: CandidateTask, env: QueueEnv): Promise<void> {
     briefingItem,
   });
   if (
-    !post.fullContent &&
+    fetchStatus !== "full" &&
     contentMd &&
     getCloudflareFeatureFlags(env).browserFullTextShadow
   ) {
@@ -2498,7 +2703,8 @@ async function postCycle(task: PostCycleTask, env: QueueEnv): Promise<void> {
     record.failureNotificationAttempted = true;
     try {
       const title = `Cloudflare 舆情批次异常 · ${task.profile}`;
-      const content = `批次 ${task.cycleId} 以 partial_failure 结束，请检查 Worker 状态与日志。`;
+      const content = `批次 ${task.cycleId} 以 partial_failure 结束，请检查 Worker 状态与日志。`
+        + (task.xErrors?.length ? `\nX 采集异常：${task.xErrors[0]}` : "");
       const [telegram, email] = await Promise.all([
         dispatchNotification({
           messageType: "alert",
@@ -2509,7 +2715,7 @@ async function postCycle(task: PostCycleTask, env: QueueEnv): Promise<void> {
         }),
         sendEmailAlert(
           title,
-          `<p>${content}</p><p>该通知来自 Cloudflare 独立运行版本。</p>`,
+          `<p>${content.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")}</p><p>该通知来自 Cloudflare 独立运行版本。</p>`,
         ),
       ]);
       record.failureNotificationSent = telegram.sent > 0 || email.sent;
@@ -2592,7 +2798,12 @@ export async function processMonitorQueue(
       }
       message.ack();
     } catch (error) {
-      console.error(`[Monitor Queue] ${task.kind}: ${String(error).slice(0, 500)}`);
+      const errorText = String(error);
+      console.error(`[Monitor Queue] ${task.kind}: ${errorText.slice(0, 500)}`);
+      if (errorText.includes("HTTP 409") && (errorText.includes('"stale":true') || errorText.includes('"running":true'))) {
+        message.ack();
+        continue;
+      }
       if (task.kind === "browser_shadow" && error instanceof BrowserShadowCooldownError) {
         message.retry({ delaySeconds: error.delaySeconds });
         continue;
@@ -2616,6 +2827,16 @@ export async function processMonitorQueue(
                   discovered: 0,
                   enqueued: 0,
                   failed: true,
+                  sourceName: task.sourceName.replace(/_serper$/, ""),
+                  diagnostic: {
+                    status: "failed",
+                    discovered: 0,
+                    enqueued: 0,
+                    queriesAttempted: task.keywords.length,
+                    queriesSucceeded: 0,
+                    errors: [errorText.slice(0, 240)],
+                    updatedAt: Date.now(),
+                  },
                 },
               ),
             ),
@@ -2713,7 +2934,7 @@ export async function enqueueScheduledMonitor(
     if (flags.cleanup) {
       messages.push({ body: { kind: "maintenance", task: "cleanup", scheduledTime } });
     }
-    if (local.weekday === 1 && flags.weeklyReport) {
+    if (local.weekday === 5 && flags.weeklyReport) {
       messages.push({ body: { kind: "maintenance", task: "weekly_report", scheduledTime } });
     }
     if (local.day === 1 && flags.monthlyReport) {

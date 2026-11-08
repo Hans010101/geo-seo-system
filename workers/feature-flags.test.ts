@@ -36,7 +36,6 @@ describe("Cloudflare migration feature flags", () => {
       fetchObservability: false,
       browserFullTextShadow: false,
       chineseSocial: false,
-      openRouterFallback: false,
       openRouterPreflight: false,
     });
   });
@@ -103,6 +102,18 @@ describe("Cloudflare migration feature flags", () => {
       { body: expect.objectContaining({ kind: "geo_daily_shard" }) },
       { body: expect.objectContaining({ kind: "geo_weekly_shard" }) },
     ]);
+  });
+
+  it("schedules sentiment weekly reports on Friday, not Monday, without enabling GEO collection", async () => {
+    const friday = envWith({ CLOUDFLARE_MONITOR_SOCIAL_ENABLED: "false", CLOUDFLARE_CLEANUP_ENABLED: "false" });
+    // 2026-10-02 03:40 Asia/Shanghai.
+    await enqueueScheduledMonitor(Date.UTC(2026, 9, 1, 19, 40), friday.env);
+    expect(friday.sendBatch).toHaveBeenCalledWith([
+      { body: expect.objectContaining({ kind: "maintenance", task: "weekly_report" }) },
+    ]);
+    const monday = envWith({ CLOUDFLARE_MONITOR_SOCIAL_ENABLED: "false", CLOUDFLARE_CLEANUP_ENABLED: "false" });
+    await enqueueScheduledMonitor(Date.UTC(2026, 9, 4, 19, 40), monday.env);
+    expect(monday.sendBatch).not.toHaveBeenCalled();
   });
 
   it("runs the OpenRouter preflight before the first weekly GEO window", async () => {

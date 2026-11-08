@@ -15,6 +15,7 @@ import { firecrawlEngine } from "./firecrawl-engine";
 import { log } from "../util";
 import { attemptFromResult, recordFetchAttempt } from "./observability";
 import type { FetchAttempt } from "./types";
+import { validatePublicHttpUrl } from "../../../workers/fulltext-browser-guard";
 
 const engines: FetchEngine[] = [selfEngine, firecrawlEngine].sort((a, b) => a.level - b.level);
 
@@ -24,9 +25,15 @@ export function registeredEngines() {
 
 // Try each engine in order; return the first success. All fail → keep the Serper snippet so the article
 // stays analyzable (marked engine='snippet').
-export async function fetchArticle(url: string, snippet: string): Promise<FetchResult> {
+export async function fetchArticle(url: string, snippet: string, sourcePlatform = "unknown"): Promise<FetchResult> {
+  const target = validatePublicHttpUrl(url);
+  url = target.href;
+  // Video-page recommendations are not a transcript; retain the source summary until a transcript source exists.
+  const videoPage = /(^|\.)bilibili\.com$/.test(target.hostname) && target.pathname.startsWith("/video/") ||
+    /(^|\.)douyin\.com$/.test(target.hostname) && target.pathname.startsWith("/video/") ||
+    /(^|\.)kuaishou\.com$/.test(target.hostname) && target.pathname.startsWith("/short-video/");
   const attempts: FetchAttempt[] = [];
-  for (const engine of engines) {
+  for (const engine of videoPage ? [] : engines) {
     if (engine.canHandle) {
       const ok = await engine.canHandle(url);
       if (!ok) {
@@ -39,7 +46,7 @@ export async function fetchArticle(url: string, snippet: string): Promise<FetchR
           costUsd: 0,
         };
         attempts.push(skipped);
-        recordFetchAttempt(url, skipped);
+        recordFetchAttempt(url, skipped, sourcePlatform);
         continue; // e.g. firecrawl budget exhausted → skip this engine
       }
     }
@@ -48,8 +55,8 @@ export async function fetchArticle(url: string, snippet: string): Promise<FetchR
       const result = await engine.fetch(url);
       const attempt = attemptFromResult(result, Date.now() - startedAt);
       attempts.push(attempt);
-      recordFetchAttempt(url, attempt);
-      if (result.success) return { ...result, attempts };
+      recordFetchAttempt(url, attempt, sourcePlatform);
+      if (result.success) return { ...result, costUsd: attempts.reduce((sum, item) => sum + item.costUsd, 0), attempts };
     } catch (e: any) {
       const attempt: FetchAttempt = {
         engine: engine.name,
@@ -62,7 +69,7 @@ export async function fetchArticle(url: string, snippet: string): Promise<FetchR
         costUsd: engine.costPerPage,
       };
       attempts.push(attempt);
-      recordFetchAttempt(url, attempt);
+      recordFetchAttempt(url, attempt, sourcePlatform);
       log.warn(`fetch engine ${engine.name} threw for ${url}: ${String(e?.message || e).slice(0, 120)}`);
     }
   }
@@ -75,13 +82,13 @@ export async function fetchArticle(url: string, snippet: string): Promise<FetchR
     costUsd: 0,
   };
   attempts.push(fallback);
-  recordFetchAttempt(url, fallback);
+  recordFetchAttempt(url, fallback, sourcePlatform);
   return {
     success: !!snippet,
     contentMd: snippet || "",
     title: null,
     engine: "snippet",
-    costUsd: 0,
+    costUsd: attempts.reduce((sum, item) => sum + item.costUsd, 0),
     status: snippet ? "partial" : "failed",
     contentChars: snippet.length,
     attempts,

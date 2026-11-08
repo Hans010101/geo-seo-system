@@ -18,7 +18,7 @@ const K = {
 const CODE_TTL_MS = 15 * 60 * 1000;
 // Canonical Cloudflare production URL. Keeping this independent from Cloud Run
 // means Telegram remains bindable after the parallel Cloud Run deployment ends.
-export const DEFAULT_BASE_URL = "https://geo-seo-system.pages.dev";
+export const DEFAULT_BASE_URL = "https://geo-seo-system-faq.pages.dev";
 const api = (token: string, method: string) => `https://api.telegram.org/bot${token}/${method}`;
 
 export async function getBotToken(): Promise<string | null> {

@@ -80,7 +80,7 @@ for (const r of RULES) {
 // --- Budget guardrail defaults (sysConfigs, set-if-absent so user tuning isn't clobbered) ---
 const BUDGET_DEFAULTS = {
   monitor_firecrawl_monthly_limit: "800",
-  monitor_serper_monthly_limit: "2000",
+  monitor_serper_monthly_limit: "30000",
   monitor_max_articles_per_cycle: "50",
 };
 let budgetSet = 0;

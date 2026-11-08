@@ -51,6 +51,7 @@ describe("OpenRouter preflight", () => {
       keyLimitRemaining: 5,
       keyUsageDaily: 0.1,
     });
+    expect(fetchImpl.mock.calls[1][1].headers["HTTP-Referer"]).toBe("https://geo-seo-system-faq.pages.dev");
     expect(isFreshHealthyOpenRouter(result, 20_000, 26)).toBe(true);
     expect(isFreshHealthyOpenRouter(result, 27 * 3_600_000, 26)).toBe(false);
   });

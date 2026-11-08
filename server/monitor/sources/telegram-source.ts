@@ -6,7 +6,7 @@
 // only metadata) or a dead channel (@Tronscan, last post 2018) — NOT usable. So these are ACTIVE
 // crypto-NEWS broadcast channels that cover TRON/Justin Sun, keyword-filtered. Value = fast news
 // (often TG-first), not "official TRON channel". @BWEnews (方程式新闻) is a fast Chinese crypto source.
-import { log, keywordMatchesText } from "../util";
+import { log, keywordMatchesText, monitorPublishedAtFreshness } from "../util";
 import type { SocialSource, DiscoveredPost, SearchOpts } from "./types";
 
 // Active broadcast channels (t.me/s reachable) that cover TRON/Justin Sun/HTX. HONEST CEILING (validated
@@ -19,7 +19,7 @@ const MAX_MSGS_PER_CHANNEL = 40;
 const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
 type TgMsg = { url: string; text: string; publishedAt: number | null };
-const caches = new Map<string, { at: number; msgs: TgMsg[] }>();
+const caches = new Map<string, { at: number; msgs: TgMsg[]; error?: string }>();
 
 const stripHtml = (s: string) =>
   (s || "")
@@ -56,30 +56,54 @@ async function ensureMessages(shard?: string): Promise<TgMsg[]> {
   const selected = shard && TELEGRAM_CHANNELS.includes(shard) ? [shard] : TELEGRAM_CHANNELS;
   const cacheKey = shard || "*";
   const cache = caches.get(cacheKey);
-  if (cache && Date.now() - cache.at < CACHE_TTL_MS) return cache.msgs;
+  if (cache && Date.now() - cache.at < CACHE_TTL_MS) {
+    if (cache.error) throw new Error(cache.error);
+    return cache.msgs;
+  }
   const all: TgMsg[] = [];
   const seen = new Set<string>();
+  const errors: string[] = [];
+  let successfulChannels = 0;
   await Promise.all(
     selected.map(async (ch) => {
       const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 15000); // don't let a hung t.me request stall the cycle
+      const timer = setTimeout(() => ctrl.abort(), 30000); // one deadline across both preview pages
       try {
-        const resp = await fetch(`https://t.me/s/${ch}`, { headers: { "User-Agent": UA }, signal: ctrl.signal });
-        if (!resp.ok) { log.warn(`telegram: ${ch} HTTP ${resp.status}`); return; }
-        const html = await resp.text();
-        for (const m of parseTelegramPreview(html).slice(-MAX_MSGS_PER_CHANNEL)) {
-          if (seen.has(m.url)) continue;
-          seen.add(m.url);
-          all.push(m);
+        let before = "";
+        let count = 0;
+        // shortcut: two preview pages cover at most 40 posts; add a cursor if two-hour gaps exceed this.
+        for (let page = 0; page < 2 && count < MAX_MSGS_PER_CHANNEL; page++) {
+          const url = `https://t.me/s/${ch}${before ? `?before=${before}` : ""}`;
+          const resp = await fetch(url, { headers: { "User-Agent": UA }, signal: ctrl.signal });
+          if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+          const html = await resp.text();
+          if (!html.includes("tgme_widget_message_wrap")) throw new Error("未返回公开频道消息页面");
+          if (page === 0) successfulChannels++;
+          const messages = parseTelegramPreview(html);
+          const unseen = messages.filter(m => !seen.has(m.url));
+          for (const m of unseen.slice(-(MAX_MSGS_PER_CHANNEL - count))) {
+            if (seen.has(m.url)) continue;
+            seen.add(m.url);
+            all.push(m);
+            count++;
+          }
+          const next = html.match(/data-before="(\d+)"/)?.[1];
+          if (!next || (before && Number(next) >= Number(before))) break;
+          if (messages.length && messages.every(m => monitorPublishedAtFreshness(m.publishedAt) === "stale")) break;
+          before = next;
         }
       } catch (e: any) {
-        log.warn(`telegram: ${ch} failed: ${String(e?.message || e).slice(0, 120)}`);
+        const error = `telegram: ${ch} failed: ${String(e?.message || e).slice(0, 120)}`;
+        errors.push(error);
+        log.warn(error);
       } finally {
         clearTimeout(timer);
       }
     })
   );
-  caches.set(cacheKey, { at: Date.now(), msgs: all });
+  const error = successfulChannels === 0 ? errors.join("; ") : undefined;
+  caches.set(cacheKey, { at: Date.now(), msgs: all, error });
+  if (error) throw new Error(error);
   log.info(`telegram: fetched ${selected.length} channels → ${all.length} messages`);
   return all;
 }
@@ -91,7 +115,7 @@ export const telegramSource: SocialSource = {
   async search(keyword: string, opts?: SearchOpts): Promise<DiscoveredPost[]> {
     const msgs = await ensureMessages(opts?.shard);
     if (!keyword.trim()) return [];
-    const matched = msgs.filter((m) => keywordMatchesText(keyword, m.text));
+    const matched = msgs.filter((m) => monitorPublishedAtFreshness(m.publishedAt) === "fresh" && keywordMatchesText(keyword, m.text));
     return matched.map((m) => ({
       url: m.url,
       title: m.text.replace(/\s+/g, " ").slice(0, 80),

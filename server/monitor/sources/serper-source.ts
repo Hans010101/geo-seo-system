@@ -2,6 +2,7 @@
 // text via the fetch router (unchanged behavior).
 import { searchNews } from "../search";
 import { parseSerperDate } from "../util";
+import { searchPublishers } from "./publisher-search";
 import type { SocialSource, DiscoveredPost, SearchOpts } from "./types";
 
 export const serperSource: SocialSource = {
@@ -9,7 +10,15 @@ export const serperSource: SocialSource = {
   platform: "web",
   enabled: true,
   async search(keyword: string, opts?: SearchOpts): Promise<DiscoveredPost[]> {
-    const items = await searchNews(keyword, opts);
+    let items;
+    try {
+      items = await searchNews(keyword, opts);
+    } catch (error) {
+      console.warn(JSON.stringify({ event: "news.publisher_fallback", keyword }));
+      try { return await searchPublishers(keyword); } catch (fallbackError) {
+        throw new AggregateError([error, fallbackError], "Serper and public publisher search failed");
+      }
+    }
     return items.map((it): DiscoveredPost => ({
       url: it.url,
       title: it.title || "",

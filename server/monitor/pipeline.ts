@@ -3,11 +3,15 @@
 // Budget-guarded (Serper monthly cap; per-cycle article cap). Concurrency 3 with per-domain politeness.
 import * as db from "../db";
 import { fetchArticle } from "./fetch/router";
-import { analyzeArticle } from "./analyzer";
+import { analyzeArticle, shouldStoreMonitorAnalysis } from "./analyzer";
 import * as budget from "./budget";
 import { enabledSources } from "./sources/registry";
 import type { DiscoveredPost } from "./sources/types";
-import { verifySourcePublishedAt } from "./source-date";
+import {
+  CHINESE_SOCIAL_SOURCE_NAMES,
+  chineseSocialKeywordMatchesText,
+} from "./sources/chinese-social-source";
+import { isTrustedDiscoveryPublishedAt, verifySourcePublishedAt } from "./source-date";
 import { dispatchHighThreatAlert, sendBriefing, alertThresholdMet, type BriefingItem } from "./notify";
 import {
   normalizeUrl,
@@ -17,6 +21,8 @@ import {
   domainOf,
   hasCJK,
   detectContentLang,
+  keywordMatchesText,
+  monitorArticleMatchesKeywords,
   log,
 } from "./util";
 
@@ -58,6 +64,8 @@ export type MonitorCycleOptions = {
   maxArticles?: number;
   sourceNames?: string[];
   suppressNotifications?: boolean;
+  // External pilot input never invokes discovery or the paid full-text router.
+  importPosts?: DiscoveredPost[];
 };
 
 function toFetchMethod(engine: string): "self" | "firecrawl" | "snippet_only" | null {
@@ -85,7 +93,9 @@ export async function runMonitorCycle(opts?: MonitorCycleOptions): Promise<Monit
   const allKeywords = await db.listMonitorKeywords(true);
   const keywords = allKeywords.slice(0, Math.max(1, opts?.maxKeywords ?? allKeywords.length));
   const allowedSources = opts?.sourceNames?.length ? new Set(opts.sourceNames) : null;
-  const srcs = enabledSources().filter((source) => !allowedSources || allowedSources.has(source.name));
+  const srcs = opts?.importPosts !== undefined
+    ? [{ name: "agent_reach", search: async () => opts.importPosts! }]
+    : enabledSources().filter((source) => !allowedSources || allowedSources.has(source.name));
 
   // 1) Every enabled source × every active keyword → aggregate unique posts (cross-source, by norm-url).
   let serperCalls = 0;
@@ -99,7 +109,7 @@ export async function runMonitorCycle(opts?: MonitorCycleOptions): Promise<Monit
       // Budget applies to Serper only (币安 API is free).
       if (source.name === "serper") {
         if (serperExhausted) continue;
-        if (!budget.tryConsumeSerper()) {
+        if (!(await budget.hasSerperBudget())) {
           serperExhausted = true;
           serperBudgetHit = true;
           log.warn("Serper monthly budget exhausted; skipping remaining Serper searches");
@@ -111,6 +121,10 @@ export async function runMonitorCycle(opts?: MonitorCycleOptions): Promise<Monit
         if (source.name === "serper") serperCalls++;
         for (const p of posts) {
           if (!p.url) continue;
+          const content = `${p.title || ""} ${p.fullContent || p.contentSnippet || ""}`;
+          if (!(CHINESE_SOCIAL_SOURCE_NAMES.includes(source.name)
+            ? chineseSocialKeywordMatchesText(kw.keyword, content)
+            : keywordMatchesText(kw.keyword, content))) continue;
           const normUrl = normalizeUrl(p.url);
           const h = sha256(normUrl);
           const existing = discovered.get(h);
@@ -134,7 +148,10 @@ export async function runMonitorCycle(opts?: MonitorCycleOptions): Promise<Monit
     if (await db.getMonitorArticleByUrlHash(h)) continue;
     const p = v.post;
     let publishedAt = p.publishedAt ?? null;
-    if (p.sourceName === "serper" || p.sourceName.endsWith("_serper")) {
+    if (
+      (p.sourceName === "serper" || p.sourceName.endsWith("_serper")) &&
+      !isTrustedDiscoveryPublishedAt(p.sourceName, p.fetchEngineHint, publishedAt, now)
+    ) {
       const verification = await verifySourcePublishedAt(p.url);
       if (verification.status !== "verified" || verification.publishedAt == null) {
         freshnessSkips.missing = (freshnessSkips.missing || 0) + 1;
@@ -207,7 +224,12 @@ export async function runMonitorCycle(opts?: MonitorCycleOptions): Promise<Monit
         let fetchStatus: "full" | "partial" | "failed";
         let fetchCostUsd = 0;
 
-        if (p.fullContent && p.fullContent.length > 0) {
+        if (opts?.importPosts !== undefined) {
+          contentMd = (p.contentSnippet || "").slice(0, MAX_CONTENT_CHARS);
+          title = p.title;
+          fetchEngine = "agent_reach_public";
+          fetchStatus = "partial";
+        } else if (p.fullContent && p.fullContent.length > 0) {
           // Source (e.g. 币安广场 API, Gate list render) already returned full text → skip the fetch router.
           contentMd = p.fullContent.slice(0, MAX_CONTENT_CHARS);
           title = p.title || contentMd.slice(0, 80);
@@ -226,6 +248,11 @@ export async function runMonitorCycle(opts?: MonitorCycleOptions): Promise<Monit
         stats.engineDist[fetchEngine] = (stats.engineDist[fetchEngine] || 0) + 1;
         stats.sourceDist[p.sourcePlatform] = (stats.sourceDist[p.sourcePlatform] || 0) + 1;
         stats.fetchCostUsd += fetchCostUsd;
+
+        if (!monitorArticleMatchesKeywords(cur.matched, title, contentMd)) {
+          log.info(`Keyword verification: skipped unrelated fetched content ${p.url}`);
+          continue;
+        }
 
         const rawContentHash = contentMd ? sha256(contentMd) : "";
         const contentHash = contentMd ? monitorContentHash(contentMd) : "";
@@ -253,7 +280,7 @@ export async function runMonitorCycle(opts?: MonitorCycleOptions): Promise<Monit
           }
         }
 
-        const id = await db.createMonitorArticle({
+        const id = shouldStoreMonitorAnalysis(analysis) ? await db.createMonitorArticle({
           url: cur.normUrl.slice(0, 768),
           urlHash: cur.hash,
           domain: domain ? domain.slice(0, 128) : null,
@@ -277,7 +304,7 @@ export async function runMonitorCycle(opts?: MonitorCycleOptions): Promise<Monit
           promptTokens: analysis?.promptTokens ?? null,
           completionTokens: analysis?.completionTokens ?? null,
           costUsd: analysis?.costUsd != null ? String(analysis.costUsd) : null,
-        });
+        }) : null;
         if (id) stats.inserted++;
         if (analysis) {
           stats.analyzed++;
@@ -309,7 +336,7 @@ export async function runMonitorCycle(opts?: MonitorCycleOptions): Promise<Monit
             });
           }
           // Threat ≥ configured threshold (default 'medium') → immediate real-time alert (deduped by urlHash).
-          if (!opts?.suppressNotifications && await alertThresholdMet(analysis.threatLevel)) {
+          if (id && !opts?.suppressNotifications && await alertThresholdMet(analysis.threatLevel)) {
             try {
               const res = await dispatchHighThreatAlert({
                 url: p.url,
@@ -339,7 +366,7 @@ export async function runMonitorCycle(opts?: MonitorCycleOptions): Promise<Monit
   stats.analysisNeurons = Math.round(stats.analysisNeurons * 1000) / 1000;
 
   // Briefing after the cycle (gated by sysConfig; default OFF until enabled on a test channel).
-  if (!opts?.suppressNotifications) {
+  if (!opts?.suppressNotifications && opts?.importPosts === undefined) {
     try {
       const b = await sendBriefing(briefingItems, { keywords: keywords.length, sourceCount: srcs.length, newArticles: stats.inserted });
       stats.briefingSent = b.sent;

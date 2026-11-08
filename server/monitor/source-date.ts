@@ -296,3 +296,13 @@ export function sourceDateFreshness(
 ): "fresh" | "missing" | "stale" | "future" {
   return monitorPublishedAtFreshness(verification.publishedAt, now);
 }
+
+export function isTrustedDiscoveryPublishedAt(
+  sourceName: string,
+  fetchEngineHint: string | null | undefined,
+  publishedAt: number | null | undefined,
+  now = Date.now(),
+): boolean {
+  if (monitorPublishedAtFreshness(publishedAt, now) !== "fresh") return false;
+  return fetchEngineHint === "social_browser" || sourceName === "binance_square_serper";
+}

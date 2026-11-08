@@ -13,6 +13,7 @@ export interface CleanupResult {
   deleted: number;
   freedBytes: number;
   cutoffMs: number;
+  expiredGeoPending: number;
 }
 
 export async function cleanupOldArticles(): Promise<CleanupResult> {
@@ -20,7 +21,19 @@ export async function cleanupOldArticles(): Promise<CleanupResult> {
   const now = Date.now();
   const cutoffMs = now - CLEANUP_DAYS * 86_400_000;
   const futureCutoffMs = now + 86_400_000;
-  if (!db) return { deleted: 0, freedBytes: 0, cutoffMs };
+  if (!db) return { deleted: 0, freedBytes: 0, cutoffMs, expiredGeoPending: 0 };
+
+  const staleGeoCutoff = now - 24 * 60 * 60 * 1000;
+  const staleGeoRows = await db.all<any>(sql`
+    SELECT COUNT(*) AS n FROM collections
+    WHERE status = 'pending' AND timestamp < ${staleGeoCutoff}`);
+  const expiredGeoPending = Number(staleGeoRows[0]?.n) || 0;
+  if (expiredGeoPending > 0) {
+    await db.run(sql`
+      UPDATE collections
+      SET status = 'timeout', errorMessage = '任务超过 24 小时未完成，已由运行治理自动终止'
+      WHERE status = 'pending' AND timestamp < ${staleGeoCutoff}`);
+  }
 
   const sizeRes = await db.all<any>(sql`
     SELECT COUNT(*) AS n, COALESCE(SUM(LENGTH(contentMd)), 0) AS bytes
@@ -35,7 +48,7 @@ export async function cleanupOldArticles(): Promise<CleanupResult> {
     log.info("Cleanup: no source records outside retention/freshness bounds", {
       days: CLEANUP_DAYS,
     });
-    return { deleted: 0, freedBytes: 0, cutoffMs };
+    return { deleted: 0, freedBytes: 0, cutoffMs, expiredGeoPending };
   }
 
   await db.run(sql`
@@ -49,5 +62,5 @@ export async function cleanupOldArticles(): Promise<CleanupResult> {
     freedKB: Math.round(freedBytes / 1024),
     cutoff: new Date(cutoffMs).toISOString(),
   });
-  return { deleted, freedBytes, cutoffMs };
+  return { deleted, freedBytes, cutoffMs, expiredGeoPending };
 }
