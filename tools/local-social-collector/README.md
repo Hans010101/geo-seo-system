@@ -6,7 +6,8 @@
 
 - 运行目录：`~/Library/Application Support/TronGeo/local-social-collector/`
   （`config.json` 放 endpoint 与 token，权限 600；`chrome-profile/` 是登录态；`runs.jsonl` 是运行记录）
-- 计划任务：launchd `com.trongeo.local-social-collector`，每小时 :05；Mac 睡眠时错过的会在唤醒后补跑一次。
+- 计划任务：launchd `com.trongeo.local-social-collector`，新加坡/北京时间 9、11、13、15、17、19、21、3 点的 :05（白天每 2 小时，夜间只在 21、3、9 点）；Mac 睡眠时错过的会在唤醒后补跑一次。
+- 微博按“实时”逐页往回翻，直到接上一次成功运行的时间（最多 4 页、48 小时），夜间 6 小时的空档也不漏；每条帖子当场送入库，入库后立即出现在舆情平台。断网时未送出的帖子下一轮自动重送。
 - 每次运行向 `/report` 发心跳；云端定时任务据此判断，微博或贴吧 48 小时没有搜到内容
   （包括 Mac 一直没开机）就推 Telegram「信源断流提醒 · 微博（本机采集）」。
 - 遇到登录页或百度安全验证只记录错误，不做任何绕过。

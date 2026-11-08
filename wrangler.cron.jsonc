@@ -17,7 +17,7 @@
     "CLOUDFLARE_CANARY_MAX_ARTICLES": "2",
     "CLOUDFLARE_CANARY_SOURCES": "serper",
     "CLOUDFLARE_PRIMARY_MAX_KEYWORDS": "100",
-    "CLOUDFLARE_PRIMARY_CRON": "15,40 1-23/2 * * *",
+    "CLOUDFLARE_PRIMARY_CRON": "15,40 1,3,5,7,9,11,13,19 * * *",
     "CLOUDFLARE_PRIMARY_NEWS_MAX_ARTICLES": "30",
     "CLOUDFLARE_PRIMARY_NEWS_SOURCES": "serper,rss",
     "CLOUDFLARE_WECHAT_ENABLED": "false",
@@ -172,7 +172,9 @@
     }
   ],
   "triggers": {
-    "crons": ["15,40 1-23/2 * * *"]
+    // SGT/BJT 09–21 every 2 hours, then only 03:00 overnight (UTC 1,3,5,7,9,11,13 = 09–21; UTC 19 = 03).
+    // Maintenance (03:40), Gate (09:40/21:40) and the odd-hour interval checks key off these hours.
+    "crons": ["15,40 1,3,5,7,9,11,13,19 * * *"]
   },
   "observability": {
     "enabled": true,

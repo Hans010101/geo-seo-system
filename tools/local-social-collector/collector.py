@@ -8,7 +8,7 @@ the geo-agent-reach-pilot ingest worker, which runs them through the normal moni
 turns into an outage alert when a platform stays silent.
 
 Commands:
-  collector.py run              one collection run (launchd calls this hourly)
+  collector.py run              one collection run (launchd: 9/11/13/15/17/19/21/3 o'clock)
   collector.py login weibo      open a visible Chrome window and wait for a QR-code login
   collector.py status           show the last run and the Weibo login state
 
@@ -40,6 +40,8 @@ PROFILE = ROOT / "chrome-profile"
 KEYWORDS = ("孙宇晨", "波场", "TRON", "Justin Sun", "孙哥", "孙割", "孙宇晨 火币", "孙宇晨 HTX")
 TIEBA_KEYWORDS = ("孙宇晨", "波场", "孙割", "孙宇晨 HTX")
 WINDOW_MS = 48 * 3600_000
+WEIBO_MAX_PAGES = 4  # newest-first pages per keyword; enough to cover the 21:00→03:00→09:00 gaps
+STATE = ROOT / "state.json"
 BJ = dt.timezone(dt.timedelta(hours=8))
 SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
 WEIBO_LOGIN_URL = "https://passport.weibo.com/sso/signin?entry=miniblog&source=miniblog&url=https%3A%2F%2Fweibo.com%2F"
@@ -111,10 +113,100 @@ def weibo_posts(payload):
     return posts
 
 
-def search_weibo(context, keyword):
+WEIBO_REALTIME = "https://s.weibo.com/realtime?q={}&rd=realtime&tw=realtime&Refer=weibo_realtime&page={}"
+WEIBO_CARDS_JS = """() => Array.from(document.querySelectorAll('div.card-wrap[mid]')).map(card => {
+  const from = card.querySelector('div.from a[href*="weibo.com/"]') || card.querySelector('div.from a');
+  const full = card.querySelector('p.txt[node-type="feed_list_content_full"]');
+  const txt = full || card.querySelector('p.txt[node-type="feed_list_content"]') || card.querySelector('p.txt');
+  const quoted = card.querySelector('div.card-comment p.txt');
+  return { mid: card.getAttribute('mid'), time: from ? from.textContent.trim() : '',
+           user: (card.querySelector('a.name') || {}).textContent || '',
+           text: txt ? txt.innerText.trim() : '', quoted: quoted ? quoted.innerText.trim() : '' };
+})"""
+
+
+def weibo_display_time(text, now=None):
+    """Desktop search times: 刚刚 / 5秒前 / 34分钟前 / 今天21:06 / 11月08日 20:13 / 2025年11月08日 20:13."""
+    now = now or dt.datetime.now(BJ)
+    text = (text or "").strip()
+    m = re.match(r"(\d+)\s*(秒|分钟)前", text)
+    if text.startswith("刚刚"):
+        return int(now.timestamp() * 1000)
+    if m:
+        delta = dt.timedelta(seconds=int(m.group(1))) if m.group(2) == "秒" else dt.timedelta(minutes=int(m.group(1)))
+        return int((now - delta).timestamp() * 1000)
+    m = re.match(r"今天\s*(\d{1,2}):(\d{2})", text)
+    if m:
+        return int(now.replace(hour=int(m.group(1)), minute=int(m.group(2)), second=0, microsecond=0).timestamp() * 1000)
+    m = re.match(r"(?:(\d{4})年)?(\d{1,2})月(\d{1,2})日\s*(\d{1,2}):(\d{2})", text)
+    if m:
+        year = int(m.group(1) or now.year)
+        stamp = dt.datetime(year, int(m.group(2)), int(m.group(3)), int(m.group(4)), int(m.group(5)), tzinfo=BJ)
+        if not m.group(1) and stamp > now + dt.timedelta(days=1):
+            stamp = stamp.replace(year=year - 1)  # "12月31日" seen in early January
+        return int(stamp.timestamp() * 1000)
+    return None
+
+
+def weibo_cards_to_posts(cards, now=None):
+    posts, seen = [], set()
+    for card in cards:
+        mid = str(card.get("mid") or "")
+        if not mid.isdigit() or mid in seen:
+            continue
+        seen.add(mid)
+        text = re.sub(r"\s*收起\s*d?$", "", (card.get("text") or "").replace("\u200b", "")).strip()
+        if card.get("quoted"):
+            text = f"{text}\n//转发：{card['quoted'].strip()}"
+        user = (card.get("user") or "").strip()
+        posts.append({
+            # Same canonical form as earlier imports and the cloud worker, so dedup still works.
+            "url": f"https://m.weibo.cn/detail/{mid}",
+            "title": title_of(text) or f"{user} 的微博",
+            "text": (f"@{user}：" if user else "") + text,
+            "publishedAt": weibo_display_time(card.get("time"), now),
+        })
+    return posts
+
+
+def mobile_first_page(page, context, keyword):
+    # Visiting the mobile home page refreshes the short-lived m.weibo.cn visitor tokens first.
+    page.goto("https://m.weibo.cn/", wait_until="domcontentloaded", timeout=45_000)
+    page.wait_for_timeout(2500)
+    return weibo_page(context, keyword, 1)
+
+
+def search_weibo(page, context, keyword, since_ms):
+    """Desktop real-time search (uses the weibo.com login), newest first, paging back until a page
+    reaches `since_ms` (the last successful run). Falls back to the mobile API's first page."""
+    posts = []
+    for number in range(1, WEIBO_MAX_PAGES + 1):
+        page.goto(WEIBO_REALTIME.format(urllib.parse.quote(keyword), number), wait_until="domcontentloaded", timeout=45_000)
+        page.wait_for_timeout(2000)
+        if "passport.weibo.com" in page.url or "login" in page.url:
+            if number == 1:
+                try:
+                    return mobile_first_page(page, context, keyword)
+                except NeedsUser:
+                    raise NeedsUser("微博网页版要求登录，需要重新扫码登录")
+            break
+        batch = weibo_cards_to_posts(page.evaluate(WEIBO_CARDS_JS))
+        posts.extend(batch)
+        stamps = [p["publishedAt"] for p in batch if p["publishedAt"]]
+        if not batch or not stamps or min(stamps) <= since_ms:
+            break
+        time.sleep(random.uniform(2, 4))
+    if not posts:
+        return mobile_first_page(page, context, keyword)
+    return posts
+
+
+def weibo_page(context, keyword, page):
     containerid = f"100103type=61&q={keyword}&t="  # type=61 = 实时（newest first）
-    url = "https://m.weibo.cn/api/container/getIndex?" + urllib.parse.urlencode(
-        {"containerid": containerid, "page_type": "searchall"})
+    query = {"containerid": containerid, "page_type": "searchall"}
+    if page > 1:
+        query["page"] = page
+    url = "https://m.weibo.cn/api/container/getIndex?" + urllib.parse.urlencode(query)
     response = context.request.get(url, headers={"Referer": "https://m.weibo.cn/", "Accept": "application/json"}, timeout=30_000)
     if response.status in (401, 403, 418, 432):
         raise NeedsUser(f"微博返回 HTTP {response.status}，需要重新扫码登录")
@@ -164,6 +256,12 @@ def search_tieba(page, keyword):
     return tieba_posts(payload)
 
 
+def mentions(keyword, text):
+    """Every part of the keyword appears in the post (search engines also match names/hidden text)."""
+    lowered = (text or "").lower()
+    return all(part.lower() in lowered for part in keyword.split())
+
+
 # ---------------------------------------------------------------- delivery
 def outbox():
     db = sqlite3.connect(ROOT / "outbox.sqlite3")
@@ -184,6 +282,9 @@ def post_json(cfg, path, body):
             return error.code, json.loads(error.read() or b"{}")
         except ValueError:
             return error.code, {}
+    except (urllib.error.URLError, TimeoutError, OSError) as error:
+        # Offline (e.g. just woke from sleep): unsent posts stay out of the outbox and retry next run.
+        return 0, {"error": str(error)[:160]}
 
 
 def deliver(cfg, db, platform, posts, stats):
@@ -197,6 +298,10 @@ def deliver(cfg, db, platform, posts, stats):
         })
         if status == 429:
             stats["capped"] = True
+            return
+        if status == 0:
+            stats["errors"].append(f"无法连接入库服务：{body.get('error', '')}")
+            stats["offline"] = True
             return
         if status >= 500:
             stats["errors"].append(f"ingest HTTP {status}")
@@ -227,6 +332,12 @@ def run(args):
     db = outbox()
     started = now_ms()
     report = {}
+    try:
+        state = json.loads(STATE.read_text())
+    except (OSError, ValueError):
+        state = {}
+    # Page Weibo back to the previous successful run (capped at 48h) so overnight gaps are covered.
+    weibo_since = max(started - WINDOW_MS, int(state.get("weiboSuccessAt") or 0))
     with sync_playwright() as playwright:
         context = browser(playwright)
         page = context.new_page()
@@ -234,7 +345,7 @@ def run(args):
             stats = {"found": 0, "fresh": 0, "sent": 0, "outcomes": {}, "errors": [], "capped": False}
             for keyword in keywords:
                 try:
-                    posts = search_weibo(context, keyword) if platform == "weibo" else search_tieba(page, keyword)
+                    posts = search_weibo(page, context, keyword, weibo_since) if platform == "weibo" else search_tieba(page, keyword)
                 except NeedsUser as reason:
                     stats["errors"].append(str(reason))
                     break  # same cause for every keyword; don't hammer the site
@@ -242,20 +353,24 @@ def run(args):
                     stats["errors"].append(f"{keyword}: {str(error)[:160]}")
                     continue
                 stats["found"] += len(posts)
-                fresh = [p for p in posts if p["publishedAt"] and started - WINDOW_MS <= p["publishedAt"] <= started + 3600_000]
+                fresh = [p for p in posts if p["publishedAt"] and started - WINDOW_MS <= p["publishedAt"] <= started + 3600_000
+                         and mentions(keyword, p["title"] + " " + p["text"])]
                 stats["fresh"] += len(fresh)
                 if args.dry_run:
                     stats.setdefault("samples", []).extend(
                         f"{dt.datetime.fromtimestamp(p['publishedAt'] / 1000, BJ):%m-%d %H:%M} {p['title'][:30]}" for p in fresh[:2])
-                elif not stats["capped"]:
+                elif not stats["capped"] and not stats.get("offline"):
                     deliver(cfg, db, platform, fresh, stats)
                 time.sleep(random.uniform(3, 7))
             report[platform] = {"discovered": stats["found"], **({"error": stats["errors"][0]} if stats["errors"] else {})}
+            if platform == "weibo" and stats["found"] > 0 and not stats.get("offline") and not args.dry_run:
+                state["weiboSuccessAt"] = started
             log("platform", platform=platform, **stats)
         context.close()
     if args.dry_run:
         log("dry-run done", report=report)
         return 0
+    STATE.write_text(json.dumps(state))
     status, body = post_json(cfg, "/report", {"platforms": report})
     summary = {"started": started, "finished": now_ms(), "report": report, "heartbeat": status}
     (ROOT / "last-run.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2))
@@ -287,7 +402,7 @@ def login(args):
         page.goto("https://m.weibo.cn/", wait_until="domcontentloaded", timeout=60_000)
         page.wait_for_timeout(4000)
         try:
-            posts = search_weibo(context, KEYWORDS[0])
+            posts = search_weibo(page, context, KEYWORDS[0], now_ms() - 3600_000)
             print(f"登录成功，测试搜索拿到 {len(posts)} 条微博。", flush=True)
         except NeedsUser as reason:
             print(f"已登录，但搜索接口还不通：{reason}", flush=True)

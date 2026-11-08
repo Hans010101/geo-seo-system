@@ -18,5 +18,5 @@ chmod 600 "$ROOT/config.json"
 sed "s#__ROOT__#$ROOT#g" "$HERE/$LABEL.plist" > "$PLIST"
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
-echo "已安装：每小时 :05 运行。首次请执行："
+echo "已安装：新加坡时间 9、11、13、15、17、19、21、3 点的 :05 运行。首次请执行："
 echo "  \"$ROOT/venv/bin/python\" \"$ROOT/collector.py\" login weibo"

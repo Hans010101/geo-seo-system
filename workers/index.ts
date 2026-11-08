@@ -375,7 +375,7 @@ export async function runCloudflareScheduledTasks(event: ScheduledEvent, env: En
           sources: env.CLOUDFLARE_PRIMARY_SOCIAL_SOURCES || "gate_square,telegram,x",
         },
       ];
-      const primaryCron = env.CLOUDFLARE_PRIMARY_CRON || "15,40 1-23/2 * * *";
+      const primaryCron = env.CLOUDFLARE_PRIMARY_CRON || "15,40 1,3,5,7,9,11,13,19 * * *";
       const localTime = shanghaiParts(event.scheduledTime);
       const profile = event.cron === primaryCron
         ? profiles.find((candidate) => candidate.minute === localTime.minute)
@@ -430,7 +430,7 @@ export async function runCloudflareScheduledTasks(event: ScheduledEvent, env: En
     const localTime = shanghaiParts(event.scheduledTime);
     const primaryDailyMaintenance =
       mode === "primary" &&
-      event.cron === (env.CLOUDFLARE_PRIMARY_CRON || "15,40 1-23/2 * * *") &&
+      event.cron === (env.CLOUDFLARE_PRIMARY_CRON || "15,40 1,3,5,7,9,11,13,19 * * *") &&
       localTime.hour === 3 &&
       localTime.minute === 40;
     const maintenanceWindow =
