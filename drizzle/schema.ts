@@ -67,33 +67,41 @@ export type InsertQuestion = typeof questions.$inferInsert;
 
 // ==================== Collections (采集记录) ====================
 // Use varchar for platform to support dynamic platform list
-export const collections = mysqlTable("collections", {
-  id: int("id").autoincrement().primaryKey(),
-  questionId: varchar("questionId", { length: 32 }).notNull(),
-  questionText: text("questionText").notNull(),
-  platform: varchar("platform", { length: 32 }).notNull(),
-  language: mysqlEnum("language", ["zh-CN", "en-US"]).notNull(),
-  timestamp: bigint("timestamp", { mode: "number" }).notNull(),
-  responseText: text("responseText"),
-  responseLength: int("responseLength").default(0),
-  hasSearch: boolean("hasSearch").default(false),
-  modelVersion: varchar("modelVersion", { length: 64 }),
-  status: mysqlEnum("status", ["success", "failed", "refused", "timeout", "pending"])
-    .default("pending")
-    .notNull(),
-  errorMessage: text("errorMessage"),
-  rawResponse: json("rawResponse"),
-  batchId: varchar("batchId", { length: 64 }),
-  // H1 telemetry (2026-06): identify provider + actual model + token consumption + perf/cost
-  provider: varchar("provider", { length: 32 }),       // 'openrouter' | 'bai' | 'bailian' | 'platform' | null
-  realModel: varchar("realModel", { length: 128 }),    // model id echoed back by the API (data.model)
-  promptTokens: int("promptTokens"),
-  completionTokens: int("completionTokens"),
-  totalTokens: int("totalTokens"),
-  latencyMs: int("latencyMs"),
-  costUsd: decimal("costUsd", { precision: 10, scale: 6 }),
-  createdAt: timestamp("createdAt").defaultNow().notNull(),
-});
+export const collections = mysqlTable(
+  "collections",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    questionId: varchar("questionId", { length: 32 }).notNull(),
+    questionText: text("questionText").notNull(),
+    platform: varchar("platform", { length: 32 }).notNull(),
+    language: mysqlEnum("language", ["zh-CN", "en-US"]).notNull(),
+    timestamp: bigint("timestamp", { mode: "number" }).notNull(),
+    responseText: text("responseText"),
+    responseLength: int("responseLength").default(0),
+    hasSearch: boolean("hasSearch").default(false),
+    modelVersion: varchar("modelVersion", { length: 64 }),
+    status: mysqlEnum("status", ["success", "failed", "refused", "timeout", "pending"])
+      .default("pending")
+      .notNull(),
+    errorMessage: text("errorMessage"),
+    rawResponse: json("rawResponse"),
+    batchId: varchar("batchId", { length: 64 }),
+    // H1 telemetry (2026-06): identify provider + actual model + token consumption + perf/cost
+    provider: varchar("provider", { length: 32 }),       // 'openrouter' | 'bai' | 'bailian' | 'platform' | null
+    realModel: varchar("realModel", { length: 128 }),    // model id echoed back by the API (data.model)
+    promptTokens: int("promptTokens"),
+    completionTokens: int("completionTokens"),
+    totalTokens: int("totalTokens"),
+    latencyMs: int("latencyMs"),
+    costUsd: decimal("costUsd", { precision: 10, scale: 6 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => [
+    index("collections_status_timestamp_idx").on(table.status, table.timestamp),
+    index("collections_batch_status_idx").on(table.batchId, table.status),
+    index("collections_question_platform_timestamp_idx").on(table.questionId, table.platform, table.timestamp),
+  ],
+);
 
 export type Collection = typeof collections.$inferSelect;
 export type InsertCollection = typeof collections.$inferInsert;
@@ -115,7 +123,7 @@ export const citations = mysqlTable("citations", {
   ]).default("unknown").notNull(),
   isOurContent: boolean("isOurContent").default(false),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
-});
+}, (table) => [index("citations_collection_idx").on(table.collectionId)]);
 
 export type Citation = typeof citations.$inferSelect;
 export type InsertCitation = typeof citations.$inferInsert;
@@ -142,7 +150,7 @@ export const analyses = mysqlTable("analyses", {
   analysisModel: varchar("analysisModel", { length: 64 }),
   analyzedAt: bigint("analyzedAt", { mode: "number" }),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
-});
+}, (table) => [index("analyses_collection_idx").on(table.collectionId)]);
 
 export type Analysis = typeof analyses.$inferSelect;
 export type InsertAnalysis = typeof analyses.$inferInsert;
@@ -203,8 +211,14 @@ export const alerts = mysqlTable("alerts", {
   // H2 (2026-06): workflow status + dedup key for cross-process de-duplication
   status: mysqlEnum("status", ["active", "resolved", "dismissed"]).default("active").notNull(),
   dedupKey: varchar("dedupKey", { length: 256 }),  // `${qid}:${platform}:${alertType}`
+  resolvedAt: bigint("resolvedAt", { mode: "number" }),
+  resolvedBy: varchar("resolvedBy", { length: 320 }),
+  resolutionNote: text("resolutionNote"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
-});
+}, (table) => [
+  index("alerts_status_createdAt_idx").on(table.status, table.createdAt),
+  index("alerts_dedup_status_createdAt_idx").on(table.dedupKey, table.status, table.createdAt),
+]);
 
 export type Alert = typeof alerts.$inferSelect;
 export type InsertAlert = typeof alerts.$inferInsert;
@@ -418,7 +432,7 @@ export const monitorArticles = mysqlTable(
     completionTokens: int("completionTokens"),
     costUsd: decimal("costUsd", { precision: 10, scale: 6 }), // analysis (LLM) cost
     fetchCostUsd: decimal("fetchCostUsd", { precision: 10, scale: 6 }).default("0"), // fetch cost: L1=0, L4=firecrawl credit折算
-    // 30-day rolling retention; cleanup physically removes expired source records.
+    // 100-day rolling retention; cleanup physically removes expired source records.
     archived: boolean("archived").default(false).notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
@@ -427,6 +441,8 @@ export const monitorArticles = mysqlTable(
     uniqueIndex("monitor_articles_contentHash_uq").on(table.contentHash),
     index("monitor_articles_domain_idx").on(table.domain),
     index("monitor_articles_firstSeenAt_idx").on(table.firstSeenAt),
+    index("monitor_articles_published_relevance_idx").on(table.publishedAt, table.relevance),
+    index("monitor_articles_source_published_idx").on(table.sourcePlatform, table.publishedAt),
   ]
 );
 
