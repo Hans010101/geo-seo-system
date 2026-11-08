@@ -18,6 +18,7 @@ if (typeof MessagePort === "undefined") {
 }
 
 import { Hono } from "hono";
+import { boundedJson } from "./bounded-json";
 import { deleteCookie } from "hono/cookie";
 import { fetchRequestHandler } from "@trpc/server/adapters/fetch";
 import { sql } from "drizzle-orm";
@@ -306,7 +307,7 @@ async function runObservedCloudflareTask<T>(
     await recordCloudflareCronStatus({
       status: partialFailure ? "partial_failure" : "success",
       finishedAt: String(Date.now()),
-      summary: JSON.stringify(result ?? null).slice(0, 4000),
+      summary: boundedJson(result ?? null),
       error: partialFailure
         ? `${analysisFailed} analysis failures; ${itemFailed} pipeline failures`
         : "",

@@ -9,6 +9,17 @@ import {
 } from "../server/monitor/notify";
 import { sendEmailAlert } from "../server/monitor/email-alert";
 import { dispatchNotification } from "../server/_core/notification";
+import { boundedJson } from "./bounded-json";
+import {
+  SOURCE_HEALTH_KEY,
+  buildOutageMessage,
+  evaluateOutages,
+  markNotified,
+  parseSourceHealthState,
+  recordDiagnostics,
+} from "./source-health";
+import { rawRows } from "../server/monitor/penetration";
+import { sql } from "drizzle-orm";
 import * as budget from "../server/monitor/budget";
 import { enabledSources } from "../server/monitor/sources/registry";
 import { getXErrors } from "../server/monitor/sources/x-source";
@@ -531,7 +542,7 @@ export async function getCoordinatorStatus(
 
 function statusSummary(state: CoordinatorStats): string {
   const { briefingItems: _briefingItems, ...summary } = state;
-  return JSON.stringify(summary).slice(0, 4000);
+  return boundedJson(summary);
 }
 
 function cycleAcceptanceRecord(
@@ -626,7 +637,53 @@ async function syncLegacyStatus(env: QueueEnv, state: CoordinatorStats): Promise
   if (terminal) {
     await recordAcceptance(env, "/record-cycle", cycleAcceptanceRecord(state, env));
     await enqueuePostCycleIfEnabled(env, state);
+    try {
+      await trackSourceHealth(env, state);
+    } catch (error) {
+      console.warn(JSON.stringify({ event: "source_health.error", error: String(error).slice(0, 300) }));
+    }
   }
+}
+
+async function lastArticleTimes(): Promise<Record<string, number>> {
+  const rows = await rawRows<{ sourcePlatform: string; last: number }>(
+    sql.raw("SELECT sourcePlatform, MAX(createdAt) AS last FROM monitor_articles GROUP BY sourcePlatform"),
+  );
+  // createdAt is stored in seconds; normalise to ms either way.
+  return Object.fromEntries(rows
+    .filter(row => row.sourcePlatform && Number(row.last) > 0)
+    .map(row => [row.sourcePlatform, Number(row.last) < 1e12 ? Number(row.last) * 1000 : Number(row.last)]));
+}
+
+async function trackSourceHealth(env: QueueEnv, state: CoordinatorStats): Promise<void> {
+  const diagnostics = state.sourceDiagnostics || {};
+  if (Object.keys(diagnostics).length === 0) return;
+  const now = Date.now();
+  let health = parseSourceHealthState(await db.getSysConfig(SOURCE_HEALTH_KEY));
+  const isNew = Object.keys(diagnostics).some(name => !health.sources[name]);
+  health = recordDiagnostics(health, diagnostics, now, isNew ? await lastArticleTimes() : {});
+  const { down, due, recovered } = evaluateOutages(health, now);
+  if ((due.length > 0 || recovered.length > 0) && getCloudflareFeatureFlags(env).failureNotifications) {
+    const message = buildOutageMessage(down, recovered);
+    const result = await dispatchNotification({
+      messageType: "alert",
+      title: message.title,
+      content: message.content,
+      severity: "high",
+      dedupKey: `source_outage:${[...due, ...recovered].map(item => item.name).sort().join(",")}:${Math.floor(now / 3_600_000)}`,
+    });
+    // Mark only after a real send, so silent hours or a missing channel retry next cycle.
+    if (result.sent > 0) {
+      health = markNotified(health, due.map(item => item.name), recovered.map(item => item.name), now);
+    }
+    console.log(JSON.stringify({
+      event: "source_health.notified",
+      due: due.map(item => item.name),
+      recovered: recovered.map(item => item.name),
+      sent: result.sent,
+    }));
+  }
+  await db.setSysConfig(SOURCE_HEALTH_KEY, JSON.stringify(health));
 }
 
 function buildDiscoveryTasks(
@@ -1191,7 +1248,7 @@ async function runObservedGeoShard(
         db.setSysConfig(keys.status, "blocked"),
         db.setSysConfig(keys.startedAt, String(startedAt)),
         db.setSysConfig(keys.finishedAt, String(Date.now())),
-        db.setSysConfig(keys.summary, JSON.stringify({ preflight }).slice(0, 4000)),
+        db.setSysConfig(keys.summary, boundedJson({ preflight })),
         db.setSysConfig(keys.error, reason),
       ]);
       console.warn(JSON.stringify({
@@ -1243,7 +1300,7 @@ async function runObservedGeoShard(
     await Promise.all([
       db.setSysConfig(keys.status, result.failed > 0 ? "partial_failure" : "success"),
       db.setSysConfig(keys.finishedAt, String(Date.now())),
-      db.setSysConfig(keys.summary, JSON.stringify(result).slice(0, 4000)),
+      db.setSysConfig(keys.summary, boundedJson(result)),
       db.setSysConfig(
         keys.error,
         result.failed > 0 ? `${result.failed} GEO cells failed` : "",
@@ -1324,7 +1381,7 @@ async function binanceProbe(task: BinanceProbeTask, env: QueueEnv): Promise<void
       db.setSysConfig(BINANCE_STATUS_KEYS.status, diagnostic.status),
       db.setSysConfig(BINANCE_STATUS_KEYS.provider, provider),
       db.setSysConfig(BINANCE_STATUS_KEYS.finishedAt, String(Date.now())),
-      db.setSysConfig(BINANCE_STATUS_KEYS.summary, JSON.stringify({
+      db.setSysConfig(BINANCE_STATUS_KEYS.summary, boundedJson({
         scheduledTime: task.scheduledTime,
         rawPosts: result.posts.length,
         matchedPosts: matched.size,
@@ -1336,7 +1393,7 @@ async function binanceProbe(task: BinanceProbeTask, env: QueueEnv): Promise<void
           url: item.post.url.slice(0, 500),
         })),
         diagnostic,
-      }).slice(0, 4000)),
+      })),
       db.setSysConfig(BINANCE_STATUS_KEYS.error, (diagnostic.errors || []).join("; ").slice(0, 1000)),
     ]);
   } catch (error) {
@@ -2514,7 +2571,7 @@ async function freshnessAudit(task: FreshnessAuditTask, env: QueueEnv): Promise<
     };
     await db.setSysConfig(
       FRESHNESS_AUDIT_STATUS_KEYS.summary,
-      JSON.stringify(summary).slice(0, 4000),
+      boundedJson(summary),
     );
     if (!summary.finished) {
       await env.MONITOR_QUEUE.send({
