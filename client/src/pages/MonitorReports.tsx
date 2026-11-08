@@ -3,7 +3,7 @@ import { Link } from "wouter";
 import { trpc } from "@/lib/trpc";
 import { useRole } from "@/hooks/useRole";
 import { ReportDateRange } from "@/components/ReportDateRange";
-import { reportDateRangeSchema, reportPeriodDates, weeklyPeriodOf } from "@shared/report-period";
+import { reportDateRangeSchema, reportKindLabel, reportPeriodDates, weeklyPeriodOf } from "@shared/report-period";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -89,7 +89,11 @@ function Delta({ cur, prev }: { cur: number; prev: number }) {
 export default function MonitorReports() {
   const { isAdmin } = useRole();
   const utils = trpc.useUtils();
-  const [selectedId, setSelectedId] = useState<number | null>(null);
+  // ?id= lets the report center deep-link straight to one report.
+  const [selectedId, setSelectedId] = useState<number | null>(() => {
+    const id = Number(new URLSearchParams(window.location.search).get("id"));
+    return Number.isInteger(id) && id > 0 ? id : null;
+  });
   const [dateRange, setDateRange] = useState(() => reportPeriodDates(weeklyPeriodOf(Date.now())));
   const [exporting, setExporting] = useState<"excel" | "pdf" | null>(null);
   const reportExportRef = useRef<HTMLDivElement>(null);
@@ -268,7 +272,7 @@ export default function MonitorReports() {
                         }
                         className="text-[10px]"
                       >
-                        {r.reportType === "weekly" ? "周报" : "月报"}
+                        {reportKindLabel(r.reportType, r.reportPeriod)}
                       </Badge>
                     </div>
                     <p className="text-[10px] text-muted-foreground mt-0.5">
@@ -343,7 +347,7 @@ export default function MonitorReports() {
                 <Card>
                   <CardHeader className="pb-2">
                     <CardTitle className="text-base">
-                      {report.reportType === "weekly" ? "舆情周报" : "舆情月报"}{" "}
+                      舆情{reportKindLabel(report.reportType, report.reportPeriod)}{" "}
                       {report.reportPeriod}
                       {report.reportPeriod !== d.periodLabel && <span className="text-sm font-normal text-muted-foreground ml-2">
                         {d.periodLabel}
@@ -404,7 +408,10 @@ export default function MonitorReports() {
                       </div>
                     </div>
                     <p className="text-[11px] text-muted-foreground mt-3">
-                      环比上期({d.threats.compare.prevPeriodLabel}): 总量{" "}
+                      {d.threats.compare.partial
+                        ? `周期未结束：本期 ${d.threats.compare.curPeriodLabel} 对比上期同期`
+                        : "环比上期"}
+                      ({d.threats.compare.prevPeriodLabel}): 总量{" "}
                       {d.threats.compare.prevTotal} · 负面{" "}
                       {d.threats.compare.prevNegatives} · 高威胁{" "}
                       {d.threats.compare.prevHighThreat}
@@ -717,7 +724,7 @@ export default function MonitorReports() {
                       )}
                     </div>
                     <p className="text-[11px] text-muted-foreground mt-2">
-                      DeepSeek 分析 ${d.costs.analysisUsd.toFixed(4)} + 抓取 $
+                      AI 分析 ${d.costs.analysisUsd.toFixed(4)} + 抓取 $
                       {d.costs.fetchUsd.toFixed(4)} = 合计 $
                       {d.costs.totalUsd.toFixed(4)}
                     </p>

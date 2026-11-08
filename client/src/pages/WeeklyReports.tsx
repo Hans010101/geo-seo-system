@@ -13,7 +13,10 @@ import { PLATFORM_LABELS, SEVERITY_LABELS, SEVERITY_COLORS, type Platform } from
 
 export default function WeeklyReports() {
   const { canEdit } = useRole();
-  const [selectedWeek, setSelectedWeek] = useState<string>("");
+  // ?week= lets the report center deep-link straight to one report.
+  const [selectedWeek, setSelectedWeek] = useState<string>(
+    () => new URLSearchParams(window.location.search).get("week") ?? "",
+  );
   const [dateRange, setDateRange] = useState(() => reportPeriodDates(weeklyPeriodOf(Date.now())));
   const utils = trpc.useUtils();
   const { data: reportsList, isLoading } = trpc.weeklyReports.list.useQuery({ limit: 24 });

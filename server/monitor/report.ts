@@ -4,11 +4,13 @@
 import { sql } from "drizzle-orm";
 import * as db from "../db";
 import { dispatchNotification } from "../_core/notification";
-import { normSql, rawRows } from "./penetration";
-import { log } from "./util";
+import { citationReachSql, normSql, rawRows } from "./penetration";
+import { log, SHARED_PLATFORM_DOMAINS } from "./util";
 import {
+  comparisonWindow,
   dateRangePeriod,
   formatReportDate as fmtDate,
+  reportKindLabel,
   monthlyPeriodOf,
   parsePeriod,
   weeklyPeriodOf,
@@ -43,6 +45,9 @@ export interface MonitorReportData {
     topNegatives: { title: string | null; domain: string | null; url: string; sentimentScore: number | null; threatLevel: string | null }[];
     compare: {
       prevPeriodLabel: string;
+      // true when generated before the period ended; both sides then cover the same elapsed days
+      partial?: boolean;
+      curPeriodLabel?: string;
       total: number; prevTotal: number;
       negatives: number; prevNegatives: number;
       highThreat: number; prevHighThreat: number;
@@ -83,12 +88,12 @@ async function periodStats(startMs: number, endMs: number) {
   };
 }
 
-export async function buildMonitorReport(p: ReportPeriod): Promise<MonitorReportData> {
+export async function buildMonitorReport(p: ReportPeriod, nowMs = Date.now()): Promise<MonitorReportData> {
   const { startMs, endMs } = p;
   const win = `${SEEN} >= ${startMs} AND ${SEEN} < ${endMs}`;
-  const prevStart = startMs - (endMs - startMs);
-  const cur = await periodStats(startMs, endMs);
-  const prev = await periodStats(prevStart, startMs);
+  const cmp = comparisonWindow(p, nowMs);
+  const cur = await periodStats(startMs, cmp.curEndMs);
+  const prev = await periodStats(cmp.prevStartMs, cmp.prevEndMs);
 
   const [bySrcRows, threatRows, relRows] = await Promise.all([
     rawRows<any>(sql.raw(`SELECT COALESCE(sourcePlatform,'unknown') k, COUNT(*) c FROM monitor_articles WHERE ${win} GROUP BY k`)),
@@ -133,7 +138,8 @@ export async function buildMonitorReport(p: ReportPeriod): Promise<MonitorReport
     sentimentScore: r.sentimentScore == null ? null : Number(r.sentimentScore), threatLevel: r.threatLevel ?? null,
   }));
 
-  // —— GEO 穿透维度 —— (period-active monitor domains × all-time AI citations)
+  // —— GEO 穿透维度 —— (period-active monitor domains × recent AI citations; shared platforms
+  // such as x.com only count citations of our monitored post URLs — see citationReachSql)
   const penRows = await rawRows<any>(sql.raw(`
     SELECT m.d domain, m.negatives, c.aiPlatforms, c.aiCitations, sr.stance
     FROM (
@@ -141,10 +147,7 @@ export async function buildMonitorReport(p: ReportPeriod): Promise<MonitorReport
         SUM(relevance IN ('high','medium') AND sentimentScore <= 2) negatives
       FROM monitor_articles WHERE ${win} AND domain IS NOT NULL AND domain <> '' GROUP BY d
     ) m
-    JOIN (
-      SELECT ${normSql("ci.domain")} d, COUNT(DISTINCT co.platform) aiPlatforms, COUNT(*) aiCitations
-      FROM citations ci JOIN collections co ON ci.collectionId = co.id GROUP BY d
-    ) c ON m.d = c.d
+    JOIN ${citationReachSql()} c ON m.d = c.domain
     LEFT JOIN monitor_source_rules sr ON sr.domain = m.d
     ORDER BY (sr.stance = 'hostile') DESC, m.negatives DESC, c.aiPlatforms DESC`));
   const citedDomainsCount = penRows.length;
@@ -161,7 +164,9 @@ export async function buildMonitorReport(p: ReportPeriod): Promise<MonitorReport
     FROM (
       SELECT ${normSql("ci.domain")} d, COUNT(DISTINCT co.platform) aiPlatforms,
         MIN(ci.createdAt * 1000) firstCited
-      FROM citations ci JOIN collections co ON ci.collectionId = co.id GROUP BY d
+      FROM citations ci JOIN collections co ON ci.collectionId = co.id
+      WHERE ${normSql("ci.domain")} NOT IN (${SHARED_PLATFORM_DOMAINS.map((d) => `'${d}'`).join(", ")})
+      GROUP BY d
       HAVING firstCited >= ${startMs} AND firstCited < ${endMs}
     ) c
     JOIN (
@@ -203,7 +208,9 @@ export async function buildMonitorReport(p: ReportPeriod): Promise<MonitorReport
       highThreatList,
       topNegatives,
       compare: {
-        prevPeriodLabel: `${fmtDate(prevStart)} ~ ${fmtDate(startMs - 1)}`,
+        prevPeriodLabel: `${fmtDate(cmp.prevStartMs)} ~ ${fmtDate(cmp.prevEndMs - 1)}`,
+        curPeriodLabel: `${fmtDate(startMs)} ~ ${fmtDate(cmp.curEndMs - 1)}`,
+        partial: cmp.partial,
         total: cur.total, prevTotal: prev.total,
         negatives: cur.neg, prevNegatives: prev.neg,
         highThreat: cur.high, prevHighThreat: prev.high,
@@ -230,7 +237,7 @@ export async function setReportPushEnabled(v: boolean): Promise<void> {
 
 // Compact text digest for 飞书/TG push (reuses Phase 2 notification channels).
 export function buildReportDigest(p: ReportPeriod, d: MonitorReportData): { title: string; content: string } {
-  const typeLabel = p.reportType === "weekly" ? "周报" : "月报";
+  const typeLabel = reportKindLabel(p.reportType, p.reportPeriod);
   const c = d.threats.compare;
   const delta = (a: number, b: number) => (a === b ? "持平" : a > b ? `↑${a - b}` : `↓${b - a}`);
   const L: string[] = [];

@@ -4,6 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ArrowRight, BarChart3, ClipboardList, FileSpreadsheet, FileText } from "lucide-react";
+import { reportKindLabel } from "@shared/report-period";
 
 function dateTime(value?: number | Date | string | null) {
   if (!value) return "暂无生成时间";
@@ -29,7 +30,7 @@ export default function ReportsCenter() {
           </CardHeader>
           <CardContent>
             <div className="mb-4 flex gap-2"><Badge variant="secondary" className="gap-1 font-normal"><FileSpreadsheet className="h-3 w-3" />Excel</Badge><Badge variant="secondary" className="gap-1 font-normal"><FileText className="h-3 w-3" />PDF</Badge></div>
-            <div className="divide-y">{sentimentReports?.length ? sentimentReports.map(report => <div key={report.id} className="flex items-center justify-between gap-4 py-3 first:pt-0 last:pb-0"><div><p className="text-sm font-medium">{report.reportPeriod}</p><p className="mt-1 text-xs text-muted-foreground">{dateTime(report.generatedAt)}</p></div><Badge variant="outline">{report.reportType === "weekly" ? "周报" : "月报"}</Badge></div>) : <Empty />}</div>
+            <div className="divide-y">{sentimentReports?.length ? sentimentReports.map(report => <ReportRow key={report.id} href={`/sentiment-monitor/reports?id=${report.id}`} period={report.reportPeriod} generatedAt={report.generatedAt} kind={reportKindLabel(report.reportType, report.reportPeriod)} />) : <Empty />}</div>
           </CardContent>
         </Card>
 
@@ -40,7 +41,7 @@ export default function ReportsCenter() {
           </CardHeader>
           <CardContent>
             <div className="mb-4 flex gap-2"><Badge variant="secondary" className="font-normal">CSV</Badge><Badge variant="secondary" className="font-normal">JSON</Badge></div>
-            <div className="divide-y">{geoReports?.length ? geoReports.map(report => <div key={report.reportWeek} className="flex items-center justify-between gap-4 py-3 first:pt-0 last:pb-0"><div><p className="text-sm font-medium">{report.reportPeriod || report.reportWeek}</p><p className="mt-1 text-xs text-muted-foreground">{dateTime(report.generatedAt)}</p></div><Badge variant="outline">周报</Badge></div>) : <Empty />}</div>
+            <div className="divide-y">{geoReports?.length ? geoReports.map(report => <ReportRow key={report.reportWeek} href={`/reports?week=${encodeURIComponent(report.reportWeek)}`} period={report.reportPeriod || report.reportWeek} generatedAt={report.generatedAt} kind={reportKindLabel("weekly", report.reportPeriod || report.reportWeek)} />) : <Empty />}</div>
           </CardContent>
         </Card>
       </section>
@@ -53,6 +54,15 @@ export default function ReportsCenter() {
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+function ReportRow({ href, period, generatedAt, kind }: { href: string; period: string; generatedAt?: number | Date | string | null; kind: string }) {
+  return (
+    <Link href={href} className="group -mx-2 flex items-center justify-between gap-4 rounded-md px-2 py-3 transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+      <div><p className="text-sm font-medium group-hover:underline">{period}</p><p className="mt-1 text-xs text-muted-foreground">{dateTime(generatedAt)}</p></div>
+      <span className="flex items-center gap-2"><Badge variant="outline">{kind}</Badge><ArrowRight className="h-3.5 w-3.5 text-muted-foreground" /></span>
+    </Link>
   );
 }
 

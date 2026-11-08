@@ -83,3 +83,39 @@ export function parsePeriod(reportType: ReportType, period: string): ReportPerio
 
 // Fits the existing 16-character GEO report key and keeps different date ranges separate.
 export const geoReportKey = (p: ReportPeriod) => p.reportPeriod.replace(/\D/g, "");
+
+// What kind of report a stored period is, for display. Custom date ranges are stored with
+// reportType "weekly" (the DB enum has no third value), so they are told apart by their dates.
+export function reportKindLabel(reportType: string, reportPeriod: string): "周报" | "月报" | "自定义" {
+  if (reportType === "monthly") return "月报";
+  const dates = reportPeriod.match(/^(\d{4}-\d{2}-\d{2}) ~ (\d{4}-\d{2}-\d{2})$/);
+  if (!dates) return "周报"; // legacy "YYYY-Wnn" labels
+  const start = Date.parse(`${dates[1]}T00:00:00+08:00`);
+  const end = Date.parse(`${dates[2]}T00:00:00+08:00`);
+  const isFridayWeek = end - start === 6 * DAY_MS && weeklyPeriodOf(start).startMs === start;
+  return isFridayWeek ? "周报" : "自定义";
+}
+
+export interface ComparisonWindow {
+  curEndMs: number; // exclusive; earlier than period end when the period is still running
+  prevStartMs: number;
+  prevEndMs: number; // exclusive
+  partial: boolean;
+}
+
+// Period-over-period window. A running period is compared with the same elapsed stretch of the
+// previous period (Nov 1–5 vs Oct 1–5), never with a whole previous month or week. Monthly
+// reports compare with the previous calendar month, whatever its length.
+export function comparisonWindow(p: ReportPeriod, nowMs: number): ComparisonWindow {
+  const curEndMs = Math.max(p.startMs, Math.min(p.endMs, nowMs));
+  const partial = curEndMs < p.endMs;
+  const elapsed = curEndMs - p.startMs;
+  if (p.reportType === "monthly") {
+    const prev = monthlyPeriodOf(p.startMs - 1);
+    const prevEndMs = partial ? Math.min(prev.endMs, prev.startMs + elapsed) : prev.endMs;
+    return { curEndMs, partial, prevStartMs: prev.startMs, prevEndMs };
+  }
+  const prevStartMs = p.startMs - (p.endMs - p.startMs);
+  return { curEndMs, partial, prevStartMs, prevEndMs: prevStartMs + elapsed };
+}
+

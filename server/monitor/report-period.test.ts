@@ -26,3 +26,32 @@ it("uses Beijing Friday–Thursday weeks and validates custom ranges without cha
   expect(month.startMs).toBe(Date.parse("2026-10-01T00:00:00+08:00"));
   expect(month.endMs).toBe(Date.parse("2026-11-01T00:00:00+08:00"));
 });
+
+it("labels stored periods as weekly, monthly or custom", async () => {
+  const { reportKindLabel } = await import("../../shared/report-period");
+  expect(reportKindLabel("monthly", "2026-11")).toBe("月报");
+  expect(reportKindLabel("weekly", "2026-10-30 ~ 2026-11-05")).toBe("周报");
+  expect(reportKindLabel("weekly", "2026-W40")).toBe("周报");
+  expect(reportKindLabel("weekly", "2026-10-01 ~ 2026-10-31")).toBe("自定义");
+  expect(reportKindLabel("weekly", "2026-10-01 ~ 2026-10-07")).toBe("自定义"); // 7 days, but starts on Thursday
+});
+
+it("compares a running period with the same elapsed stretch of the previous one", async () => {
+  const { comparisonWindow } = await import("../../shared/report-period");
+  const day = (d: string) => Date.parse(`${d}T00:00:00+08:00`);
+  const nov = monthlyPeriodOf(day("2026-11-05"));
+  const running = comparisonWindow(nov, Date.parse("2026-11-05T15:05:16+08:00"));
+  expect(running.partial).toBe(true);
+  expect(running.prevStartMs).toBe(day("2026-10-01"));
+  expect(running.prevEndMs - running.prevStartMs).toBe(running.curEndMs - nov.startMs);
+
+  const october = monthlyPeriodOf(day("2026-10-15"));
+  const complete = comparisonWindow(october, day("2026-11-01") + 3 * 3_600_000);
+  expect(complete.partial).toBe(false);
+  expect(complete.prevStartMs).toBe(day("2026-09-01"));
+  expect(complete.prevEndMs).toBe(day("2026-10-01"));
+
+  const week = weeklyPeriodOf(day("2026-10-30"));
+  const weekly = comparisonWindow(week, week.endMs + 1);
+  expect([weekly.prevStartMs, weekly.prevEndMs]).toEqual([day("2026-10-23"), day("2026-10-30")]);
+});
