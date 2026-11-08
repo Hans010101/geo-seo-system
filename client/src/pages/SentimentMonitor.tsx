@@ -28,15 +28,21 @@ import { THREAT_META, STANCE_META, RELEVANCE_LABELS, FETCH_ENGINE_LABELS, SOURCE
 
 const PAGE_SIZE = 50;
 
+function freshnessLabel(value?: number) {
+  if (!value) return "无数据";
+  const hours = Math.max(0, Math.floor((Date.now() - value) / 3_600_000));
+  return hours < 1 ? "1 小时内" : hours < 24 ? `${hours} 小时前` : `${Math.floor(hours / 24)} 天前`;
+}
+
 export default function SentimentMonitor() {
   const { isAdmin } = useRole();
   const utils = trpc.useUtils();
   const [page, setPage] = useState(0);
   const [threat, setThreat] = useState<string>("all");
   const [stance, setStance] = useState<string>("all");
-  const [relevance, setRelevance] = useState<string>("all");
+  const [relevance, setRelevance] = useState<string>("focus");
   const [range, setRange] = useState<string>("100d");
-  const [sort, setSort] = useState<string>("time"); // default: 时间倒序,最新在上
+  const [sort, setSort] = useState<string>("time"); // default: 最新采集
   const [source, setSource] = useState<string>("all");
   const [detailId, setDetailId] = useState<number | null>(null);
 
@@ -75,16 +81,11 @@ export default function SentimentMonitor() {
 
   const trigger = trpc.monitor.triggerCycle.useMutation({
     onSuccess: (r) => {
-      if (r.running) toast.info(r.message || "已有一轮监控正在运行");
-      else if (r.result) {
-        const ed = r.result.engineDist || {};
-        toast.success(
-          `本轮完成：新入库 ${r.result.inserted} 篇（自建 ${ed.self || 0} / Firecrawl ${ed.firecrawl || 0} / 摘要 ${ed.snippet || 0}），成本 $${(r.result.fetchCostUsd + r.result.analysisCostUsd).toFixed(4)}${r.result.serperBudgetHit ? "（Serper 护栏触发）" : ""}`
-        );
-      }
+      toast.info(r.message);
       utils.monitor.stats.invalidate();
       utils.monitor.listArticles.invalidate();
       utils.monitor.getBudgetStatus.invalidate();
+      utils.monitor.binanceStatus.invalidate();
     },
     onError: (e) => toast.error(e.message),
   });
@@ -101,15 +102,9 @@ export default function SentimentMonitor() {
     onSuccess: () => { utils.monitor.getPushConfig.invalidate(); toast.success("推送设置已更新"); },
     onError: (e) => toast.error(e.message),
   });
-  const { data: binance } = trpc.monitor.binanceStatus.useQuery();
-  const { data: cloudflareStatus } = trpc.system.cloudflareStatus.useQuery(undefined, {
+  const { data: binance } = trpc.monitor.binanceStatus.useQuery(undefined, {
     refetchInterval: 60_000,
   });
-  const wechat = cloudflareStatus?.wechat as {
-    status?: string;
-    updatedAt?: number;
-    errors?: string[];
-  } | null;
 
   const articles = resp?.data ?? [];
   const total = resp?.total ?? 0;
@@ -120,9 +115,9 @@ export default function SentimentMonitor() {
     <div className="space-y-6">
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">舆情监控</h1>
+          <h1 className="text-2xl font-bold tracking-tight">舆情情报</h1>
           <p className="text-muted-foreground text-sm mt-1">
-            自动发现、抓取、分析涉及孙宇晨 / 波场的新文章（Serper 发现 → 自建/Firecrawl 抓取 → DeepSeek 分析）。
+            自动发现、抓取、分析涉及孙宇晨 / 波场的新内容（多渠道发现 → 自建/Firecrawl 抓取 → Workers AI 分析）。
           </p>
           <div className="flex items-center gap-4 mt-1.5 flex-wrap">
             <Link
@@ -155,22 +150,10 @@ export default function SentimentMonitor() {
               title={[binance?.provider && `采集通道: ${binance.provider}`, binance?.updatedAt && `更新时间: ${new Date(binance.updatedAt).toLocaleString("zh-CN", { hour12: false })}`, binance?.error].filter(Boolean).join("\n") || "Cloudflare 币安广场采集状态"}
             >
               <span className="text-xs text-muted-foreground">币安采集</span>
-              <Badge variant={binance?.status === "success" ? "default" : "secondary"} className={`text-[10px] ${binance?.status === "partial" ? "text-orange-600" : ""}`}>
-                {binance?.status === "success" ? "正常" : binance?.status === "partial" ? "备用通道运行" : binance?.status === "empty" ? "暂无新内容" : binance?.status === "running" ? "运行中" : "等待运行"}
+              <Badge variant={binance?.status === "success" ? "default" : "secondary"} className={`text-[10px] ${binance?.status === "failed" ? "text-red-600" : binance?.status === "partial" ? "text-orange-600" : ""}`}>
+                {binance?.status === "success" ? "正常" : binance?.status === "partial" ? "备用通道运行" : binance?.status === "empty" ? "本轮无新增" : binance?.status === "running" ? "运行中" : binance?.status === "failed" ? "采集异常" : "等待首轮"}
               </Badge>
             </div>
-            <a
-              href="https://geo-seo-system-wechat.hans-pan007.workers.dev"
-              target="_blank"
-              rel="noreferrer"
-              className="flex items-center gap-2 rounded-lg border px-3 py-1.5"
-              title={[wechat?.updatedAt && `更新时间: ${new Date(wechat.updatedAt).toLocaleString("zh-CN", { hour12: false })}`, ...(wechat?.errors || [])].filter(Boolean).join("\n") || "微信公众号采集状态"}
-            >
-              <span className="text-xs text-muted-foreground">微信信源</span>
-              <Badge variant={wechat?.status === "success" ? "default" : "secondary"} className="text-[10px]">
-                {wechat?.status === "success" ? "正常" : wechat?.status === "empty" ? "暂无新内容" : wechat?.status === "failed" ? "需授权/检查" : "等待运行"}
-              </Badge>
-            </a>
             <Button
               onClick={() => trigger.mutate()}
               disabled={trigger.isPending || schedule?.running}
@@ -193,10 +176,12 @@ export default function SentimentMonitor() {
       </div>
 
       {/* KPI cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-6 gap-4">
         <KPICard title="今日新增" value={stats?.todayNew} icon={<FileText className="h-4 w-4" />} color="text-primary" loading={statsLoading} />
         <KPICard title="高威胁文章" value={stats?.highThreat} icon={<AlertTriangle className="h-4 w-4" />} color="text-red-600" loading={statsLoading} />
         <KPICard title="本周文章总数" value={stats?.weekTotal} icon={<Radar className="h-4 w-4" />} color="text-blue-600" loading={statsLoading} />
+        <KPICard title="有效情报率" value={stats ? `${stats.focusRate}%` : undefined} icon={<Network className="h-4 w-4" />} color="text-violet-600" loading={statsLoading} />
+        <KPICard title="正文成功率" value={stats ? `${stats.fullTextRate}%` : undefined} icon={<FileText className="h-4 w-4" />} color="text-amber-600" loading={statsLoading} />
         <KPICard
           title="本月监控成本"
           value={stats ? `$${stats.monthCostUsd.toFixed(4)}` : undefined}
@@ -222,9 +207,10 @@ export default function SentimentMonitor() {
                     const meta = SOURCE_PLATFORM_META[k] || { label: k, color: "#9ca3af" };
                     const n = sd[k];
                     const pct = Math.round((n / tot) * 100);
+                    const quality = stats?.sourceQuality?.find((row) => row.sourcePlatform === k);
                     return (
                       <div key={k}>
-                        <div className="flex justify-between text-xs mb-0.5"><span>{meta.label}</span><span className="text-muted-foreground">{n} · {pct}%</span></div>
+                        <div className="flex justify-between text-xs mb-0.5"><span>{meta.label}</span><span className="text-muted-foreground">{n} · 占比 {pct}% · 有效 {quality?.focusRate ?? 0}% · 最近 {freshnessLabel(quality?.lastSeenAt)}</span></div>
                         <div className="h-1.5 rounded-full bg-muted overflow-hidden"><div className="h-full rounded-full" style={{ width: `${pct}%`, backgroundColor: meta.color }} /></div>
                       </div>
                     );
@@ -243,7 +229,11 @@ export default function SentimentMonitor() {
               const rows: [string, string, string][] = [
                 ["self", "自建 L1(免费)", "#16a34a"],
                 ["firecrawl", "Firecrawl L4(付费)", "#ea580c"],
-                ["snippet", "仅摘要(抓取失败)", "#9ca3af"],
+                ...Object.keys(ed).filter(k => !["self", "firecrawl", "snippet"].includes(k)).map(k => [k,
+                  ({ x_api: "X API 直取", telegram: "Telegram 直取", rss: "RSS 正文", source_api: "平台 API 直取", gate_firecrawl: "Gate · Firecrawl" } as Record<string, string>)[k] || k,
+                  "#3b82f6",
+                ] as [string, string, string]),
+                ["snippet", "仅摘要/未取得正文", "#9ca3af"],
               ];
               return (
                 <div className="space-y-2">
@@ -262,7 +252,7 @@ export default function SentimentMonitor() {
                       </div>
                     );
                   })}
-                  <p className="text-[11px] text-muted-foreground pt-1">L1 占比越高成本越低;「仅摘要」高 = 反爬站点多,是 L2/L3 引擎候选。</p>
+                  <p className="text-[11px] text-muted-foreground pt-1">已有平台正文直接复用；其余先免费 L1，再由 Firecrawl 限额补抓。仅摘要不等于采集失败。</p>
                 </div>
               );
             })()}
@@ -270,10 +260,11 @@ export default function SentimentMonitor() {
         </Card>
         <Card>
           <CardContent className="p-4">
-            <p className="text-xs font-medium text-muted-foreground mb-3">成本护栏(本月)</p>
+            <p className="text-xs font-medium text-muted-foreground mb-1">成本护栏(本月)</p>
+            <p className="text-[11px] text-muted-foreground mb-3">北京时间自然月 · 每月 1 日 00:00 重置</p>
             <div className="space-y-2.5">
               <BudgetBar label="Firecrawl credits" used={budget?.firecrawl.used} limit={budget?.firecrawl.limit} />
-              <BudgetBar label="Serper 查询" used={budget?.serper.used} limit={budget?.serper.limit} />
+              <BudgetBar label="Serper API 请求（实际）" used={budget?.serper.used} limit={budget?.serper.limit} />
               <BudgetBar label={`X 推文(twitterapi.io · $${(budget?.x?.estUsd ?? 0).toFixed(2)})`} used={budget?.x?.used} limit={budget?.x?.limit} />
               <div className="flex justify-between text-xs pt-2 border-t">
                 <span className="text-muted-foreground">本月成本细分</span>
@@ -335,9 +326,9 @@ export default function SentimentMonitor() {
         <FilterSelect value={range} onChange={(v) => { setRange(v); resetPage(); }} placeholder="时间范围"
           options={[["24h", "近 24 小时"], ["3d", "近 3 天"], ["7d", "近 7 天"], ["30d", "近 30 天"], ["100d", "近 100 天"]]} />
         <FilterSelect value={source} onChange={(v) => { setSource(v); resetPage(); }} placeholder="来源平台"
-          options={[["all", "全部来源"], ["web", "Web/新闻"], ["binance_square", "币安广场"], ["gate_square", "Gate广场"], ["wechat", "微信公众号（订阅+全站）"], ["rss", "RSS媒体"], ["telegram", "Telegram"], ["x", "X"], ["xiaohongshu", "小红书"], ["douyin", "抖音"], ["kuaishou", "快手"], ["bilibili", "B站"], ["weibo", "微博"], ["tieba", "百度贴吧"], ["zhihu", "知乎"]]} />
+          options={[["all", "全部来源"], ["web", "Web/新闻"], ["binance_square", "币安广场"], ["gate_square", "Gate广场"], ["wechat", "微信公众号（历史）"], ["rss", "RSS媒体"], ["telegram", "Telegram"], ["x", "X"], ["xiaohongshu", "小红书"], ["douyin", "抖音"], ["kuaishou", "快手"], ["bilibili", "B站"], ["weibo", "微博"], ["tieba", "百度贴吧"], ["zhihu", "知乎"]]} />
         <FilterSelect value={sort} onChange={(v) => { setSort(v); resetPage(); }} placeholder="排序"
-          options={[["time", "时间倒序"], ["threat", "威胁优先"], ["sentiment", "最负面优先"]]} />
+          options={[["time", "最新采集"], ["threat", "威胁优先"], ["sentiment", "最负面优先"]]} />
       </div>
 
       {/* Table */}

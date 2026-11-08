@@ -126,6 +126,7 @@ function LoginForm() {
   const [submitting, setSubmitting] = useState(false);
   const [googleEnabled, setGoogleEnabled] = useState(false);
   const [emailEnabled, setEmailEnabled] = useState(false);
+  const [registrationEnabled, setRegistrationEnabled] = useState(false);
   const [loginMode, setLoginMode] = useState<"password" | "email">("password");
   const [emailCode, setEmailCode] = useState("");
   const [emailCodeSent, setEmailCodeSent] = useState(false);
@@ -139,6 +140,10 @@ function LoginForm() {
     fetch("/api/auth/email/enabled")
       .then((r) => r.json())
       .then((d) => setEmailEnabled(d.enabled))
+      .catch(() => {});
+    fetch("/api/auth/register/enabled")
+      .then((r) => r.json())
+      .then((d) => setRegistrationEnabled(d.enabled))
       .catch(() => {});
   }, []);
 
@@ -269,7 +274,7 @@ function LoginForm() {
                 ? emailCodeSent ? "验证并登录" : "发送验证码"
                 : isRegistering ? "注册" : "登录"}
           </Button>
-          {loginMode === "password" ? (
+          {loginMode === "password" && registrationEnabled ? (
             <Button
               type="button"
               variant="ghost"
@@ -279,7 +284,7 @@ function LoginForm() {
             >
               {isRegistering ? "已有账号？去登录" : "没有账号？注册"}
             </Button>
-          ) : (
+          ) : loginMode === "email" ? (
             <Button
               type="button"
               variant="ghost"
@@ -294,7 +299,7 @@ function LoginForm() {
             >
               使用密码登录
             </Button>
-          )}
+          ) : null}
         </form>
 
         {(emailEnabled || googleEnabled) && (

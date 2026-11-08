@@ -51,9 +51,9 @@ export default function MonitorArticleDetailSheet({
           <div className="text-center py-12 text-muted-foreground">未找到数据</div>
         ) : (
           (() => {
-            const threat = THREAT_META[detail.threatLevel || "none"];
+            const threat = detail.threatLevel ? THREAT_META[detail.threatLevel] : null;
             const stance = detail.stance ? STANCE_META[detail.stance] : null;
-            const score = detail.sentimentScore || 3;
+            const score = detail.sentimentScore;
             const matched = Array.isArray(detail.matchedKeywords) ? (detail.matchedKeywords as string[]) : [];
             return (
               <div className="py-5 space-y-4">
@@ -71,9 +71,11 @@ export default function MonitorArticleDetailSheet({
                         {detail.authorityLevel ? ` · 权威${detail.authorityLevel}` : ""}
                       </Badge>
                     )}
-                    <Badge className="text-[10px] text-white border-0" style={{ backgroundColor: threat.color }}>
-                      {threat.label}
-                    </Badge>
+                    {threat ? (
+                      <Badge className="text-[10px] text-white border-0" style={{ backgroundColor: threat.color }}>
+                        {threat.label}
+                      </Badge>
+                    ) : <Badge variant="outline" className="text-[10px]">未分析</Badge>}
                     {detail.relevance && (
                       <Badge variant="secondary" className="text-[10px]">
                         {RELEVANCE_LABELS[detail.relevance]}
@@ -102,14 +104,14 @@ export default function MonitorArticleDetailSheet({
                   <div className="flex items-center gap-5">
                     <div
                       className="h-16 w-16 rounded-full flex items-center justify-center text-white font-bold text-2xl shrink-0 shadow-sm"
-                      style={{ backgroundColor: SENTIMENT_MONITOR_COLORS[score] || "#6b7280" }}
+                      style={{ backgroundColor: score == null ? "#9ca3af" : SENTIMENT_MONITOR_COLORS[score] || "#6b7280" }}
                     >
                       {detail.sentimentScore ?? "—"}
                     </div>
                     <div>
                       <p className="font-semibold text-base">情感评分 {detail.sentimentScore ?? "未分析"}/5</p>
                       <p className="text-sm text-muted-foreground mt-0.5">
-                        威胁等级: {threat.label}
+                        威胁等级: {threat?.label || "未分析"}
                         {detail.relevance ? ` · 相关性: ${RELEVANCE_LABELS[detail.relevance]}` : ""}
                       </p>
                     </div>
@@ -205,11 +207,11 @@ export default function MonitorArticleDetailSheet({
                   )}
                 </div>
 
-                {/* 35天保鲜: 正文已被清理的归档文章 */}
+                {/* 100 天留存策略下的历史归档文章 */}
                 {(detail as any).archived && !detail.contentMd && (
                   <div className="px-6">
                     <div className="rounded-lg border border-dashed bg-muted/30 px-4 py-3 text-sm text-muted-foreground">
-                      📦 正文已归档清理（超 35 天数据保鲜策略）。标题、情感、威胁等分析元数据仍完整保留。
+                      📦 正文已归档清理（历史数据保留不超过 100 天）。标题、情感、威胁等分析元数据仍完整保留。
                       {detail.url && (
                         <>
                           {" "}可访问 <a className="text-primary hover:underline" href={detail.url} target="_blank" rel="noreferrer">原文链接</a>。

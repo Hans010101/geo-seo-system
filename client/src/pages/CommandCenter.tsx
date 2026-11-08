@@ -18,6 +18,9 @@ import {
 } from "lucide-react";
 import { PLATFORM_LABELS, type Platform } from "@shared/geo-types";
 import { SOURCE_PLATFORM_META, THREAT_META } from "@/lib/monitorLabels";
+import { useState } from "react";
+import MonitorArticleDetailSheet from "@/components/MonitorArticleDetailSheet";
+import CollectionDetailSheet from "@/components/CollectionDetailSheet";
 
 const week = () => ({ startTime: Date.now() - 7 * 86_400_000, endTime: Date.now() });
 
@@ -31,10 +34,13 @@ function timeAgo(value?: number | string | null) {
 }
 
 export default function CommandCenter() {
-  const { data: geo, isLoading: geoLoading } = trpc.dashboard.summary.useQuery(week(), { staleTime: 30_000 });
+  const [articleId, setArticleId] = useState<number | null>(null);
+  const [collectionId, setCollectionId] = useState<number | null>(null);
+  const [weekRange] = useState(week);
+  const { data: geo, isLoading: geoLoading } = trpc.dashboard.summary.useQuery(weekRange, { staleTime: 30_000 });
   const { data: sentiment, isLoading: sentimentLoading } = trpc.monitor.stats.useQuery(undefined, { staleTime: 30_000 });
   const { data: alerts } = trpc.alerts.list.useQuery({ status: "active", limit: 5, offset: 0 }, { staleTime: 15_000 });
-  const { data: articles } = trpc.monitor.listArticles.useQuery({ page: 0, pageSize: 6, focus: true, startTime: Date.now() - 7 * 86_400_000, sort: "time" });
+  const { data: articles } = trpc.monitor.listArticles.useQuery({ page: 0, pageSize: 6, focus: true, startTime: weekRange.startTime, sort: "time" });
   const { data: cloudflare } = trpc.system.cloudflareStatus.useQuery(undefined, { staleTime: 30_000, refetchInterval: 60_000 });
 
   const activeAlerts = alerts?.data ?? [];
@@ -46,9 +52,10 @@ export default function CommandCenter() {
   const worker = cloudflare as any;
   const currentProfile = worker?.profiles?.monitor_primary_news;
   const workerHealthy = worker?.ok && ["success", "queued", "running"].includes(worker?.taskStatus);
+  const activeAlertTotal = alerts?.total ?? 0;
   const briefing = sentiment?.highThreat
-    ? `过去 30 天仍有 ${sentiment.highThreat} 条高威胁舆情，当前 ${activeAlerts.length} 项预警待处置。`
-    : `当前未发现高威胁舆情，${activeAlerts.length ? `仍有 ${activeAlerts.length} 项 GEO 预警待处置。` : "暂无待处置预警。"}`;
+    ? `过去 30 天仍有 ${sentiment.highThreat} 条高威胁舆情，当前 ${activeAlertTotal} 项预警事件待处置。`
+    : `当前未发现高威胁舆情，${activeAlertTotal ? `仍有 ${activeAlertTotal} 项预警事件待处置。` : "暂无待处置预警。"}`;
 
   return (
     <div className="space-y-6">
@@ -79,13 +86,14 @@ export default function CommandCenter() {
             </div>
             <p className="mt-3 text-lg font-medium leading-7">{briefing}</p>
             <p className="mt-2 text-sm text-muted-foreground">
-              近 24 小时新增舆情 {sentiment?.todayNew ?? "—"} 条；本周 GEO 共采集 {geo?.totalCollections ?? "—"} 次，事实覆盖率 {geo?.targetFactsCoverage ?? "—"}%。
+              近 24 小时新增舆情 {sentiment?.todayNew ?? "—"} 条；近 30 天有效情报率 {sentiment?.focusRate ?? "—"}%、正文成功率 {sentiment?.fullTextRate ?? "—"}%；本周 GEO 事实覆盖率 {geo?.targetFactsCoverage ?? "—"}%。
             </p>
           </div>
           <div className="border-t bg-muted/35 p-5 lg:border-l lg:border-t-0 lg:p-6">
             <p className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">系统判断</p>
             <div className="mt-3 space-y-2 text-sm">
               <StatusLine ok={!sentiment?.highThreat} label="舆情风险" value={sentiment?.highThreat ? "存在高威胁信号" : "风险平稳"} />
+              <StatusLine ok={(sentiment?.focusRate ?? 0) >= 60} label="情报质量" value={`有效 ${sentiment?.focusRate ?? "—"}% · 正文 ${sentiment?.fullTextRate ?? "—"}%`} />
               <StatusLine ok={(geo?.targetFactsCoverage ?? 0) >= 80} label="事实一致性" value={`${geo?.targetFactsCoverage ?? "—"}%`} />
               <StatusLine ok={workerHealthy} label="采集主链" value={workerHealthy ? "定时任务持续运行" : "请进入运行中心检查"} />
             </div>
@@ -114,13 +122,22 @@ export default function CommandCenter() {
             {activeAlerts.length ? (
               <div className="divide-y">
                 {activeAlerts.map(alert => (
-                  <div key={alert.id} className="flex items-start gap-3 py-3 first:pt-0 last:pb-0">
+                  <button
+                    key={alert.id}
+                    type="button"
+                    className="flex w-full items-start gap-3 py-3 text-left transition-colors first:pt-0 last:pb-0 hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    onClick={() => alert.relatedArticleId
+                      ? setArticleId(alert.relatedArticleId)
+                      : alert.relatedCollectionId && setCollectionId(alert.relatedCollectionId)}
+                    disabled={!alert.relatedArticleId && !alert.relatedCollectionId}
+                    title="查看预警详情"
+                  >
                     <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${alert.severity === "critical" || alert.severity === "high" ? "bg-red-500" : "bg-amber-500"}`} />
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-sm font-medium">{alert.title}</p>
                       <p className="mt-1 text-xs text-muted-foreground">{alert.severity === "critical" ? "严重" : alert.severity === "high" ? "高" : "中"} · {timeAgo(alert.createdAt)}</p>
                     </div>
-                  </div>
+                  </button>
                 ))}
               </div>
             ) : <Empty icon={CheckCircle2} text="暂无待处置预警" />}
@@ -176,6 +193,17 @@ export default function CommandCenter() {
           </CardContent>
         </Card>
       </div>
+
+      <MonitorArticleDetailSheet
+        articleId={articleId}
+        open={articleId !== null}
+        onOpenChange={open => { if (!open) setArticleId(null); }}
+      />
+      <CollectionDetailSheet
+        collectionId={collectionId}
+        open={collectionId !== null}
+        onOpenChange={open => { if (!open) setCollectionId(null); }}
+      />
     </div>
   );
 }

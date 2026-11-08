@@ -9,6 +9,12 @@ const PROFILE_LABELS: Record<string, string> = {
   monitor_primary_news: "新闻批次",
   monitor_primary_social: "社交批次",
 };
+const SOURCE_LABELS: Record<string, string> = {
+  serper: "Serper 搜索新闻", rss: "RSS 媒体", wechat: "微信公众号",
+  gate_square: "Gate 广场", telegram: "Telegram", x: "X / Twitter",
+  binance_square: "币安广场", xiaohongshu: "小红书", douyin: "抖音",
+  kuaishou: "快手", bilibili: "B站", weibo: "微博", tieba: "百度贴吧", zhihu: "知乎",
+};
 const REJECTION_LABELS: Record<string, string> = {
   duplicate_url: "重复链接",
   duplicate_content: "重复内容",
@@ -17,6 +23,10 @@ const REJECTION_LABELS: Record<string, string> = {
   freshness_stale: "内容过期",
   language: "语言不匹配",
 };
+const INSERTED_SOURCE_KEYS: Record<string, string[]> = {
+  serper: ["web"],
+};
+const SOURCE_STATUS_STALE_MS = 24 * 60 * 60 * 1000;
 
 export function readSummary(value?: string | null) {
   try { return value ? JSON.parse(value) : {}; } catch { return {}; }
@@ -28,14 +38,47 @@ function dateTime(value?: number | string | null) {
 }
 
 function statusLabel(status?: string) {
-  return status === "success" ? "正常" : status === "running" ? "运行中" : status === "queued" ? "已排队" : status === "partial" ? "部分完成" : status === "empty" ? "无新增" : status || "等待状态";
+  return status === "success" ? "正常" : status === "running" ? "运行中" : status === "queued" ? "已排队" : status === "partial" || status === "partial_failure" ? "部分失败" : status === "empty" ? "无新增" : status === "failed" ? "失败" : status === "missing" ? "本轮未报告" : status === "stale" ? "状态已过期" : status === "disabled" ? "已停用" : status || "从未运行";
+}
+
+function isAbnormalStatus(status?: string) {
+  return status === "failed" || status === "missing" || status === "stale" || status === "partial" || status === "partial_failure";
 }
 
 export default function OperationsCenter() {
   const query = trpc.system.cloudflareStatus.useQuery(undefined, { refetchInterval: 60_000, staleTime: 30_000 });
   const data = query.data as any;
   const profiles = Object.entries(data?.profiles ?? {}) as [string, any][];
-  const sourceRows = profiles.flatMap(([profile, cycle]) => Object.entries(cycle?.sourceDiagnostics ?? {}).map(([source, diagnostic]) => ({ profile, source, ...(diagnostic as any) })));
+  const sourceRows = profiles.flatMap(([profile, cycle]) => {
+    const diagnostics = cycle?.sourceDiagnostics ?? {};
+    const configuredSources = cycle?.sources?.length ? cycle.sources : Object.keys(diagnostics);
+    return Array.from(new Set<string>(configuredSources)).map(source => {
+      const diagnostic = diagnostics[source];
+      const active = cycle?.status === "queued" || cycle?.status === "running";
+      const updatedAt = diagnostic?.updatedAt ?? cycle?.finishedAt ?? null;
+      const stale = diagnostic && updatedAt && Date.now() - Number(updatedAt) > SOURCE_STATUS_STALE_MS;
+      const insertedSourceDist = cycle?.insertedSourceDist ?? {};
+      const insertedKeys = INSERTED_SOURCE_KEYS[source] ?? [source];
+      const hasInsertedMetric = insertedKeys.some(key => insertedSourceDist[key] != null);
+      return {
+        profile,
+        source,
+        ...(diagnostic || {}),
+        reported: Boolean(diagnostic),
+        status: stale ? "stale" : diagnostic?.status || (active ? cycle.status : "missing"),
+        updatedAt,
+        inserted: hasInsertedMetric ? insertedKeys.reduce((sum, key) => sum + Number(insertedSourceDist[key] || 0), 0) : null,
+        errors: stale
+          ? ["超过 24 小时未收到该信源状态更新", ...(diagnostic?.errors ?? [])]
+          : diagnostic?.errors ?? (active ? ["任务尚未返回该信源结果"] : ["最近一轮未收到该信源结果"]),
+      };
+    });
+  });
+  const sourceReported = sourceRows.filter(row => row.reported).length;
+  const sourceFailures = sourceRows.filter(row => isAbnormalStatus(row.status)).length;
+  const sourceActive = sourceRows.filter(row => row.status === "queued" || row.status === "running").length;
+  const profileFailure = profiles.some(([, cycle]) => isAbnormalStatus(cycle?.status));
+  const chainHealthy = data?.ok && sourceRows.length > 0 && sourceFailures === 0 && !profileFailure;
   const binanceSummary = readSummary(data?.binance?.summary);
   const daily = readSummary(data?.dailyGeo?.summary);
   const weekly = readSummary(data?.weeklyGeo?.summary);
@@ -47,7 +90,7 @@ export default function OperationsCenter() {
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <div className="mb-2 flex items-center gap-2">
-            <Badge variant={data?.ok ? "default" : "destructive"}>{data?.ok ? "Cloudflare 主链在线" : "状态读取异常"}</Badge>
+            <Badge variant={chainHealthy && sourceActive === 0 ? "default" : sourceFailures > 0 || profileFailure || (!query.isLoading && !data?.ok) ? "destructive" : "secondary"}>{query.isLoading ? "正在读取状态" : chainHealthy && sourceActive === 0 ? "Cloudflare 主链正常" : data?.ok ? sourceRows.length > 0 ? sourceFailures > 0 ? `${sourceFailures} 个信源异常` : profileFailure ? "采集任务部分失败" : `${sourceActive} 个信源运行中` : "暂无信源状态" : "状态读取异常"}</Badge>
             <span className="text-xs text-muted-foreground">每分钟自动刷新</span>
           </div>
           <h1 className="text-2xl font-semibold tracking-tight">运行中心</h1>
@@ -98,11 +141,11 @@ export default function OperationsCenter() {
       </section>
 
       <Card>
-        <CardHeader><CardTitle className="text-base">信源健康与覆盖</CardTitle><p className="text-xs text-muted-foreground">最近一轮各采集通道的真实产出；“无新增”与“失败”分开显示。</p></CardHeader>
+        <CardHeader><CardTitle className="text-base">启用信源覆盖</CardTitle><p className="text-xs text-muted-foreground">当前启用 {sourceRows.length} 个通道，最近一轮已报告 {sourceReported}/{sourceRows.length}；无新增、失败和未运行分开显示。</p></CardHeader>
         <CardContent className="overflow-x-auto">
-          <table className="w-full min-w-[760px] text-sm">
-            <thead><tr className="border-b text-left text-xs text-muted-foreground"><th className="pb-3 font-medium">信源</th><th className="pb-3 font-medium">所属任务</th><th className="pb-3 font-medium">状态</th><th className="pb-3 text-right font-medium">发现</th><th className="pb-3 text-right font-medium">入队</th><th className="pb-3 text-right font-medium">查询成功</th><th className="pb-3 text-right font-medium">耗时</th><th className="pb-3 font-medium">异常摘要</th></tr></thead>
-            <tbody>{sourceRows.map(row => <tr key={`${row.profile}-${row.source}`} className="border-b last:border-0"><td className="py-3 font-medium">{row.source}</td><td className="py-3 text-muted-foreground">{PROFILE_LABELS[row.profile] || row.profile}</td><td className="py-3"><StatusBadge status={row.status} /></td><td className="py-3 text-right tabular-nums">{row.discovered ?? 0}</td><td className="py-3 text-right tabular-nums">{row.enqueued ?? 0}</td><td className="py-3 text-right tabular-nums">{row.queriesSucceeded ?? 0}/{row.queriesAttempted ?? 0}</td><td className="py-3 text-right tabular-nums">{((row.durationMs ?? 0) / 1000).toFixed(1)}s</td><td className="max-w-72 truncate py-3 text-xs text-muted-foreground" title={(row.errors ?? []).join("；")}>{row.errors?.[0] || "—"}</td></tr>)}</tbody>
+          <table className="w-full min-w-[940px] text-sm">
+            <thead><tr className="border-b text-left text-xs text-muted-foreground"><th className="pb-3 font-medium">平台</th><th className="pb-3 font-medium">所属任务</th><th className="pb-3 font-medium">最近状态 / 时间</th><th className="pb-3 text-right font-medium">发现</th><th className="pb-3 text-right font-medium">入队</th><th className="pb-3 text-right font-medium">入库</th><th className="pb-3 text-right font-medium">查询成功</th><th className="pb-3 text-right font-medium">耗时</th><th className="pb-3 font-medium">失败原因</th></tr></thead>
+            <tbody>{sourceRows.map(row => <tr key={`${row.profile}-${row.source}`} className="border-b align-top last:border-0"><td className="py-3 font-medium">{SOURCE_LABELS[row.source] || row.source}</td><td className="py-3 text-muted-foreground">{PROFILE_LABELS[row.profile] || row.profile}</td><td className="py-3"><StatusBadge status={row.status} /><p className="mt-1 whitespace-nowrap text-xs text-muted-foreground">{dateTime(row.updatedAt)}</p></td><td className="py-3 text-right tabular-nums">{row.discovered ?? "—"}</td><td className="py-3 text-right tabular-nums">{row.enqueued ?? "—"}</td><td className="py-3 text-right tabular-nums">{row.inserted ?? "—"}</td><td className="py-3 text-right tabular-nums">{row.queriesAttempted == null ? "—" : `${row.queriesSucceeded ?? 0}/${row.queriesAttempted}`}</td><td className="py-3 text-right tabular-nums">{row.durationMs == null ? "—" : `${(row.durationMs / 1000).toFixed(1)}s`}</td><td className="max-w-80 whitespace-normal break-words py-3 text-xs text-muted-foreground">{row.errors?.slice(0, 2).join("；") || "—"}</td></tr>)}</tbody>
           </table>
         </CardContent>
       </Card>
@@ -111,7 +154,7 @@ export default function OperationsCenter() {
         <ProgressCard icon={Database} title="币安广场" status={data?.binance?.status} detail={`${data?.binance?.provider || "—"} · ${binanceSummary.enqueued ?? 0} 条入队`} value={binanceSummary.matchedPosts ?? 0} max={Math.max(binanceSummary.rawPosts ?? 0, 1)} footer={`每 ${data?.binance?.intervalHours ?? "—"} 小时`} />
         <ProgressCard icon={Bot} title="日常 GEO" status={data?.dailyGeo?.status} detail={`${daily.completed ?? 0} 完成 · ${daily.failed ?? 0} 失败`} value={daily.cursorAfter ?? 0} max={daily.totalCells ?? 24} footer={`剩余 ${daily.remaining ?? "—"} 单元`} />
         <ProgressCard icon={CircleGauge} title="周度 GEO" status={data?.weeklyGeo?.status} detail={`${weekly.completed ?? 0} 完成 · ${weekly.failed ?? 0} 失败`} value={weekly.cursorAfter ?? 0} max={weekly.totalCells ?? 372} footer={`剩余 ${weekly.remaining ?? "—"} 单元`} />
-        <ProgressCard icon={Activity} title="Browser" status={browser?.failed ? "partial" : "success"} detail={`${browser?.successes ?? 0} 成功 · ${browser?.failed ?? 0} 失败`} value={browser?.reserved ?? 0} max={browser?.configuredMaxPagesPerDay ?? 4} footer={`${Math.round((browser?.browserMs ?? 0) / 1000)} 秒浏览器时间`} />
+        <ProgressCard icon={Activity} title="Browser" status={!browser ? "missing" : browser.failed ? "partial" : "success"} detail={`${browser?.successes ?? 0} 成功 · ${browser?.failed ?? 0} 失败`} value={browser?.reserved ?? 0} max={browser?.configuredMaxPagesPerDay ?? 4} footer={`${Math.round((browser?.browserMs ?? 0) / 1000)} 秒浏览器时间`} />
       </section>
 
       <Card>
@@ -132,6 +175,6 @@ function SummaryCard({ icon: Icon, label, value, detail }: { icon: typeof Activi
   return <div className="rounded-xl border bg-card p-4"><div className="flex items-center gap-2 text-xs text-muted-foreground"><Icon className="h-4 w-4 text-primary" />{label}</div><p className="mt-3 truncate text-lg font-semibold">{value}</p><p className="mt-1 truncate text-xs text-muted-foreground">{detail}</p></div>;
 }
 function FunnelStep({ label, value = 0, danger }: { label: string; value?: number; danger?: boolean }) { return <div><p className={`text-xl font-semibold tabular-nums ${danger && value ? "text-red-600" : ""}`}>{value}</p><p className="mt-1 text-xs text-muted-foreground">{label}</p></div>; }
-function StatusBadge({ status }: { status?: string }) { return <Badge variant={status === "success" ? "default" : status === "failed" ? "destructive" : "secondary"}>{statusLabel(status)}</Badge>; }
+function StatusBadge({ status }: { status?: string }) { return <Badge variant={status === "success" ? "default" : isAbnormalStatus(status) ? "destructive" : "secondary"}>{statusLabel(status)}</Badge>; }
 function ProgressCard({ icon: Icon, title, status, detail, value, max, footer }: { icon: typeof Activity; title: string; status?: string; detail: string; value: number; max: number; footer: string }) { const percent = max ? Math.min(100, value / max * 100) : 0; return <Card><CardContent className="p-4"><div className="flex items-start justify-between"><div className="flex items-center gap-2 font-medium"><Icon className="h-4 w-4 text-primary" />{title}</div><StatusBadge status={status} /></div><p className="mt-4 text-sm">{detail}</p><Progress value={percent} className="mt-3" /><p className="mt-2 text-xs text-muted-foreground">{footer}</p></CardContent></Card>; }
 function RuntimeDetail({ label, value }: { label: string; value: string }) { return <div><p className="text-xs text-muted-foreground">{label}</p><p className="mt-1 text-sm font-medium leading-6">{value}</p></div>; }
