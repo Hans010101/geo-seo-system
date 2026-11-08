@@ -4,18 +4,23 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useState } from "react";
-import { Bell, CheckCheck, Eye, Check, X } from "lucide-react";
+import { Bell, CheckCheck, Eye, Check, X, ChevronLeft, ChevronRight, ExternalLink } from "lucide-react";
 import { toast } from "sonner";
 import { SEVERITY_LABELS, SEVERITY_COLORS, PLATFORM_LABELS, type Platform } from "@shared/geo-types";
+import { getAlertSourceUrl } from "@/lib/alertSource";
+export { getAlertSourceUrl } from "@/lib/alertSource";
 
 export default function AlertCenter() {
+  const pageSize = 50;
+  const [page, setPage] = useState(0);
   const [severityFilter, setSeverityFilter] = useState<string>("all");
   const [statusFilter, setStatusFilter] = useState<"active" | "resolved" | "dismissed">("active");
 
   const { data: alertsResult, isLoading } = trpc.alerts.list.useQuery({
     severity: severityFilter === "all" ? undefined : severityFilter,
     status: statusFilter,
-    limit: 100,
+    limit: pageSize,
+    offset: page * pageSize,
   });
   const alertsList = alertsResult?.data;
 
@@ -56,6 +61,8 @@ export default function AlertCenter() {
   });
 
   const unreadCount = alertsList?.filter((a) => !a.isRead).length || 0;
+  const total = alertsResult?.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
   return (
     <div className="space-y-6">
@@ -63,7 +70,7 @@ export default function AlertCenter() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight">预警中心</h1>
           <p className="text-muted-foreground text-sm mt-1">
-            {unreadCount > 0 ? `${unreadCount} 条未读预警` : "暂无未读预警"}
+            当前筛选共 {total} 个预警事件{unreadCount > 0 ? `，本页 ${unreadCount} 个未读` : ""}
           </p>
         </div>
         {unreadCount > 0 && (
@@ -79,7 +86,7 @@ export default function AlertCenter() {
       </div>
 
       <div className="flex gap-3">
-        <Select value={severityFilter} onValueChange={setSeverityFilter}>
+        <Select value={severityFilter} onValueChange={(value) => { setSeverityFilter(value); setPage(0); }}>
           <SelectTrigger className="w-[130px]">
             <SelectValue placeholder="严重程度" />
           </SelectTrigger>
@@ -91,7 +98,7 @@ export default function AlertCenter() {
             <SelectItem value="low">低</SelectItem>
           </SelectContent>
         </Select>
-        <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as any)}>
+        <Select value={statusFilter} onValueChange={(v) => { setStatusFilter(v as any); setPage(0); }}>
           <SelectTrigger className="w-[130px]">
             <SelectValue placeholder="状态" />
           </SelectTrigger>
@@ -113,7 +120,9 @@ export default function AlertCenter() {
         </Card>
       ) : (
         <div className="space-y-2">
-          {alertsList.map((alert) => (
+          {alertsList.map((alert) => {
+            const sourceUrl = getAlertSourceUrl(alert.description);
+            return (
             <Card
               key={alert.id}
               className={`transition-colors ${!alert.isRead ? "border-l-2" : "opacity-70"}`}
@@ -150,6 +159,11 @@ export default function AlertCenter() {
                           {alert.relatedQuestionId}
                         </Badge>
                       )}
+                      {(alert.occurrenceCount ?? 1) > 1 && (
+                        <Badge variant="outline" className="text-[10px] px-1.5">
+                          累计 {alert.occurrenceCount} 次
+                        </Badge>
+                      )}
                     </div>
                     {alert.description && (
                       <p className="text-sm text-muted-foreground mt-1.5">{alert.description}</p>
@@ -157,6 +171,20 @@ export default function AlertCenter() {
                     <p className="text-xs text-muted-foreground/60 mt-2">
                       {new Date(alert.createdAt).toLocaleString("zh-CN")}
                     </p>
+                    {statusFilter !== "active" && (alert.resolvedAt || alert.resolutionNote) && (
+                      <p className="text-xs text-muted-foreground mt-1">
+                        {alert.resolvedBy || "系统"} · {alert.resolvedAt ? new Date(alert.resolvedAt).toLocaleString("zh-CN") : ""}
+                        {alert.resolutionNote ? ` · ${alert.resolutionNote}` : ""}
+                      </p>
+                    )}
+                    {sourceUrl && (
+                      <Button variant="outline" size="sm" className="mt-3" asChild>
+                        <a href={sourceUrl} target="_blank" rel="noopener noreferrer" aria-label={`查看原文：${alert.title}（新标签页）`}>
+                          <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+                          查看原文
+                        </a>
+                      </Button>
+                    )}
                   </div>
                   <div className="flex items-center gap-1 shrink-0">
                     {!alert.isRead && statusFilter === "active" && (
@@ -177,7 +205,10 @@ export default function AlertCenter() {
                           size="sm"
                           title="解决"
                           className="text-emerald-600 hover:text-emerald-700"
-                          onClick={() => resolveMutation.mutate({ id: alert.id })}
+                          onClick={() => {
+                            const note = window.prompt("请输入处置说明（可选）", "已核查并完成处置");
+                            if (note !== null) resolveMutation.mutate({ id: alert.id, note: note.trim() || undefined });
+                          }}
                           disabled={resolveMutation.isPending}
                         >
                           <Check className="h-3.5 w-3.5" />
@@ -198,7 +229,21 @@ export default function AlertCenter() {
                 </div>
               </CardContent>
             </Card>
-          ))}
+            );
+          })}
+        </div>
+      )}
+      {total > 0 && (
+        <div className="flex items-center justify-between text-sm">
+          <span className="text-muted-foreground">第 {page + 1}/{totalPages} 页</span>
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" disabled={page === 0} onClick={() => setPage((value) => Math.max(0, value - 1))}>
+              <ChevronLeft className="h-3.5 w-3.5 mr-1" />上一页
+            </Button>
+            <Button variant="outline" size="sm" disabled={page >= totalPages - 1} onClick={() => setPage((value) => value + 1)}>
+              下一页<ChevronRight className="h-3.5 w-3.5 ml-1" />
+            </Button>
+          </div>
         </div>
       )}
     </div>
