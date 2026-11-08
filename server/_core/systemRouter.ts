@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { dispatchNotification } from "./notification";
+import { getCloudflareEnv } from "./cloudflare-env";
 import { adminProcedure, protectedProcedure, publicProcedure, router } from "./trpc";
 
 const cloudflareStatusSchema = z.object({
@@ -22,7 +23,12 @@ export const systemRouter = router({
 
   cloudflareStatus: protectedProcedure.query(async () => {
     try {
-      const response = await fetch("https://geo-seo-system-cron.hans-pan007.workers.dev", {
+      const operatorToken =
+        getCloudflareEnv().CLOUDFLARE_OPERATOR_TOKEN ||
+        process.env.CLOUDFLARE_OPERATOR_TOKEN;
+      if (!operatorToken) throw new Error("Cloudflare 运行状态令牌未配置");
+      const response = await fetch("https://geo-seo-system-cron.bitman001.workers.dev/status", {
+        headers: { "x-operator-token": String(operatorToken) },
         signal: AbortSignal.timeout(5_000),
       });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);

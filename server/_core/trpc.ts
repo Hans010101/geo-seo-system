@@ -62,3 +62,13 @@ export const developerProcedure = t.procedure.use(
     });
   }),
 );
+
+export const geoBatchProcedure = developerProcedure.use(
+  t.middleware(async ({ ctx, next }) => {
+    const email = (ctx.user?.email || ctx.user?.openId.replace(/^google:/, "") || "").trim().toLowerCase();
+    if (email !== "hans.pan007@gmail.com") {
+      throw new TRPCError({ code: "FORBIDDEN", message: "批量采集仅限 007 开发者账户" });
+    }
+    return next({ ctx });
+  }),
+);

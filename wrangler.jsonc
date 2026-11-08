@@ -1,6 +1,7 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "geo-seo-system",
+  "account_id": "a828bebda1f352216c7d7da425bad17a",
   "compatibility_date": "2026-07-25",
   "compatibility_flags": ["nodejs_compat"],
   "pages_build_output_dir": "dist/public",
@@ -8,13 +9,25 @@
     "NODE_ENV": "production",
     "OPENROUTER_BASE_URL": "https://openrouter.ai/api/v1",
     "RESEND_FROM": "GEO+SEO 系统 <onboarding@resend.dev>",
-    "AUTH_ALLOWED_EMAIL": "hans.pan007@gmail.com"
+    "AUTH_ALLOWED_EMAIL": "hans.pan007@gmail.com",
+    "ALLOW_PASSWORD_REGISTRATION": "false",
+    "CLOUDFLARE_AI_MODEL": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    "CLOUDFLARE_AI_MAX_TOKENS": "768"
   },
+  "ai": {
+    "binding": "AI"
+  },
+  "services": [
+    {
+      "binding": "CHINESE_SOCIAL_BROWSER",
+      "service": "geo-seo-system-chinese-social-browser"
+    }
+  ],
   "d1_databases": [
     {
       "binding": "HYPERDRIVE",
       "database_name": "geo-seo-system-db",
-      "database_id": "415ac39d-c99f-4517-a4c0-2831368762d9",
+      "database_id": "c5389b9d-218e-4e11-bb64-6659233d812f",
       "migrations_dir": "drizzle-d1"
     }
   ]

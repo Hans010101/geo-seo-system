@@ -197,11 +197,24 @@ async function isFirstUser(): Promise<boolean> {
   return users.length === 0;
 }
 
+export function isPasswordRegistrationEnabled(
+  env: { ALLOW_PASSWORD_REGISTRATION?: unknown } = getEnv(),
+): boolean {
+  return env.ALLOW_PASSWORD_REGISTRATION === "true";
+}
+
 // ─── Register Auth Routes on Hono app ───
 
 export function registerAuthRoutesCf(app: Hono<any>) {
+  app.get("/api/auth/register/enabled", (c) =>
+    c.json({ enabled: isPasswordRegistrationEnabled() }),
+  );
+
   // Register
   app.post("/api/auth/register", async (c) => {
+    if (!isPasswordRegistrationEnabled()) {
+      return c.json({ error: "内部系统已关闭自助注册，请联系管理员" }, 403);
+    }
     try {
       const { username, password } = await c.req.json();
       if (!username || !password) return c.json({ error: "请输入用户名和密码" }, 400);

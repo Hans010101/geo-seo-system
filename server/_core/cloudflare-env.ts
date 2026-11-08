@@ -21,10 +21,10 @@ export type CloudflareRuntimeEnv = {
   RESEND_API_KEY?: string;
   RESEND_FROM?: string;
   AUTH_ALLOWED_EMAIL?: string;
+  ALLOW_PASSWORD_REGISTRATION?: string;
+  CLOUDFLARE_OPERATOR_TOKEN?: string;
   CLOUDFLARE_AI_MODEL?: string;
   CLOUDFLARE_AI_MAX_TOKENS?: string;
-  CLOUDFLARE_OPENROUTER_FALLBACK_ENABLED?: string;
-  CLOUDFLARE_OPENROUTER_FALLBACK_MODEL?: string;
   CLOUDFLARE_FETCH_OBSERVABILITY_ENABLED?: string;
   [key: string]: unknown;
 };

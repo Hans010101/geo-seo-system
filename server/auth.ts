@@ -94,8 +94,16 @@ async function isFirstUser(): Promise<boolean> {
 // ==================== Auth Routes (Express) ====================
 
 export function registerAuthRoutes(app: Express) {
+  app.get("/api/auth/register/enabled", (_req: Request, res: Response) => {
+    res.json({ enabled: process.env.ALLOW_PASSWORD_REGISTRATION === "true" });
+  });
+
   // Register
   app.post("/api/auth/register", async (req: Request, res: Response) => {
+    if (process.env.ALLOW_PASSWORD_REGISTRATION !== "true") {
+      res.status(403).json({ error: "内部系统已关闭自助注册，请联系管理员" });
+      return;
+    }
     try {
       const { username, password } = req.body;
       if (!username || !password) {
