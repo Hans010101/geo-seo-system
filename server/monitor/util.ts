@@ -207,6 +207,32 @@ export function normalizeDomain(raw: string | null | undefined): string {
   return s.trim();
 }
 
+// Hosts where one domain carries huge numbers of unrelated user posts. An AI citing *some* post on
+// x.com says nothing about *this* post, so penetration on these hosts is matched per URL, not per domain.
+export const SHARED_PLATFORM_DOMAINS = [
+  "x.com", "twitter.com", "t.me", "telegram.me", "binance.com", "gate.com", "gate.io",
+  "bilibili.com", "b23.tv", "weibo.com", "weibo.cn", "m.weibo.cn", "xiaohongshu.com", "xhslink.com",
+  "douyin.com", "kuaishou.com", "tieba.baidu.com", "zhihu.com", "mp.weixin.qq.com",
+  "youtube.com", "youtu.be", "reddit.com", "medium.com", "facebook.com", "instagram.com", "tiktok.com",
+] as const;
+const SHARED_PLATFORM_SET = new Set<string>(SHARED_PLATFORM_DOMAINS);
+
+export function isSharedPlatformDomain(raw: string | null | undefined): boolean {
+  return SHARED_PLATFORM_SET.has(normalizeDomain(raw));
+}
+
+// Canonical URL key for matching one post across datasets. SQL twin: urlKeySql() in penetration.ts.
+//   "https://www.Twitter.com/a/status/1?s=20#x" -> "x.com/a/status/1"
+export function urlKey(raw: string | null | undefined): string {
+  if (!raw) return "";
+  let s = String(raw).trim().toLowerCase();
+  s = s.replace(/^https?:\/\//, "");
+  s = s.split("?")[0].split("#")[0];
+  s = s.replace(/^www\./, "");
+  if (s.startsWith("twitter.com/")) s = "x.com/" + s.slice("twitter.com/".length);
+  return s.replace(/\/+$/, "");
+}
+
 // Best-effort parse of a Serper date string ("3 hours ago", "Mar 6, 2026", "2 days ago") → epoch ms.
 export function parseSerperDate(s: string | null | undefined, now = Date.now()): number | null {
   if (!s) return null;

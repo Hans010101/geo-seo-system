@@ -5,8 +5,8 @@
 import * as db from "../db";
 import { dispatchNotification } from "../_core/notification";
 import { SOURCE_PLATFORM_LABELS } from "./sources/registry";
-import { log, normalizeDomain } from "./util";
-import { getDomainAiCitation, getSourcePenetration } from "./penetration";
+import { isSharedPlatformDomain, log, normalizeDomain } from "./util";
+import { CITATION_WINDOW_DAYS, getDomainAiCitation, getSourcePenetration, type DomainAiCitation } from "./penetration";
 import { sendEmailAlert, buildAlertEmailHtml } from "./email-alert";
 
 const CFG = {
@@ -62,6 +62,18 @@ const srcLabel = (p: string) => SOURCE_PLATFORM_LABELS[p] || p;
 const isFlagged = (i: BriefingItem) => (i.sentimentScore ?? 3) <= 2 || i.threatLevel === "high" || i.threatLevel === "medium";
 const rank = (i: BriefingItem) =>
   (i.threatLevel === "high" ? 100 : i.threatLevel === "medium" ? 50 : 0) + (i.sentimentScore != null ? (5 - i.sentimentScore) * 5 : 0);
+
+// Severity follows the analysed threat level first; AI amplification or extreme negativity only
+// raises it one step. A medium-threat post can reach "high" but never "critical" on its own.
+export function negativeAlertSeverity(
+  threatLevel: string | null | undefined,
+  sentimentScore: number | null | undefined,
+  amplified: boolean,
+): "critical" | "high" | "medium" {
+  if (threatLevel === "high") return amplified || sentimentScore === 1 ? "critical" : "high";
+  if (threatLevel === "medium" && amplified) return "high";
+  return "medium";
+}
 
 export function buildBriefing(
   items: BriefingItem[],
@@ -122,7 +134,10 @@ export async function sendBriefing(
   // Phase 3: one query → map of monitored domain → # AI platforms already citing it, to flag amplified sources.
   const aiReach = new Map<string, number>();
   try {
-    for (const s of await getSourcePenetration()) if (s.aiPlatforms > 0) aiReach.set(s.domain, s.aiPlatforms);
+    // Shared platforms (x.com, binance.com…) are matched per post, so a domain-wide flag would mislabel every post.
+    for (const s of await getSourcePenetration()) {
+      if (s.aiPlatforms > 0 && !isSharedPlatformDomain(s.domain)) aiReach.set(s.domain, s.aiPlatforms);
+    }
   } catch (e: any) {
     log.warn(`Briefing penetration lookup failed: ${e?.message || e}`);
   }
@@ -181,18 +196,17 @@ export async function dispatchHighThreatAlert(a: {
   const rule = a.domain ? await db.getMonitorSourceRuleByDomain(a.domain) : undefined;
   const stanceLabel = rule?.stance === "hostile" ? "敌对" : rule?.stance === "friendly" ? "友好" : "中立";
   // Phase 3: is this source already feeding AI answers? If so this negative can propagate into AI output.
-  let pen = { aiPlatforms: 0, platformList: [] as string[], citationCount: 0, domain: "" };
+  let pen: DomainAiCitation = { aiPlatforms: 0, platformList: [], citationCount: 0, domain: "", matchLevel: "domain" };
   try {
-    if (a.domain) pen = await getDomainAiCitation(a.domain);
+    if (a.domain) pen = await getDomainAiCitation(a.domain, a.url);
   } catch (e: any) {
     log.warn(`High-threat penetration lookup failed: ${e?.message || e}`);
   }
   const amplified = pen.aiPlatforms > 0;
   const threat = a.threatLevel === "high" ? "高" : a.threatLevel === "medium" ? "中" : a.threatLevel === "low" ? "低" : "—";
-  // Severity: an AI-amplified or sentiment=1 negative is worst (critical); else map threat→high/medium.
-  const severity = a.sentimentScore === 1 || amplified ? "critical" : a.threatLevel === "high" ? "high" : "medium";
+  const severity = negativeAlertSeverity(a.threatLevel, a.sentimentScore, amplified);
   const penLine = amplified
-    ? `\n🔴 GEO 穿透: 此信源已被 ${pen.aiPlatforms} 个 AI 平台引用（${pen.platformList.slice(0, 6).join("/")}${pen.platformList.length > 6 ? "…" : ""}，累计 ${pen.citationCount} 次）— 负面正被 AI 放大`
+    ? `\n🔴 GEO 穿透: ${pen.matchLevel === "url" ? "此帖" : "此信源"}近 ${CITATION_WINDOW_DAYS} 天已被 ${pen.aiPlatforms} 个 AI 平台引用（${pen.platformList.slice(0, 6).join("/")}${pen.platformList.length > 6 ? "…" : ""}，累计 ${pen.citationCount} 次）— 负面正被 AI 放大`
     : "";
   const content =
     `🚨 负面舆情预警\n${a.title.slice(0, 100)}\n` +
