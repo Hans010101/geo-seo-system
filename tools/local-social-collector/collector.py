@@ -19,6 +19,7 @@ Commands:
   collector.py login xiaohongshu
   collector.py login percent    百分点 Mediaforce (WeChat QR / SMS code, entered by the user)
   collector.py login genoptima  智推时代 GenOptima (SMS code, entered by the user)
+  collector.py login-browser    plain Chrome with all login pages (GenOptima's slider rejects automated windows)
   collector.py status           show the last run and the Weibo login state
 
 It never solves CAPTCHAs or security checks: when a platform shows one, the run records the
@@ -745,9 +746,11 @@ def deliver(cfg, db, platform, posts, stats):
 # ---------------------------------------------------------------- commands
 def browser(playwright, headless=True):
     PROFILE.mkdir(parents=True, exist_ok=True)
+    # Use the macOS keychain like normal Chrome does, so cookies saved by a plain Chrome window
+    # (login-browser) and by this collector stay readable to both instead of being discarded.
     return playwright.chromium.launch_persistent_context(
         str(PROFILE), channel="chrome", headless=headless, locale="zh-CN", timezone_id="Asia/Shanghai",
-        viewport={"width": 1280, "height": 900})
+        viewport={"width": 1280, "height": 900}, ignore_default_args=["--use-mock-keychain"])
 
 
 def run(args):
@@ -935,6 +938,49 @@ def login(args):
     return 0
 
 
+CHROME_APP = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+LOGIN_PAGES = {
+    "weibo": WEIBO_LOGIN_URL, "xiaohongshu": XHS_HOME, "percent": PERCENT_LOGIN, "genoptima": GENO_LOGIN,
+}
+
+
+def login_browser(args):
+    """Open a plain (not automated) Chrome on the collector profile with the chosen login pages;
+    the user signs in there and quits Chrome (⌘Q), then each site is checked headlessly."""
+    import subprocess
+    names = args.sites.split(",") if args.sites else list(LOGIN_PAGES)
+    urls = [LOGIN_PAGES[name] for name in names]
+    print("已打开普通 Chrome：请在各标签页登录（" + "、".join(names) + "），全部完成后按 ⌘Q 退出这个 Chrome。", flush=True)
+    subprocess.run([CHROME_APP, f"--user-data-dir={PROFILE}", "--no-first-run", "--new-window", *urls], check=False)
+    with sync_playwright() as playwright:
+        context = browser(playwright)
+        page = context.new_page()
+        for name in names:
+            try:
+                if name == "weibo":
+                    ok = weibo_logged_in(context)
+                    print(f"微博：{'已登录' if ok else '未检测到登录'}", flush=True)
+                elif name == "xiaohongshu":
+                    me, stop = capture_json(page, "/user/me")
+                    page.goto(XHS_HOME, wait_until="domcontentloaded", timeout=45_000)
+                    page.wait_for_timeout(4000)
+                    stop()
+                    print(f"小红书：{'已登录' if xhs_guest_flag(me) is False else '未检测到登录'}", flush=True)
+                elif name == "percent":
+                    base = percent_session(page)
+                    data = percent_query(page, base, now_ms() - 86400_000, now_ms(), True, limit=1)
+                    print(f"百分点：已登录，近 24 小时敏感信息 {data.get('allDocNumber')} 条", flush=True)
+                elif name == "genoptima":
+                    base, auth = geno_session(page)
+                    result = page.evaluate(GENO_JS, [GENO_RECORDS, {**base, "time_range": "1d", "limit": 1, "offset": 0}, auth])
+                    total = ((result.get("data") or {}).get("data") or {}).get("total")
+                    print(f"智推时代：已登录，近 1 天 AI 问答 {total} 条", flush=True)
+            except (NeedsUser, RuntimeError) as reason:
+                print(f"{name}：{reason}", flush=True)
+        context.close()
+    return 0
+
+
 def status(_args):
     last = ROOT / "last-run.json"
     print(last.read_text() if last.exists() else "还没有运行记录")
@@ -951,6 +997,9 @@ def main():
     login_parser = sub.add_parser("login")
     login_parser.add_argument("platform", choices=["weibo", "xiaohongshu", "percent", "genoptima"])
     login_parser.set_defaults(func=login)
+    plain = sub.add_parser("login-browser", help="sign in with a plain Chrome window (for sites that reject automated windows)")
+    plain.add_argument("--sites", help="comma-separated: weibo,xiaohongshu,percent,genoptima (default all)")
+    plain.set_defaults(func=login_browser)
     sub.add_parser("status").set_defaults(func=status)
     args = parser.parse_args()
     return args.func(args)

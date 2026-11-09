@@ -23,6 +23,9 @@
 - **智推时代 GenOptima 星枢监测**（app.zhituishidai.com，项目“波场TRON”）：每轮按时间倒序翻 AI 问答记录，
   把上次之后的新回答（6 个国内 AI 平台，约 780 条/天）原样写入 D1 `externalGeoAnswers`（`/external-geo`），
   情感用服务商判定，不额外跑 AI。后台“外部监测”页展示两者。
+- 智推时代的滑块验证会拒绝自动化窗口，所以用 `login-browser` 打开普通 Chrome 登录，登录完按 ⌘Q 退出。
+  采集器启动 Chrome 时去掉了 `--use-mock-keychain`，与普通 Chrome 共用系统钥匙串加密 Cookie；
+  否则两边互相读不了对方的 Cookie，会把已有登录全部清掉（2026-11-09 踩过）。
 - 两张表的建表语句在 `scripts/external-sources.sql`。登录失效时断流提醒显示“百分点舆情（本机采集）”或
   “智推时代 GEO（本机采集）”，运行对应的 `login` 命令重新登录即可。
 
@@ -33,7 +36,7 @@ ROOT="$HOME/Library/Application Support/TronGeo/local-social-collector"
 "$ROOT/venv/bin/python" "$ROOT/collector.py" login weibo        # 弹出 Chrome，用微博 App 扫码
 "$ROOT/venv/bin/python" "$ROOT/collector.py" login xiaohongshu  # 用小红书 App 扫码
 "$ROOT/venv/bin/python" "$ROOT/collector.py" login percent      # 百分点：微信扫码或手机验证码
-"$ROOT/venv/bin/python" "$ROOT/collector.py" login genoptima    # 智推时代：手机验证码
+"$ROOT/venv/bin/python" "$ROOT/collector.py" login-browser      # 普通 Chrome 打开全部登录页（推荐；智推时代只能用这个）
 "$ROOT/venv/bin/python" "$ROOT/collector.py" run --dry-run [--platforms bilibili]  # 只搜不发
 "$ROOT/venv/bin/python" "$ROOT/collector.py" status          # 最近一次运行
 ```
