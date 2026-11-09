@@ -232,9 +232,13 @@ export async function generateBrief(opts: { kind?: BriefKind; now?: number; push
   const [cur, cmp] = await Promise.all([counts(client, win.start, win.end), counts(client, win.compareStart, win.compareEnd)]);
   const itemRows = await client.prepare(`SELECT id, publishedAt, sourcePlatform, domain, threatLevel, sentimentScore, title,
       analysisSummary AS summary, url FROM monitor_articles WHERE publishedAt >= ? AND publishedAt < ? AND ${NEG}
-    ORDER BY (threatLevel = 'high') DESC, (threatLevel = 'medium') DESC, publishedAt DESC LIMIT 180`)
+    ORDER BY (threatLevel = 'high') DESC, (threatLevel = 'medium') DESC, publishedAt DESC LIMIT 140`)
     .bind(win.start, win.end).all<BriefItem>();
   const items = itemRows.results.map(i => ({ ...i, publishedAt: Number(i.publishedAt) }));
+  const positiveRows = await client.prepare(`SELECT id, publishedAt, sourcePlatform, domain, threatLevel, sentimentScore, title,
+      NULL AS summary, url FROM monitor_articles WHERE publishedAt >= ? AND publishedAt < ?
+      AND relevance IN ('high','medium') AND sentimentScore >= 4 ORDER BY sentimentScore DESC, publishedAt DESC LIMIT 15`)
+    .bind(win.start, win.end).all<BriefItem>();
   const byId = new Map(items.map(i => [i.id, i]));
   const [market, trends, geo, asks] = await Promise.all([marketBlock(client, now), trendBlock(client, now), geoLine(client, now), findAsks(now)]);
 
@@ -247,7 +251,7 @@ export async function generateBrief(opts: { kind?: BriefKind; now?: number; push
   ];
   const prevEvents: PreviousEvent[] = (previous?.events || []).filter(e => e.trend !== "closed")
     .map(e => ({ key: e.key, title: e.title, count: e.count, level: e.level }));
-  const prompt = buildPrompt({ kind, windowLabel, facts, items, previous: prevEvents, asks });
+  const prompt = buildPrompt({ kind, windowLabel, facts, items, previous: prevEvents, asks, positives: positiveRows.results });
 
   const env = getCloudflareEnv();
   const apiKey = env?.OPENROUTER_API_KEY?.trim() || ENV.openrouterApiKey;

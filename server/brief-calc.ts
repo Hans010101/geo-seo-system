@@ -61,13 +61,16 @@ const clip = (s: string | null | undefined, n: number) => {
 export function buildPrompt(input: {
   kind: BriefKind; windowLabel: string; facts: string[]; items: BriefItem[];
   previous: PreviousEvent[]; asks: string[];
+  /** A few positive items (titles only) so the 正面 line has material. */
+  positives?: BriefItem[];
 }): { system: string; user: string } {
   const system = `你是 TRON（波场）舆情负责人的编辑。读者是非技术的负责人，要在 1 分钟内判断“有没有事、要不要我管”。
 只输出一个 JSON 对象，不要任何其他文字。所有文字用简体中文，平实、具体，不用内部术语（UGC、落盘、SERP 等）。
 口径红线：不把指控写成事实；不写脱锚/资不抵债/跑路已成立；链上路径经过波场 ≠ 协议被攻破 ≠ 孙宇晨涉案。
 只能依据给你的条目和数字，不得编造事实、数字或来源。`;
   const items = input.items.map(i =>
-    `#${i.id} | ${bjHHMM(i.publishedAt)} | ${platformCn(i.sourcePlatform)} | ${i.threatLevel || "-"} | ${clip(i.title, 60)} | ${clip(i.summary, 50)}`).join("\n");
+    `#${i.id} | ${bjHHMM(i.publishedAt)} | ${platformCn(i.sourcePlatform)} | ${i.threatLevel || "-"} | ${clip(i.title, 56)} | ${clip(i.summary, 40)}`).join("\n");
+  const positives = (input.positives || []).map(i => `- ${platformCn(i.sourcePlatform)}：${clip(i.title, 56)}`).join("\n");
   const previous = input.previous.length
     ? input.previous.map(e => `- key=${e.key} | ${e.level} | ${e.title} | 上期 ${e.count} 条`).join("\n")
     : "（无，上期没有事件）";
@@ -85,11 +88,14 @@ ${previous}
 【本时段相关负面条目】（#编号 | 发布时间 | 平台 | 威胁 | 标题 | AI 摘要）
 ${items}
 
+【本时段正面条目（仅供 others.positive 概括）】
+${positives || "（无）"}
+
 请输出 JSON：
 {
   "level": "平稳|关注|警戒|危机",          // 总体态势：有高威胁或官方/执法一手信息才用 警戒/危机
   "change": "升|降|持平",                  // 较上期
-  "lead": "一句话结论，必须说明今天是否需要负责人决定或处理；有【需要负责人处理的事项】时要点名",
+  "lead": "一句话结论，≤50 字，必须说明是否需要负责人决定或处理；有【需要负责人处理的事项】时要点名",
   "points": ["≤3 条，每条以“事件名：”开头，≤60 字"],
   "events": [                              // 2–5 个，按重要性排序；同一件事只出现一次
     {
@@ -109,9 +115,9 @@ ${items}
     }
   ],
   "others": {
-    "positive": "正面动态一行（没有写“无”）",
-    "narrative": "其他负面叙事一行",
-    "watch": "需要观察的一行",
+    "positive": "依据【本时段正面条目】概括正面动态一行（没有写“无”）",
+    "narrative": "其他负面叙事一行（不重复事件卡内容）",
+    "watch": "需要观察的一行（不要写 AI 回答负面率，系统会单独列出）",
     "funds": "资金或链上线索一行（没有写“无”）"
   },
   "outlook": "${input.kind === "pm" ? "明日预判" : "今日预判"}，2–3 句"

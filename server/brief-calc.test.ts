@@ -24,7 +24,9 @@ describe("daily brief", () => {
     const { user } = buildPrompt({
       kind: "pm", windowLabel: "11-09 00:00 → 11-09 17:45", facts: ["负面 157 条"],
       items: [item(7)], previous: [{ key: "jingtian-lawsuit", title: "景甜纠纷", count: 91, level: "P2" }], asks: ["百分点需要重新登录"],
+      positives: [item(8, { title: "正面标题", sourcePlatform: "bilibili" })],
     });
+    expect(user).toContain("- B站：正面标题");
     expect(user).toContain("负面 157 条");
     expect(user).toContain("百分点需要重新登录");
     expect(user).toContain("key=jingtian-lawsuit");
