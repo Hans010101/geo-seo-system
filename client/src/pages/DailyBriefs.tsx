@@ -258,8 +258,11 @@ function AdminBar() {
       <label className="flex items-center gap-2"><Switch checked={settings.enabled} onCheckedChange={(v) => save.mutate({ ...settings, enabled: v })} />自动生成（09:20 / 17:45）</label>
       <label className="flex items-center gap-2"><Switch checked={settings.email} onCheckedChange={(v) => save.mutate({ ...settings, email: v })} />发送邮件</label>
       <label className="flex items-center gap-2"><Switch checked={settings.push} onCheckedChange={(v) => save.mutate({ ...settings, push: v })} />推送 Telegram</label>
-      <Button size="sm" variant="outline" disabled={generate.isPending} onClick={() => generate.mutate({ kind: "am" })}>生成早报</Button>
-      <Button size="sm" variant="outline" disabled={generate.isPending} onClick={() => generate.mutate({ kind: "pm" })}>生成晚报</Button>
+      {/* Manual runs email the brief when 发送邮件 is on; Telegram stays scheduled-only. */}
+      <Button size="sm" variant="outline" disabled={generate.isPending} onClick={() => generate.mutate({ kind: "am", email: settings.email })}>
+        {settings.email ? "生成早报并发邮件" : "生成早报"}</Button>
+      <Button size="sm" variant="outline" disabled={generate.isPending} onClick={() => generate.mutate({ kind: "pm", email: settings.email })}>
+        {settings.email ? "生成晚报并发邮件" : "生成晚报"}</Button>
       {generate.isPending ? <span className="text-muted-foreground">生成中，约需 1 分钟…</span> : null}
     </div>
   );
