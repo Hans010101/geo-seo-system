@@ -112,6 +112,22 @@ def test_geno_records():
     assert r["queryTime"] == ms(dt.datetime(2026, 11, 9, 8, 20, 38, tzinfo=c.BJ))
 
 
+
+def test_market_rows():
+    h = 3600_000
+    t0 = 1793491200000  # whole hour
+    assert c.kline_rows("TRX", [[t0, "0.317", "0", "0", "0.3165"], ["bad"], [t0 + h, "0", "0", "0", "0"]]) == [
+        {"symbol": "TRX", "ts": t0, "price": 0.3165}]
+    assert c.kline_rows("TRX", {"code": -1121}) == []
+    rows = c.chart_rows("USDD", {"prices": [[t0 + 60_000, 0.998], [t0 + 50 * 60_000, 0.999], [t0 + h + 5, -1]],
+                                 "market_caps": [[t0 + 50 * 60_000, 5e8]], "total_volumes": []})
+    assert rows == [{"symbol": "USDD", "ts": t0, "price": 0.999, "marketCap": 5e8, "volume": None}]
+    snap = c.snapshot_rows([{"id": "hyperliquid", "current_price": 74.1, "market_cap": 2.5e10, "total_volume": 3e8,
+                             "last_updated": "2026-11-01T00:42:10.000Z"}, {"id": "dogecoin", "current_price": 1,
+                             "last_updated": "2026-11-01T00:42:10.000Z"}])
+    assert snap == [{"symbol": "HYPE", "ts": t0, "price": 74.1, "marketCap": 2.5e10, "volume": 3e8}]
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_") and callable(fn):

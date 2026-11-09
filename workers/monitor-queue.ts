@@ -9,7 +9,7 @@ import {
 } from "../server/monitor/notify";
 import { sendEmailAlert } from "../server/monitor/email-alert";
 import { dispatchNotification } from "../server/_core/notification";
-import { collectMarketPrices } from "../server/market";
+import { checkMarketAlerts } from "../server/market";
 import { boundedJson } from "./bounded-json";
 import { cycleFailureReason } from "./cycle-failure";
 import {
@@ -132,8 +132,6 @@ type CronBindings = Pick<
 export type QueueEnv = CloudflareRuntimeEnv & CronBindings & CloudflareFeatureEnv & {
   WECHAT_COLLECTOR: Fetcher;
   ENABLE_CLOUDFLARE_CRON?: string;
-  /** Optional CoinGecko demo key (secret); the free public API works without it. */
-  COINGECKO_API_KEY?: string;
   CLOUDFLARE_CRON_MODE?: string;
   CLOUDFLARE_PRIMARY_MAX_KEYWORDS?: string;
   CLOUDFLARE_PRIMARY_NEWS_MAX_ARTICLES?: string;
@@ -225,7 +223,7 @@ type MaintenanceTask = {
   scheduledTime: number;
 };
 
-/** 币价联动: hourly CoinGecko prices + market alerts, queued with every :15 cron firing. */
+/** 币价联动: prune + USDD/TRX alert check on the prices the Mac collector posts; every :15 firing. */
 type MarketPricesTask = {
   kind: "market_prices";
   scheduledTime: number;
@@ -2857,8 +2855,9 @@ async function processTask(task: QueueTask, env: QueueEnv): Promise<void> {
   if (task.kind === "browser_shadow") return browserShadow(task, env);
   if (task.kind === "post_cycle") return postCycle(task, env);
   if (task.kind === "market_prices") {
-    const summary = await collectMarketPrices({ apiKey: env.COINGECKO_API_KEY });
-    console.log(JSON.stringify({ event: "market_prices", ok: summary.ok, rows: summary.rows, errors: summary.errors, alertsSent: summary.alertsSent }));
+    // Prices arrive from the Mac collector (exchanges refuse Cloudflare IPs); here we only alert.
+    const summary = await checkMarketAlerts();
+    console.log(JSON.stringify({ event: "market_alerts", ...summary }));
     return;
   }
   return maintenance(task);

@@ -5,6 +5,8 @@ import { runMonitorCycle } from "../server/monitor/pipeline";
 import { normalizeUrl, sha256 } from "../server/monitor/util";
 import type { DiscoveredPost } from "../server/monitor/sources/types";
 import type { WorkersAiBinding } from "../server/_core/cloudflare-env";
+import { parseMarketRows } from "../server/market-calc";
+import { storeMarketRows, type D1Like } from "../server/market";
 
 type IngestEnv = Omit<AgentReachEnv, "AI"> & { INGEST_TOKEN: string; AI: WorkersAiBinding };
 
@@ -22,7 +24,7 @@ const LOCAL_ONLY = new Set(["weibo", "tieba", "bilibili"]);
 /** Platforms the Mac collector reports heartbeats for (Xiaohongshu is shared with Agent-Reach). */
 const LOCAL_BROWSER = new Set([...LOCAL_ONLY, "xiaohongshu"]);
 /** Heartbeat names: local platforms plus the two vendor systems read through the Mac browser. */
-const REPORT_SOURCES = new Set([...LOCAL_BROWSER, "percent", "genoptima"]);
+const REPORT_SOURCES = new Set([...LOCAL_BROWSER, "percent", "genoptima", "market"]);
 /** Gossip-heavy local platforms whose medium alerts stay in the alert center (user choice 11-08). */
 const PUSH_HIGH_ONLY = new Set(["weibo", "tieba"]);
 export const LOCAL_HEALTH_KEY = "cf_local_source_health";
@@ -238,6 +240,13 @@ export default {
         JSON.stringify(r.references), r.referenceCount, JSON.stringify(r.competitors), r.queryTime,
         new Date(r.queryTime + 8 * 3600_000).toISOString().slice(0, 10), now)));
       return Response.json({ received: records.length, inserted: results.reduce((n, x) => n + (x.meta.changes || 0), 0) });
+    }
+    if (path === "/market-prices" && request.method === "POST") {
+      // Hourly token prices fetched by the Mac (Binance/CoinGecko refuse Cloudflare egress).
+      let rows;
+      try { rows = parseMarketRows(await readJson(request, MAX_BATCH_BYTES)); }
+      catch (e) { return Response.json({ error: String((e as Error).message).slice(0, 160) }, { status: 400 }); }
+      return Response.json(await storeMarketRows(env.HYPERDRIVE as unknown as D1Like, rows));
     }
     if (path === "/external-stats" && request.method === "POST") {
       let row: { source: string; day: string; stats: string };

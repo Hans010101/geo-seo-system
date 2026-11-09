@@ -4,9 +4,8 @@
 
 export type MarketGroup = "tron" | "stable" | "benchmark";
 /**
- * `binance`: USDT pair with precise 1h klines (Binance public market data, generous limits).
- * Tokens without one (USDD, NFT) or with too few digits there (BTTC prices 0.00000035) use
- * CoinGecko's free API, whose per-minute limit only allows a few calls per run.
+ * Reference for the Mac collector's source list: `binance` = USDT pair with precise 1h klines;
+ * tokens without one (USDD, NFT) or with too few digits there (BTTC 0.00000035) use CoinGecko.
  */
 export type MarketToken = { symbol: string; id: string; name: string; group: MarketGroup; binance?: string };
 
@@ -43,56 +42,25 @@ const BJ_OFFSET = 8 * HOUR;
 
 export type PriceRow = { symbol: string; ts: number; price: number; marketCap: number | null; volume: number | null };
 type ChartPoint = [number, number];
-export type CoinGeckoChart = { prices?: ChartPoint[]; market_caps?: ChartPoint[]; total_volumes?: ChartPoint[] };
 
-/** One row per whole hour (the last sample inside that hour wins). */
-export function hourlyRows(symbol: string, chart: CoinGeckoChart): PriceRow[] {
-  const bucket = (points: ChartPoint[] | undefined) => {
-    const out = new Map<number, number>();
-    for (const point of points || []) {
-      if (!Array.isArray(point) || !Number.isFinite(point[0]) || !Number.isFinite(point[1])) continue;
-      out.set(Math.floor(point[0] / HOUR) * HOUR, point[1]);
-    }
-    return out;
-  };
-  const prices = bucket(chart.prices);
-  const caps = bucket(chart.market_caps);
-  const volumes = bucket(chart.total_volumes);
-  return Array.from(prices.entries())
-    .filter(([, price]) => price > 0)
-    .sort((a, b) => a[0] - b[0])
-    .map(([ts, price]) => ({ symbol, ts, price, marketCap: caps.get(ts) ?? null, volume: volumes.get(ts) ?? null }));
-}
+const SYMBOLS = new Set(MARKET_TOKENS.map(t => t.symbol));
 
 /**
- * Binance 1h klines → rows keyed by the kline's open hour with its close price, matching the
- * CoinGecko convention (last price inside the hour). Volume/market cap come from the snapshot.
+ * Validate a /market-prices batch from the Mac collector: known symbols, whole-hour timestamps
+ * within the last 100 days, positive finite prices. Throws on the first bad row.
  */
-export function klineRows(symbol: string, klines: unknown): PriceRow[] {
-  if (!Array.isArray(klines)) return [];
-  return klines
-    .map(k => (Array.isArray(k) ? { ts: Number(k[0]), price: Number(k[4]) } : null))
-    .filter((k): k is { ts: number; price: number } => !!k && Number.isFinite(k.ts) && k.price > 0)
-    .map(k => ({ symbol, ts: Math.floor(k.ts / HOUR) * HOUR, price: k.price, marketCap: null, volume: null }));
-}
-
-export type CoinGeckoMarket = {
-  id?: string; current_price?: number; market_cap?: number; total_volume?: number; last_updated?: string;
-};
-
-/** /coins/markets snapshot → one row per token at the hour of its last update. */
-export function snapshotRows(markets: unknown): PriceRow[] {
-  if (!Array.isArray(markets)) return [];
-  const byId = new Map(MARKET_TOKENS.map(t => [t.id, t.symbol]));
-  return (markets as CoinGeckoMarket[]).flatMap(m => {
-    const symbol = m && m.id ? byId.get(m.id) : undefined;
-    const ts = Date.parse(m?.last_updated || "");
-    if (!symbol || !Number.isFinite(ts) || !(Number(m.current_price) > 0)) return [];
-    return [{
-      symbol, ts: Math.floor(ts / HOUR) * HOUR, price: Number(m.current_price),
-      marketCap: Number.isFinite(m.market_cap) ? Number(m.market_cap) : null,
-      volume: Number.isFinite(m.total_volume) ? Number(m.total_volume) : null,
-    }];
+export function parseMarketRows(value: unknown, now = Date.now()): PriceRow[] {
+  const rows = (value as { rows?: unknown } | null)?.rows;
+  if (!Array.isArray(rows) || rows.length === 0 || rows.length > 5000) throw new Error("Expected 1-5000 rows");
+  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : null);
+  return rows.map((raw) => {
+    const r = (raw || {}) as Record<string, unknown>;
+    if (typeof r.symbol !== "string" || !SYMBOLS.has(r.symbol)) throw new Error("Unknown symbol");
+    const ts = Number(r.ts);
+    if (!Number.isInteger(ts) || ts % HOUR !== 0 || ts > now + HOUR || ts < now - 100 * DAY) throw new Error("Invalid ts");
+    const price = num(r.price);
+    if (!price) throw new Error("Invalid price");
+    return { symbol: r.symbol, ts, price, marketCap: num(r.marketCap), volume: num(r.volume) };
   });
 }
 

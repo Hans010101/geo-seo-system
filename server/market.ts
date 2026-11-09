@@ -1,22 +1,21 @@
-// 币价联动: hourly prices of TRON-ecosystem tokens and four benchmark coins from CoinGecko's free
-// API (stored in D1 marketPrices), linked to the sentiment monitor. Collection runs as a queue
-// task on every cron firing (:15); each run re-reads the last 48h so missed runs self-heal.
+// 币价联动: hourly prices of TRON-ecosystem tokens and benchmark majors (D1 marketPrices), linked
+// to the sentiment monitor. Binance and CoinGecko refuse Cloudflare's egress IPs (403/429 seen
+// 2026-11-09), so the always-on Mac collector fetches prices and posts them to the ingest worker
+// (/market-prices → storeMarketRows); the cron queue task only prunes and evaluates alerts.
 import { getDb, getSysConfig, setSysConfig } from "./db";
 import { dispatchNotification } from "./_core/notification";
 import {
   BENCHMARK, DAY, HOUR, MARKET_TOKENS, TRON_INDEX, sparkline,
   average, bjDay, bjDayStart, chartRows, correlation, dailyLinks, eventImpacts, evaluateMarketAlerts,
-  excessReturn, hourlyRows, klineRows, pct, priceAt, snapshotRows, toSeries,
-  type CoinGeckoChart, type MarketAlertSettings, type MarketAlertState, type MarketEvent, type PriceRow,
+  excessReturn, pct, priceAt, toSeries,
+  type MarketAlertSettings, type MarketAlertState, type MarketEvent, type PriceRow,
 } from "./market-calc";
 
-const COINGECKO = "https://api.coingecko.com/api/v3";
-const BINANCE = "https://data-api.binance.vision/api/v3";
-/** CoinGecko's keyless tier allows only a handful of calls per minute. */
-const COINGECKO_SPACING_MS = 15_000;
-const BACKFILL_DAYS = 90;
 const RETENTION_DAYS = 400;
+/** Written by the ingest endpoint on every accepted batch. */
 export const MARKET_STATUS_KEY = "market_last_fetch";
+/** Written by the cron alert check. */
+export const MARKET_ALERT_STATUS_KEY = "market_last_alert_check";
 const ALERT_STATE_KEY = "market_alert_state";
 const SETTINGS_KEYS = {
   enabled: "market_alerts_enabled",
@@ -28,7 +27,7 @@ const DEFAULT_SETTINGS: MarketAlertSettings = { enabled: false, usddDepegPct: 0.
 const NEGATIVE_SQL = "relevance IN ('high','medium') AND sentimentScore <= 2";
 
 type D1Stmt = { bind(...values: unknown[]): D1Stmt; all<T = unknown>(): Promise<{ results: T[] }>; run(): Promise<unknown> };
-type D1Like = { prepare(sql: string): D1Stmt; batch(statements: D1Stmt[]): Promise<{ results: unknown[] }[]> };
+export type D1Like = { prepare(sql: string): D1Stmt; batch(statements: D1Stmt[]): Promise<{ results: unknown[] }[]> };
 
 async function d1(): Promise<D1Like> {
   const database = await getDb();
@@ -37,39 +36,9 @@ async function d1(): Promise<D1Like> {
 }
 
 const round2 = (value: number | null) => (value === null ? null : Math.round(value * 100) / 100);
-const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-async function coinGecko(path: string, apiKey?: string): Promise<unknown> {
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const response = await fetch(`${COINGECKO}${path}`, {
-      headers: { Accept: "application/json", ...(apiKey ? { "x-cg-demo-api-key": apiKey } : {}) },
-      signal: AbortSignal.timeout(20_000),
-    });
-    if (response.status === 429 && attempt === 0) { await sleep(60_000); continue; }
-    if (!response.ok) throw new Error(`CoinGecko ${path.split("?")[0]} HTTP ${response.status}`);
-    return await response.json();
-  }
-  throw new Error(`CoinGecko ${path.split("?")[0]} rate limited`);
-}
-
-async function binanceKlines(pair: string, since: number): Promise<unknown[]> {
-  const out: unknown[] = [];
-  let start = since;
-  for (let page = 0; page < 4; page++) {
-    const response = await fetch(`${BINANCE}/klines?symbol=${pair}&interval=1h&startTime=${start}&limit=1000`, {
-      headers: { Accept: "application/json" }, signal: AbortSignal.timeout(20_000),
-    });
-    if (!response.ok) throw new Error(`Binance ${pair} HTTP ${response.status}`);
-    const batch = await response.json() as unknown[];
-    if (!Array.isArray(batch)) throw new Error(`Binance ${pair} bad payload`);
-    out.push(...batch);
-    if (batch.length < 1000) break;
-    start = Number((batch[batch.length - 1] as unknown[])[0]) + HOUR;
-  }
-  return out;
-}
-
-async function upsertRows(client: D1Like, rows: PriceRow[]) {
+/** Upsert hourly rows (used by the ingest worker's /market-prices endpoint). */
+export async function storeMarketRows(client: D1Like, rows: PriceRow[], now = Date.now()) {
   // D1 allows 100 bound parameters per statement: 20 rows × 5 columns.
   const statements: D1Stmt[] = [];
   for (let i = 0; i < rows.length; i += 20) {
@@ -81,6 +50,12 @@ async function upsertRows(client: D1Like, rows: PriceRow[]) {
       .bind(...chunk.flatMap(r => [r.symbol, r.ts, r.price, r.marketCap, r.volume])));
   }
   for (let i = 0; i < statements.length; i += 50) await client.batch(statements.slice(i, i + 50));
+  const symbols = Array.from(new Set(rows.map(r => r.symbol))).sort();
+  const latest = rows.reduce((max, r) => Math.max(max, r.ts), 0);
+  await client.prepare(`INSERT INTO sysConfigs (configKey, configValue, updatedAt) VALUES (?, ?, ?)
+    ON CONFLICT(configKey) DO UPDATE SET configValue = excluded.configValue, updatedAt = excluded.updatedAt`)
+    .bind(MARKET_STATUS_KEY, JSON.stringify({ at: now, rows: rows.length, symbols, latest }), Math.floor(now / 1000)).run();
+  return { stored: rows.length, symbols };
 }
 
 export async function getMarketAlertSettings(): Promise<MarketAlertSettings> {
@@ -110,57 +85,25 @@ async function recentNegatives(client: D1Like, since: number) {
   return rows.results;
 }
 
-/** Queue task body: fetch, store, prune, then evaluate alerts. Returns a small summary. */
-export async function collectMarketPrices(opts: { apiKey?: string; now?: number } = {}) {
+/**
+ * Cron queue task (every :15, ten minutes after the Mac collector's :05 run): prune old rows and
+ * evaluate USDD-depeg / TRX-underperformance alerts on the stored prices.
+ */
+export async function checkMarketAlerts(opts: { now?: number } = {}) {
   const now = opts.now ?? Date.now();
   const client = await d1();
-  const counts = await client.prepare(`SELECT symbol, COUNT(*) AS n FROM marketPrices WHERE ts >= ? GROUP BY symbol`)
-    .bind(now - BACKFILL_DAYS * DAY).all<{ symbol: string; n: number }>();
-  const have = new Map(counts.results.map(row => [row.symbol, Number(row.n)]));
-  const fetched: PriceRow[] = [];
-  const errors: string[] = [];
-  const keep = async (rows: PriceRow[]) => {
-    await upsertRows(client, rows);
-    fetched.push(...rows.filter(row => row.ts >= now - 2 * DAY));
-  };
-  // Backfill 90 days once (≈2,160 hourly rows); afterwards 2 days covers any missed run.
-  const daysFor = (symbol: string) => ((have.get(symbol) || 0) < (BACKFILL_DAYS - 5) * 24 ? BACKFILL_DAYS : 2);
-  const viaCoinGecko = MARKET_TOKENS.filter(token => !token.binance);
-  for (const token of MARKET_TOKENS.filter(t => t.binance)) {
-    try {
-      await keep(klineRows(token.symbol, await binanceKlines(token.binance!, now - daysFor(token.symbol) * DAY)));
-    } catch (error) {
-      errors.push(String((error as Error).message || error).slice(0, 160));
-      viaCoinGecko.push(token); // fall back so the market basket stays complete
-    }
-  }
-  let calls = 0;
-  const pace = async () => { if (calls++ > 0) await sleep(COINGECKO_SPACING_MS); };
-  for (const token of viaCoinGecko) {
-    try {
-      await pace();
-      const chart = await coinGecko(`/coins/${token.id}/market_chart?vs_currency=usd&days=${daysFor(token.symbol)}`, opts.apiKey);
-      await keep(hourlyRows(token.symbol, chart as CoinGeckoChart));
-    } catch (error) {
-      errors.push(String((error as Error).message || error).slice(0, 160));
-    }
-  }
-  try {
-    // One call for every token's market cap and 24h volume (also refreshes the current hour's price).
-    await pace();
-    await keep(snapshotRows(await coinGecko(`/coins/markets?vs_currency=usd&ids=${MARKET_TOKENS.map(t => t.id).join(",")}`, opts.apiKey)));
-  } catch (error) {
-    errors.push(String((error as Error).message || error).slice(0, 160));
-  }
   await client.prepare("DELETE FROM marketPrices WHERE ts < ?").bind(now - RETENTION_DAYS * DAY).run();
-
-  const series = toSeries(fetched);
+  const series = await loadSeries(client, now - 2 * DAY);
+  const latest = Math.max(0, ...Object.values(series).map(points => points[points.length - 1]?.[0] ?? 0));
+  const stale = now - latest > 6 * HOUR; // Mac asleep/offline: don't judge on old prices
   const settings = await getMarketAlertSettings();
   let alertsSent = 0;
-  if (settings.enabled) {
+  if (settings.enabled && !stale) {
     let state: MarketAlertState = {};
     try { state = JSON.parse((await getSysConfig(ALERT_STATE_KEY)) || "{}"); } catch { state = {}; }
-    const result = evaluateMarketAlerts({ now, series, settings, state, negatives: await recentNegatives(client, now - DAY) });
+    // Evaluate at the newest stored hour so a 10-minute-old price still counts as "now".
+    const at = Math.max(latest, Math.floor(now / HOUR) * HOUR - HOUR);
+    const result = evaluateMarketAlerts({ now: at, series, settings, state, negatives: await recentNegatives(client, now - DAY) });
     let nextState = { ...state };
     for (const alert of result.alerts) {
       const sent = await dispatchNotification({
@@ -177,10 +120,10 @@ export async function collectMarketPrices(opts: { apiKey?: string; now?: number 
     await setSysConfig(ALERT_STATE_KEY, JSON.stringify(nextState));
   }
   const summary = {
-    at: now, ok: errors.length === 0, rows: fetched.length, errors: errors.slice(0, 5), alertsSent,
-    trx24h: excessReturn(series, now - DAY, now),
+    at: now, latestPriceAt: latest || null, stale, alertsEnabled: settings.enabled, alertsSent,
+    trx24h: latest ? excessReturn(series, latest - DAY, latest) : null,
   };
-  await setSysConfig(MARKET_STATUS_KEY, JSON.stringify(summary));
+  await setSysConfig(MARKET_ALERT_STATUS_KEY, JSON.stringify(summary));
   return summary;
 }
 

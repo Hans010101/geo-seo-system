@@ -689,6 +689,141 @@ def collect_genoptima(page, cfg, state, dry_run):
     return stats
 
 
+# ---------------------------------------------------------------- 币价（币价联动）
+# Binance and CoinGecko refuse Cloudflare's egress IPs, so the Mac fetches hourly prices and posts
+# them to /market-prices; the cron worker only evaluates alerts on what is stored.
+MARKET_TOKENS = (  # symbol, CoinGecko id, Binance USDT pair (None → CoinGecko hourly chart)
+    ("TRX", "tron", "TRXUSDT"), ("USDD", "usdd", None), ("BTT", "bittorrent", None), ("NFT", "apenft", None),
+    ("JST", "just", "JSTUSDT"), ("WIN", "wink", "WINUSDT"), ("BTC", "bitcoin", "BTCUSDT"),
+    ("ETH", "ethereum", "ETHUSDT"), ("BNB", "binancecoin", "BNBUSDT"), ("SOL", "solana", "SOLUSDT"),
+    ("XRP", "ripple", "XRPUSDT"), ("HYPE", "hyperliquid", "HYPEUSDT"),
+)
+BINANCE_KLINES = "https://data-api.binance.vision/api/v3/klines?symbol={}&interval=1h&startTime={}&limit=1000"
+COINGECKO = "https://api.coingecko.com/api/v3"
+COINGECKO_SPACING_S = 15  # the keyless tier allows only a few calls a minute
+HOUR_MS = 3600_000
+MARKET_BACKFILL_DAYS = 90
+
+
+def get_json(url, timeout=30):
+    request = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": "trongeo-local-collector/1"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout, context=SSL_CONTEXT) as response:
+            return response.status, json.loads(response.read() or b"null")
+    except urllib.error.HTTPError as error:
+        return error.code, None
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as error:
+        return 0, str(error)[:120]
+
+
+def kline_rows(symbol, klines):
+    """Binance 1h klines → the kline's open hour with its close price (last price in that hour)."""
+    rows = []
+    for k in klines if isinstance(klines, list) else []:
+        try:
+            ts, price = int(k[0]), float(k[4])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if price > 0:
+            rows.append({"symbol": symbol, "ts": ts // HOUR_MS * HOUR_MS, "price": price})
+    return rows
+
+
+def chart_rows(symbol, chart):
+    """CoinGecko market_chart → one row per whole hour, the last sample inside it wins."""
+    buckets = {}
+    for name in ("prices", "market_caps", "total_volumes"):
+        for point in (chart or {}).get(name) or [] if isinstance(chart, dict) else []:
+            try:
+                ts, value = int(point[0]) // HOUR_MS * HOUR_MS, float(point[1])
+            except (TypeError, ValueError, IndexError):
+                continue
+            buckets.setdefault(ts, {})[name] = value
+    return [{"symbol": symbol, "ts": ts, "price": v["prices"], "marketCap": v.get("market_caps"), "volume": v.get("total_volumes")}
+            for ts, v in sorted(buckets.items()) if v.get("prices", 0) > 0]
+
+
+def snapshot_rows(markets):
+    """CoinGecko /coins/markets → every token's price, market cap and 24h volume at its update hour."""
+    by_id = {cg: symbol for symbol, cg, _ in MARKET_TOKENS}
+    rows = []
+    for m in markets if isinstance(markets, list) else []:
+        symbol = by_id.get((m or {}).get("id"))
+        try:
+            ts = int(dt.datetime.fromisoformat(m["last_updated"].replace("Z", "+00:00")).timestamp() * 1000)
+            price = float(m["current_price"])
+        except (KeyError, TypeError, ValueError, AttributeError):
+            continue
+        if symbol and price > 0:
+            rows.append({"symbol": symbol, "ts": ts // HOUR_MS * HOUR_MS, "price": price,
+                         "marketCap": m.get("market_cap"), "volume": m.get("total_volume")})
+    return rows
+
+
+def coingecko(path, calls):
+    if calls[0] > 0:
+        time.sleep(COINGECKO_SPACING_S)
+    calls[0] += 1
+    status, payload = get_json(COINGECKO + path)
+    if status == 429:
+        time.sleep(60)
+        status, payload = get_json(COINGECKO + path)
+    if status != 200:
+        raise RuntimeError(f"CoinGecko {path.split('?')[0]} HTTP {status}")
+    return payload
+
+
+def collect_market(cfg, state, dry_run):
+    stats = {"found": 0, "errors": []}
+    backfilled = set(state.get("marketBackfilled") or [])
+    now = now_ms()
+    rows, fresh_backfill, via_gecko, calls = [], [], [], [0]
+    for symbol, cg_id, pair in MARKET_TOKENS:
+        days = 2 if symbol in backfilled else MARKET_BACKFILL_DAYS
+        if not pair:
+            via_gecko.append((symbol, cg_id, days))
+            continue
+        start, got = now - days * 86400_000, []
+        try:
+            for _ in range(4):  # 1000 hours per page; 90 days needs three
+                status, batch = get_json(BINANCE_KLINES.format(pair, start))
+                if status != 200 or not isinstance(batch, list):
+                    raise RuntimeError(f"Binance {pair} HTTP {status}")
+                got.extend(kline_rows(symbol, batch))
+                if len(batch) < 1000:
+                    break
+                start = int(batch[-1][0]) + HOUR_MS
+            rows.extend(got)
+            if days == MARKET_BACKFILL_DAYS:
+                fresh_backfill.append(symbol)
+        except RuntimeError as error:
+            stats["errors"].append(str(error))
+            via_gecko.append((symbol, cg_id, days))  # keep the basket complete
+    for symbol, cg_id, days in via_gecko:
+        try:
+            rows.extend(chart_rows(symbol, coingecko(f"/coins/{cg_id}/market_chart?vs_currency=usd&days={days}", calls)))
+            if days == MARKET_BACKFILL_DAYS:
+                fresh_backfill.append(symbol)
+        except RuntimeError as error:
+            stats["errors"].append(str(error))
+    try:
+        ids = ",".join(cg for _, cg, _ in MARKET_TOKENS)
+        rows.extend(snapshot_rows(coingecko(f"/coins/markets?vs_currency=usd&ids={ids}", calls)))
+    except RuntimeError as error:
+        stats["errors"].append(str(error))
+    stats["found"] = len(rows)
+    if dry_run:
+        stats["symbols"] = sorted({r["symbol"] for r in rows})
+        return stats
+    for index in range(0, len(rows), 2000):
+        status, body = post_json(cfg, "/market-prices", {"rows": rows[index:index + 2000]})
+        if status != 200:
+            stats["errors"].append(f"上传失败：HTTP {status} {body.get('error', '')}")
+            return stats  # backfill flags stay unset so the next run retries
+    state["marketBackfilled"] = sorted(backfilled | set(fresh_backfill))
+    return stats
+
+
 # ---------------------------------------------------------------- delivery
 def outbox():
     db = sqlite3.connect(ROOT / "outbox.sqlite3")
@@ -779,6 +914,14 @@ def run(args):
     with sync_playwright() as playwright:
         context = browser(playwright)
         page = context.new_page()
+        if not selected or "market" in selected:
+            # Prices first: the cron worker evaluates market alerts at :15, ten minutes after this run starts.
+            try:
+                stats = collect_market(cfg, state, args.dry_run)
+            except Exception as error:
+                stats = {"found": 0, "errors": [f"{type(error).__name__}: {str(error)[:160]}"]}
+            report["market"] = {"discovered": stats["found"], **({"error": stats["errors"][0]} if stats["errors"] else {})}
+            log("platform", platform="market", **stats)
         searches = (
             ("weibo", KEYWORDS, lambda kw: search_weibo(page, context, kw, since["weibo"])),
             ("tieba", TIEBA_KEYWORDS, lambda kw: search_tieba(page, kw)),
@@ -786,8 +929,6 @@ def run(args):
             ("xiaohongshu", XHS_KEYWORDS, lambda kw: search_xhs(page, kw)),
         )
         for platform, keywords, search in searches:
-            if platform in VENDORS:
-                continue
             if selected and platform not in selected:
                 continue
             stats = {"found": 0, "fresh": 0, "sent": 0, "outcomes": {}, "errors": [], "capped": False}

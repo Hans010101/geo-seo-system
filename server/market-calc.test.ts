@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   DAY, HOUR, bjDay, bjDayStart, chartRows, correlation, dailyLinks, eventImpacts, evaluateMarketAlerts,
-  BENCHMARK, excessReturn, hourlyRows, klineRows, pearson, priceAt, snapshotRows, sparkline, toSeries, type PriceSeries,
+  BENCHMARK, excessReturn, parseMarketRows, pearson, priceAt, sparkline, toSeries, type PriceSeries,
 } from "./market-calc";
 
 const T0 = Date.UTC(2026, 10, 1, 0, 0); // 2026-11-01 08:00 Beijing
@@ -20,27 +20,16 @@ function market(trx: (h: number) => number, bench: (h: number) => number, hours 
 }
 
 describe("market calc", () => {
-  it("buckets CoinGecko samples into whole hours, last sample wins", () => {
-    const rows = hourlyRows("TRX", {
-      prices: [[T0 + 60_000, 0.3], [T0 + 50 * 60_000, 0.31], [T0 + HOUR + 1, 0.32], [T0 + 2 * HOUR, -1]],
-      market_caps: [[T0 + 50 * 60_000, 3e10]],
-      total_volumes: [[T0 + HOUR, 1e9]],
-    });
-    expect(rows).toEqual([
-      { symbol: "TRX", ts: T0, price: 0.31, marketCap: 3e10, volume: null },
-      { symbol: "TRX", ts: T0 + HOUR, price: 0.32, marketCap: null, volume: 1e9 },
-    ]);
-  });
-
-  it("parses Binance klines (open hour, close price) and the CoinGecko market snapshot", () => {
-    expect(klineRows("TRX", [[T0, "0.317", "0.3173", "0.3164", "0.3165", "3033898.9"], ["bad"], [T0 + HOUR, "0", "0", "0", "0"]]))
-      .toEqual([{ symbol: "TRX", ts: T0, price: 0.3165, marketCap: null, volume: null }]);
-    expect(klineRows("TRX", { code: -1121 })).toEqual([]);
-    expect(snapshotRows([
-      { id: "usdd", current_price: 0.9992, market_cap: 5e8, total_volume: 2e7, last_updated: "2026-11-01T00:42:10.000Z" },
-      { id: "unknown", current_price: 1, last_updated: "2026-11-01T00:42:10.000Z" },
-      { id: "tron", current_price: 0, last_updated: "2026-11-01T00:42:10.000Z" },
-    ])).toEqual([{ symbol: "USDD", ts: T0, price: 0.9992, marketCap: 5e8, volume: 2e7 }]);
+  it("validates price batches from the Mac collector", () => {
+    const now = T0 + 2 * HOUR;
+    expect(parseMarketRows({ rows: [{ symbol: "TRX", ts: T0, price: 0.3165, marketCap: 3e10, volume: null }] }, now))
+      .toEqual([{ symbol: "TRX", ts: T0, price: 0.3165, marketCap: 3e10, volume: null }]);
+    expect(parseMarketRows({ rows: [{ symbol: "HYPE", ts: T0, price: 74, marketCap: "x" }] }, now)[0].marketCap).toBeNull();
+    expect(() => parseMarketRows({ rows: [{ symbol: "DOGE", ts: T0, price: 1 }] }, now)).toThrow("symbol");
+    expect(() => parseMarketRows({ rows: [{ symbol: "TRX", ts: T0 + 1, price: 1 }] }, now)).toThrow("ts");
+    expect(() => parseMarketRows({ rows: [{ symbol: "TRX", ts: T0 - 101 * DAY, price: 1 }] }, now)).toThrow("ts");
+    expect(() => parseMarketRows({ rows: [{ symbol: "TRX", ts: T0, price: 0 }] }, now)).toThrow("price");
+    expect(() => parseMarketRows({ rows: [] }, now)).toThrow();
   });
 
   it("reads the last price before t but not across long gaps", () => {
