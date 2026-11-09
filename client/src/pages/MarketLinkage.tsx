@@ -123,9 +123,8 @@ function Linkage() {
   const [days, setDays] = useState(30);
   const [showAll, setShowAll] = useState(false);
   const { data, isLoading } = trpc.market.linkage.useQuery({ days }, { staleTime: 60_000 });
-  // High-threat events first, then the newest medium ones; the long medium tail is mostly noise.
-  const events = [...(data?.events || [])].sort((a, b) =>
-    Number(b.threatLevel === "high") - Number(a.threatLevel === "high") || b.publishedAt - a.publishedAt);
+  // Newest first by publication time (the API still includes every high-threat event).
+  const events = [...(data?.events || [])].sort((a, b) => b.publishedAt - a.publishedAt);
   const step = data?.step ?? 3_600_000;
   const chart = (data?.chart || []).map(row => ({ ...row, label: bjTime(row.t, step < 86_400_000) }));
   return (
