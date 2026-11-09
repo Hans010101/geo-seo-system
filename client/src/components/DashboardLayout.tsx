@@ -41,6 +41,7 @@ import {
   Bot,
   Telescope,
   CandlestickChart,
+  Newspaper,
 } from "lucide-react";
 import { CSSProperties, FormEvent, useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
@@ -53,6 +54,7 @@ import { Separator } from "./ui/separator";
 const primaryMenuItems = [
   { icon: LayoutDashboard, label: "工作台", path: "/", matches: ["/"] },
   { icon: Radar, label: "舆情情报", path: "/sentiment-monitor", matches: ["/sentiment-monitor"] },
+  { icon: Newspaper, label: "早晚报", path: "/briefs", matches: ["/briefs"] },
   { icon: Bot, label: "GEO 洞察", path: "/geo", matches: ["/geo", "/questions", "/citations"] },
   { icon: Telescope, label: "外部监测", path: "/external", matches: ["/external"] },
   { icon: CandlestickChart, label: "币价联动", path: "/market", matches: ["/market"] },

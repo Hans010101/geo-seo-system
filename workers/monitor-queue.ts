@@ -10,6 +10,7 @@ import {
 import { sendEmailAlert } from "../server/monitor/email-alert";
 import { dispatchNotification } from "../server/_core/notification";
 import { checkMarketAlerts } from "../server/market";
+import { generateBrief, getBriefSettings } from "../server/brief";
 import { boundedJson } from "./bounded-json";
 import { cycleFailureReason } from "./cycle-failure";
 import {
@@ -229,6 +230,13 @@ type MarketPricesTask = {
   scheduledTime: number;
 };
 
+/** 早报 (queued 09:15 + 5 min) / 晚报 (queued 17:40 + 5 min), after the Mac's :05 run and the cloud batch. */
+type DailyBriefTask = {
+  kind: "daily_brief";
+  brief: "am" | "pm";
+  scheduledTime: number;
+};
+
 type FreshnessAuditTask = {
   kind: "freshness_audit";
   auditId: string;
@@ -291,6 +299,7 @@ export type QueueTask =
   | CandidateTask
   | MaintenanceTask
   | MarketPricesTask
+  | DailyBriefTask
   | FreshnessAuditTask
   | BinanceProbeTask
   | GeoDailyShardTask
@@ -2854,6 +2863,12 @@ async function processTask(task: QueueTask, env: QueueEnv): Promise<void> {
   if (task.kind === "openrouter_preflight") return runOpenRouterPreflight(task, env);
   if (task.kind === "browser_shadow") return browserShadow(task, env);
   if (task.kind === "post_cycle") return postCycle(task, env);
+  if (task.kind === "daily_brief") {
+    if (!(await getBriefSettings()).enabled) return;
+    const brief = await generateBrief({ kind: task.brief });
+    console.log(JSON.stringify({ event: "daily_brief", id: brief.id, events: brief.events.length, usage: brief.usage }));
+    return;
+  }
   if (task.kind === "market_prices") {
     // Prices arrive from the Mac collector (exchanges refuse Cloudflare IPs); here we only alert.
     const summary = await checkMarketAlerts();
@@ -3024,5 +3039,8 @@ export async function enqueueScheduledMonitor(
     }
   }
   if (local.minute === 15) messages.push({ body: { kind: "market_prices", scheduledTime } });
+  // Daily briefs: 早报 09:20 and 晚报 17:45 (five minutes after the 09:15 / 17:40 cloud batches start).
+  const brief = local.hour === 9 && local.minute === 15 ? "am" : local.hour === 17 && local.minute === 40 ? "pm" : null;
+  if (brief) messages.push({ body: { kind: "daily_brief", brief, scheduledTime }, delaySeconds: 300 });
   if (messages.length > 0) await env.MONITOR_QUEUE.sendBatch(messages);
 }

@@ -45,6 +45,7 @@ import {
 } from "./monitor/telegram-connect";
 import { isCloudflareRuntime } from "./runtime";
 import { getMarketLinkage, getMarketOverview, setMarketAlertSettings } from "./market";
+import { generateBrief, getBrief, getBriefSettings, listBriefs, setBriefSettings } from "./brief";
 import { getExternalGeoAnswer, getExternalGeoOverview, listExternalGeoAnswers, listPercentDailyStats } from "./external";
 import { emptyAnswerError, shouldLimitReasoning } from "./llm-answer";
 import { dateRangePeriod, geoReportKey, parsePeriod, reportDateRangeSchema } from "../shared/report-period";
@@ -2893,6 +2894,23 @@ const externalRouter = router({
     .query(async ({ input }) => listPercentDailyStats(input.days)),
 });
 
+// ==================== 早报 / 晚报 ====================
+const briefsRouter = router({
+  list: protectedProcedure.query(async () => listBriefs(40)),
+  get: protectedProcedure.input(z.object({ id: z.string().max(20) })).query(async ({ input }) => getBrief(input.id)),
+  settings: protectedProcedure.query(async () => getBriefSettings()),
+  setSettings: adminProcedure
+    .input(z.object({ enabled: z.boolean(), push: z.boolean() }))
+    .mutation(async ({ input }) => { await setBriefSettings(input); return { success: true }; }),
+  // Regenerates the current period's brief now (no Telegram push unless asked).
+  generate: adminProcedure
+    .input(z.object({ kind: z.enum(["am", "pm"]), push: z.boolean().default(false) }))
+    .mutation(async ({ input }) => {
+      const brief = await generateBrief({ kind: input.kind, push: input.push });
+      return { id: brief.id };
+    }),
+});
+
 // ==================== 币价联动 ====================
 const marketRouter = router({
   overview: protectedProcedure.query(async () => getMarketOverview()),
@@ -2948,6 +2966,7 @@ export const appRouter = router({
   monitor: monitorRouter,
   external: externalRouter,
   market: marketRouter,
+  briefs: briefsRouter,
 });
 
 export type AppRouter = typeof appRouter;
