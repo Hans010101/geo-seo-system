@@ -13,7 +13,34 @@ import {
 } from "recharts";
 import { SOURCE_PLATFORM_META, THREAT_META } from "@/lib/monitorLabels";
 
-const GROUP_LABEL: Record<string, string> = { tron: "TRON 生态", stable: "稳定币", benchmark: "大盘参照" };
+/** Display rows: USDD sits with the TRON ecosystem (it is excluded from the index math only). */
+const ROWS: { label: string; groups: string[] }[] = [
+  { label: "TRON 生态", groups: ["tron", "stable"] },
+  { label: "大盘参照", groups: ["benchmark"] },
+];
+
+/** 7-day price sparkline; USDD uses a fixed ±1% band so peg noise is not magnified. */
+function Sparkline({ values, peg }: { values: (number | null)[]; peg?: boolean }) {
+  const points = values.map((v, i) => [i, v] as const).filter((p): p is readonly [number, number] => p[1] !== null);
+  if (points.length < 2) return <div className="h-9" />;
+  const prices = points.map(p => p[1]);
+  const lo = peg ? 0.99 : Math.min(...prices);
+  const hi = peg ? 1.01 : Math.max(...prices);
+  const span = hi - lo || 1;
+  const w = 100;
+  const h = 32;
+  const x = (i: number) => (i / (values.length - 1)) * w;
+  const y = (v: number) => h - 2 - ((Math.min(hi, Math.max(lo, v)) - lo) / span) * (h - 4);
+  const up = prices[prices.length - 1] >= prices[0];
+  const color = peg ? "#0ea5e9" : up ? "#16a34a" : "#dc2626";
+  const line = points.map(([i, v]) => `${x(i).toFixed(2)},${y(v).toFixed(2)}`).join(" ");
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" className="w-full h-9" aria-label="近 7 天走势">
+      {peg ? <line x1="0" x2={w} y1={y(1)} y2={y(1)} stroke="#cbd5e1" strokeDasharray="2 2" vectorEffect="non-scaling-stroke" /> : null}
+      <polyline points={line} fill="none" stroke={color} strokeWidth="1.5" vectorEffect="non-scaling-stroke" strokeLinejoin="round" />
+    </svg>
+  );
+}
 
 const signed = (value: number | null | undefined, digits = 2) =>
   value === null || value === undefined ? "—" : `${value > 0 ? "+" : ""}${value.toFixed(digits)}%`;
@@ -37,7 +64,7 @@ const bjTime = (ms: number, withDate = true) => {
 function Overview() {
   const { data } = trpc.market.overview.useQuery(undefined, { staleTime: 60_000 });
   if (!data) return null;
-  const groups = ["tron", "stable", "benchmark"] as const;
+
   return (
     <div className="space-y-4">
       <div className="grid gap-3 md:grid-cols-3">
@@ -56,11 +83,11 @@ function Overview() {
           );
         })}
       </div>
-      {groups.map(group => (
-        <div key={group}>
-          <div className="text-sm font-medium text-muted-foreground mb-2">{GROUP_LABEL[group]}</div>
+      {ROWS.map(row => (
+        <div key={row.label}>
+          <div className="text-sm font-medium text-muted-foreground mb-2">{row.label}</div>
           <div className="grid gap-3 grid-cols-2 md:grid-cols-3 xl:grid-cols-6">
-            {data.tokens.filter(token => token.group === group).map(token => (
+            {data.tokens.filter(token => row.groups.includes(token.group)).map(token => (
               <Card key={token.symbol}>
                 <CardContent className="pt-4 pb-4 space-y-1">
                   <div className="flex items-baseline justify-between">
@@ -68,6 +95,7 @@ function Overview() {
                     <span className="text-xs text-muted-foreground">{token.name}</span>
                   </div>
                   <div className="text-lg">{formatPrice(token.price)}</div>
+                  <Sparkline values={token.spark} peg={token.group === "stable"} />
                   <div className="text-xs space-x-2">
                     <span className={tone(token.change24h)}>24h {signed(token.change24h)}</span>
                     <span className={tone(token.change7d)}>7d {signed(token.change7d)}</span>
@@ -85,7 +113,7 @@ function Overview() {
       ))}
       <p className="text-xs text-muted-foreground">
         数据来自 CoinGecko，云端每轮定时任务（北京时间 9–21 点每 2 小时及 3 点）同步小时级价格；
-        最近更新 {data.updatedAt ? bjTime(data.updatedAt) : "—"}。生态指数 = TRX/BTT/NFT/JST/WIN 等权，大盘 = BTC/ETH/BNB/SOL 等权，超额收益 = TRX − 大盘。
+        最近更新 {data.updatedAt ? bjTime(data.updatedAt) : "—"}。生态指数 = {data.tronIndex.join("/")} 等权（USDD 为稳定币不计入），大盘 = {data.benchmark.join("/")} 等权，超额收益 = TRX − 大盘。小图为近 7 天走势。
       </p>
     </div>
   );

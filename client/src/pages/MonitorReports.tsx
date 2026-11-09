@@ -711,7 +711,7 @@ export default function MonitorReports() {
                         {([
                           ["TRX", d.market.trx],
                           ["TRON 生态指数", d.market.tronIndex],
-                          ["大盘（BTC/ETH/BNB/SOL）", d.market.benchmark],
+                          ["大盘参照（主流币等权）", d.market.benchmark],
                           ["TRX 超额收益", d.market.excess],
                         ] as [string, number | null][]).map(([label, value]) => (
                           <div key={label} className="rounded-lg border px-3 py-2">

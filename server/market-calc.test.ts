@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   DAY, HOUR, bjDay, bjDayStart, chartRows, correlation, dailyLinks, eventImpacts, evaluateMarketAlerts,
-  excessReturn, hourlyRows, klineRows, pearson, priceAt, snapshotRows, toSeries, type PriceSeries,
+  BENCHMARK, excessReturn, hourlyRows, klineRows, pearson, priceAt, snapshotRows, sparkline, toSeries, type PriceSeries,
 } from "./market-calc";
 
 const T0 = Date.UTC(2026, 10, 1, 0, 0); // 2026-11-01 08:00 Beijing
@@ -60,6 +60,12 @@ describe("market calc", () => {
     expect(rows.map(r => r.trx)).toEqual([100, 100, 90]);
     expect(rows[2].relative).toBe(93.75);
     expect(rows[1]).toMatchObject({ negatives: 3, highThreats: 1, usdd: 1 });
+  });
+
+  it("samples a sparkline and benchmarks six majors", () => {
+    expect(sparkline(line(6, h => h + 1), T0, T0 + 6 * HOUR, 2 * HOUR)).toEqual([1, 3, 5, 7]);
+    expect(sparkline([[T0, 1]], T0 - HOUR, T0 + 5 * HOUR, 2 * HOUR)).toEqual([null, 1, 1, null]);
+    expect(BENCHMARK).toEqual(["BTC", "ETH", "BNB", "SOL", "XRP", "HYPE"]);
   });
 
   it("measures event impact only after the window closes", () => {

@@ -21,11 +21,21 @@ export const MARKET_TOKENS: MarketToken[] = [
   { symbol: "ETH", id: "ethereum", name: "Ethereum", group: "benchmark", binance: "ETHUSDT" },
   { symbol: "BNB", id: "binancecoin", name: "BNB", group: "benchmark", binance: "BNBUSDT" },
   { symbol: "SOL", id: "solana", name: "Solana", group: "benchmark", binance: "SOLUSDT" },
+  { symbol: "XRP", id: "ripple", name: "XRP", group: "benchmark", binance: "XRPUSDT" },
+  { symbol: "HYPE", id: "hyperliquid", name: "Hyperliquid", group: "benchmark", binance: "HYPEUSDT" },
 ];
 /** Equal-weight TRON ecosystem index (USDD is a stablecoin and tracked separately). */
 export const TRON_INDEX = MARKET_TOKENS.filter(t => t.group === "tron").map(t => t.symbol);
-/** Equal-weight market benchmark: BTC, ETH, BNB, SOL. */
+/** Equal-weight market benchmark: BTC, ETH, BNB, SOL, XRP, HYPE. */
 export const BENCHMARK = MARKET_TOKENS.filter(t => t.group === "benchmark").map(t => t.symbol);
+export const BENCHMARK_LABEL = BENCHMARK.join("/");
+
+/** Prices every `step` ms over [start, end] for a card sparkline (null where data is missing). */
+export function sparkline(points: ChartPoint[] | undefined, start: number, end: number, step: number): (number | null)[] {
+  const out: (number | null)[] = [];
+  for (let t = start; t <= end; t += step) out.push(priceAt(points, t));
+  return out;
+}
 
 export const HOUR = 3_600_000;
 export const DAY = 24 * HOUR;
@@ -306,7 +316,7 @@ export function evaluateMarketAlerts(input: {
       kind: "trx_drop",
       title: `TRX 24 小时跑输大盘 ${signed(move.excess)}`,
       content: [
-        `TRX ${signed(move.trx)}，大盘（BTC/ETH/BNB/SOL 等权）${signed(move.benchmark)}，超额 ${signed(move.excess)}（阈值 -${settings.trxExcessDropPct}%）。`,
+        `TRX ${signed(move.trx)}，大盘（${BENCHMARK_LABEL} 等权）${signed(move.benchmark)}，超额 ${signed(move.excess)}（阈值 -${settings.trxExcessDropPct}%）。`,
         `TRON 生态指数 ${signed(move.tronIndex)}。`,
         headlines.length > 0 ? "同时段主要负面舆情：" : "同时段没有中高相关的负面舆情。",
         ...headlines,

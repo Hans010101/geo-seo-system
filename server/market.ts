@@ -4,7 +4,7 @@
 import { getDb, getSysConfig, setSysConfig } from "./db";
 import { dispatchNotification } from "./_core/notification";
 import {
-  BENCHMARK, DAY, HOUR, MARKET_TOKENS, TRON_INDEX,
+  BENCHMARK, DAY, HOUR, MARKET_TOKENS, TRON_INDEX, sparkline,
   average, bjDay, bjDayStart, chartRows, correlation, dailyLinks, eventImpacts, evaluateMarketAlerts,
   excessReturn, hourlyRows, klineRows, pct, priceAt, snapshotRows, toSeries,
   type CoinGeckoChart, type MarketAlertSettings, type MarketAlertState, type MarketEvent, type PriceRow,
@@ -215,8 +215,12 @@ export async function getMarketOverview(now = Date.now()) {
       return {
         ...token, price: row?.price ?? null, marketCap: row?.marketCap ?? null, volume: row?.volume ?? null,
         change24h: change(token.symbol, DAY), change7d: change(token.symbol, 7 * DAY), change30d: change(token.symbol, 30 * DAY),
+        // 7-day card sparkline, one point every 2 hours.
+        spark: latestTs ? sparkline(series[token.symbol], latestTs - 7 * DAY, latestTs, 2 * HOUR) : [],
       };
     }),
+    tronIndex: TRON_INDEX,
+    benchmark: BENCHMARK,
     windows: {
       "24h": latestTs ? excessReturn(series, latestTs - DAY, latestTs) : null,
       "7d": latestTs ? excessReturn(series, latestTs - 7 * DAY, latestTs) : null,
