@@ -1368,7 +1368,7 @@ export async function listMonitorArticles(filters?: {
   focus?: boolean; // default view: only high+medium (hide low/irrelevant noise)
   startTime?: number;
   endTime?: number;
-  sort?: "time" | "threat" | "sentiment"; // default 'time' = firstSeenAt DESC (最新在上)
+  sort?: "time" | "collected" | "threat" | "sentiment"; // default 'time' = publishedAt DESC (最新发布在上)
   limit?: number;
   offset?: number;
 }) {
@@ -1412,7 +1412,9 @@ export async function listMonitorArticles(filters?: {
     stance: monitorSourceRules.stance,
     authorityLevel: monitorSourceRules.authorityLevel,
   };
-  // Sort: 'time' 最新在上(default) | 'threat' 威胁降序 | 'sentiment' 最负面在上; ties broken by recency.
+  // Sort: 'time' 最新发布在上(default) | 'collected' 最新入库在上 | 'threat' 威胁降序 | 'sentiment' 最负面在上.
+  // Publication time, not ingestion time, by default: backfills (e.g. 百分点's first two-day import)
+  // otherwise bury today's posts under yesterday's.
   const orderBy =
     filters?.sort === "threat"
       ? [
@@ -1422,7 +1424,9 @@ export async function listMonitorArticles(filters?: {
         ]
       : filters?.sort === "sentiment"
         ? [sql`${monitorArticles.sentimentScore} IS NULL`, asc(monitorArticles.sentimentScore), desc(monitorArticles.publishedAt)]
-        : [desc(monitorArticles.firstSeenAt)];
+        : filters?.sort === "collected"
+          ? [desc(monitorArticles.firstSeenAt)]
+          : [desc(monitorArticles.publishedAt), desc(monitorArticles.firstSeenAt)];
   const [data, totalResult] = await Promise.all([
     db
       .select(listSelect)

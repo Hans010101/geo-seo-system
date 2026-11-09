@@ -2639,7 +2639,7 @@ const monitorRouter = router({
           focus: z.boolean().optional(), // default view: high+medium only
           startTime: z.number().optional(),
           endTime: z.number().optional(),
-          sort: z.enum(["time", "threat", "sentiment"]).optional(), // default time = firstSeenAt DESC
+          sort: z.enum(["time", "collected", "threat", "sentiment"]).optional(), // default time = publishedAt DESC
         })
         .optional()
     )

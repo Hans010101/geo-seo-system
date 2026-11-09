@@ -42,7 +42,7 @@ export default function SentimentMonitor() {
   const [stance, setStance] = useState<string>("all");
   const [relevance, setRelevance] = useState<string>("focus");
   const [range, setRange] = useState<string>("100d");
-  const [sort, setSort] = useState<string>("time"); // default: 最新采集
+  const [sort, setSort] = useState<string>("time"); // default: 最新发布
   const [source, setSource] = useState<string>("all");
   const [detailId, setDetailId] = useState<number | null>(null);
 
@@ -328,7 +328,7 @@ export default function SentimentMonitor() {
         <FilterSelect value={source} onChange={(v) => { setSource(v); resetPage(); }} placeholder="来源平台"
           options={[["all", "全部来源"], ["web", "Web/新闻"], ["binance_square", "币安广场"], ["gate_square", "Gate广场"], ["wechat", "微信公众号（历史）"], ["rss", "RSS媒体"], ["telegram", "Telegram"], ["x", "X"], ["xiaohongshu", "小红书"], ["douyin", "抖音"], ["kuaishou", "快手"], ["bilibili", "B站"], ["weibo", "微博"], ["tieba", "百度贴吧"], ["zhihu", "知乎"]]} />
         <FilterSelect value={sort} onChange={(v) => { setSort(v); resetPage(); }} placeholder="排序"
-          options={[["time", "最新采集"], ["threat", "威胁优先"], ["sentiment", "最负面优先"]]} />
+          options={[["time", "最新发布"], ["collected", "最新入库"], ["threat", "威胁优先"], ["sentiment", "最负面优先"]]} />
       </div>
 
       {/* Table */}
@@ -382,7 +382,9 @@ export default function SentimentMonitor() {
                         })()}
                       </td>
                       <td className="p-2.5 text-center text-xs text-muted-foreground whitespace-nowrap">
-                        {a.publishedAt ? new Date(a.publishedAt).toLocaleDateString("zh-CN") : "—"}
+                        {a.publishedAt
+                          ? new Date(a.publishedAt).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false })
+                          : "—"}
                       </td>
                       <td className="p-2.5 text-center">{a.sentimentScore ?? "—"}</td>
                       <td className="p-2.5 text-center">

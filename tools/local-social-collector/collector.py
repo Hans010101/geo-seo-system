@@ -728,6 +728,11 @@ def deliver(cfg, db, platform, posts, stats):
             stats["capped"] = True
             return
         if status == 0:
+            # One slow pipeline run (AI + D1) can exceed the read timeout; only a run of
+            # failures means the Mac is offline. Unsent posts retry next run either way.
+            stats["timeouts"] = stats.get("timeouts", 0) + 1
+            if "timed out" in str(body.get("error", "")) and stats["timeouts"] < 3:
+                continue
             stats["errors"].append(f"无法连接入库服务：{body.get('error', '')}")
             stats["offline"] = True
             return
@@ -735,8 +740,8 @@ def deliver(cfg, db, platform, posts, stats):
             stats["errors"].append(f"ingest HTTP {status}")
             continue
         outcome = body.get("status") or ("rejected" if status == 400 else str(status))
-        if status == 400 and len(stats["errors"]) < 5:
-            stats["errors"].append(f"拒收 {post['url'][-24:]}：{body.get('error', '')}")
+        if status == 400 and len(stats.setdefault("rejects", [])) < 5:
+            stats["rejects"].append(f"{post['url'][-24:]}：{body.get('error', '')}")  # data issue, not an outage
         db.execute("INSERT OR REPLACE INTO sent VALUES (?, ?, ?, ?, ?)", (key, platform, post["url"], outcome, now_ms()))
         db.commit()
         stats["sent"] += 1
