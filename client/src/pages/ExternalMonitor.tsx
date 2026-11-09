@@ -20,8 +20,12 @@ const SENTIMENT_META: Record<string, { label: string; className: string }> = {
 const PAGE_SIZE = 30;
 
 const pct = (part: number, total: number) => (total > 0 ? `${((part / total) * 100).toFixed(1)}%` : "—");
-const time = (ms: number | null | undefined) =>
-  ms ? new Date(ms).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false }).slice(0, 16) : "—";
+/** Beijing time "YYYY-MM-DD HH:mm" (locale-independent; zh-CN strings vary in padding). */
+const time = (ms: number | null | undefined) => {
+  if (!ms) return "—";
+  const iso = new Date(ms + 8 * 3_600_000).toISOString();
+  return `${iso.slice(0, 10)} ${iso.slice(11, 16)}`;
+};
 
 function SentimentBadge({ value }: { value: string | null }) {
   const meta = SENTIMENT_META[value === "positive" || value === "negative" ? value : "none"];
