@@ -6,7 +6,10 @@ import { createRoot } from "react-dom/client";
 import superjson from "superjson";
 import { toast } from "sonner";
 import App from "./App";
+import { installChunkRecovery } from "./lib/chunkRecovery";
 import "./index.css";
+
+installChunkRecovery();
 
 const queryClient = new QueryClient();
 

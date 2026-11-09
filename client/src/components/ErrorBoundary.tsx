@@ -1,6 +1,7 @@
 import { cn } from "@/lib/utils";
 import { AlertTriangle, RotateCcw } from "lucide-react";
 import { Component, ReactNode } from "react";
+import { isChunkLoadError, refreshAssetsAndReload } from "@/lib/chunkRecovery";
 
 interface Props {
   children: ReactNode;
@@ -19,6 +20,11 @@ class ErrorBoundary extends Component<Props, State> {
 
   static getDerivedStateFromError(error: Error): State {
     return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error) {
+    // A lazy page that failed to load after a deploy: refresh the cached assets and reload once.
+    if (isChunkLoadError(error)) void refreshAssetsAndReload();
   }
 
   render() {
@@ -40,7 +46,11 @@ class ErrorBoundary extends Component<Props, State> {
             </div>
 
             <button
-              onClick={() => window.location.reload()}
+              onClick={() => {
+                // Bypass cached assets too; a plain reload can keep serving a broken chunk.
+                try { sessionStorage.removeItem("chunk-recovery-at"); } catch { /* ignore */ }
+                void refreshAssetsAndReload();
+              }}
               className={cn(
                 "flex items-center gap-2 px-4 py-2 rounded-lg",
                 "bg-primary text-primary-foreground",
