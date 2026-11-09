@@ -92,7 +92,11 @@ function Overview() {
 
 function Linkage() {
   const [days, setDays] = useState(30);
+  const [showAll, setShowAll] = useState(false);
   const { data, isLoading } = trpc.market.linkage.useQuery({ days }, { staleTime: 60_000 });
+  // High-threat events first, then the newest medium ones; the long medium tail is mostly noise.
+  const events = [...(data?.events || [])].sort((a, b) =>
+    Number(b.threatLevel === "high") - Number(a.threatLevel === "high") || b.publishedAt - a.publishedAt);
   const step = data?.step ?? 3_600_000;
   const chart = (data?.chart || []).map(row => ({ ...row, label: bjTime(row.t, step < 86_400_000) }));
   return (
@@ -200,7 +204,7 @@ function Linkage() {
               </tr>
             </thead>
             <tbody>
-              {(data?.events || []).map(event => (
+              {(showAll ? events : events.slice(0, 30)).map(event => (
                 <tr key={event.id} className="border-b last:border-0 align-top">
                   <td className="py-2 text-muted-foreground">{bjTime(event.publishedAt)}</td>
                   <td className="py-2">
@@ -209,7 +213,8 @@ function Linkage() {
                         {THREAT_META[event.threatLevel || ""]?.label || event.threatLevel}
                       </Badge>
                       <Badge variant="secondary">{SOURCE_PLATFORM_META[event.sourcePlatform || ""]?.label || event.sourcePlatform}</Badge>
-                      <a href={event.url} target="_blank" rel="noreferrer" className="hover:underline">{event.title || event.url}</a>
+                      <a href={event.url} target="_blank" rel="noreferrer" title={event.title || event.url}
+                        className="hover:underline line-clamp-2 min-w-0 flex-1 basis-[240px]">{event.title || event.url}</a>
                     </div>
                   </td>
                   <td className={`text-right ${tone(event.after1h)}`}>{signed(event.after1h)}</td>
@@ -220,6 +225,13 @@ function Linkage() {
             </tbody>
           </table>
           {data && data.events.length === 0 ? <p className="text-sm text-muted-foreground text-center py-6">该时段没有中高威胁的负面舆情</p> : null}
+          {events.length > 30 ? (
+            <div className="text-center pt-2">
+              <Button variant="outline" size="sm" onClick={() => setShowAll(!showAll)}>
+                {showAll ? "收起" : `展开全部 ${events.length} 条`}
+              </Button>
+            </div>
+          ) : null}
           <p className="text-xs text-muted-foreground mt-2">“—” 表示窗口尚未结束或该时段缺价格。多个事件挨得很近时，它们的影响会互相叠加。</p>
         </CardContent>
       </Card>

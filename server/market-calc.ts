@@ -274,7 +274,11 @@ export function evaluateMarketAlerts(input: {
   const usdd = priceAt(series.USDD, now);
   if (usdd !== null) {
     const deviation = (usdd - 1) * 100;
-    const depegged = Math.abs(deviation) >= settings.usddDepegPct;
+    // Two consecutive hourly prices beyond the band: single-hour aggregator spikes (one seen
+    // 2026-10-28 04:00 at 0.9748 between normal hours) must not page anyone.
+    const previous = priceAt(series.USDD, now - HOUR, 2 * HOUR);
+    const beyond = (price: number | null) => price !== null && Math.abs((price - 1) * 100) >= settings.usddDepegPct;
+    const depegged = beyond(usdd) && beyond(previous);
     if (depegged && (!state.usddDepegged || now - (state.usddAlertedAt || 0) >= USDD_REMIND_MS)) {
       const low = Math.min(...(series.USDD || []).filter(p => p[0] >= now - DAY).map(p => p[1]));
       alerts.push({

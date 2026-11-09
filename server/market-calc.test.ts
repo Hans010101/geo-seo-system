@@ -82,13 +82,16 @@ describe("market calc", () => {
 
   it("alerts USDD depeg once, reminds daily, reports recovery, and respects the switch", () => {
     const settings = { enabled: true, usddDepegPct: 0.5, trxExcessDropPct: 5 };
-    const depeg: PriceSeries = { USDD: [[T0, 0.992]] };
+    // A single off-peg hour (aggregator spike) is ignored; two in a row alert.
+    const spike: PriceSeries = { USDD: [[T0 - HOUR, 0.9995], [T0, 0.975]] };
+    expect(evaluateMarketAlerts({ now: T0, series: spike, settings, state: {} }).alerts).toEqual([]);
+    const depeg: PriceSeries = { USDD: [[T0 - HOUR, 0.993], [T0, 0.992]] };
     const first = evaluateMarketAlerts({ now: T0, series: depeg, settings, state: {} });
     expect(first.alerts.map(a => a.kind)).toEqual(["usdd_depeg"]);
     expect(first.alerts[0].title).toContain("-0.80%");
-    const again = evaluateMarketAlerts({ now: T0 + HOUR, series: { USDD: [[T0 + HOUR, 0.99]] }, settings, state: first.state });
+    const again = evaluateMarketAlerts({ now: T0 + HOUR, series: { USDD: [[T0, 0.992], [T0 + HOUR, 0.99]] }, settings, state: first.state });
     expect(again.alerts).toEqual([]);
-    const daily = evaluateMarketAlerts({ now: T0 + DAY, series: { USDD: [[T0 + DAY, 0.99]] }, settings, state: first.state });
+    const daily = evaluateMarketAlerts({ now: T0 + DAY, series: { USDD: [[T0 + DAY - HOUR, 0.99], [T0 + DAY, 0.99]] }, settings, state: first.state });
     expect(daily.alerts.map(a => a.kind)).toEqual(["usdd_depeg"]);
     const back = evaluateMarketAlerts({ now: T0 + 2 * HOUR, series: { USDD: [[T0 + 2 * HOUR, 0.999]] }, settings, state: first.state });
     expect(back.alerts.map(a => a.kind)).toEqual(["usdd_recovered"]);
