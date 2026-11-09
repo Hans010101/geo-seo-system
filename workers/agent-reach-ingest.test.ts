@@ -95,6 +95,23 @@ describe("Agent-Reach pilot boundary", () => {
     ]) expect(() => parsePost({ ...base, ...patch })).toThrow();
     expect(dailyCap("weibo")).toBe(150);
   });
+  it("accepts Bilibili videos and locally collected Xiaohongshu notes", () => {
+    const base = { ...validPost(), title: "孙宇晨谈高考", text: "孙宇晨早年谈高考" };
+    expect(parsePost({ ...base, channel: "bilibili", url: "https://www.bilibili.com/video/BV1fnWn6QEh1/" }))
+      .toMatchObject({ sourcePlatform: "bilibili", sourceName: "local_browser" });
+    expect(() => parsePost({ ...base, channel: "bilibili", url: "https://space.bilibili.com/12345" })).toThrow();
+    const note = { ...base, channel: "xiaohongshu", url: "https://www.xiaohongshu.com/explore/6720a1b2000000001b012345" };
+    expect(parsePost({ ...note, collector: "local_browser" })).toMatchObject({ sourceName: "local_browser", fetchEngineHint: "local_browser" });
+    // Without the local marker it is an Agent-Reach public read and keeps the 40-character floor.
+    expect(() => parsePost(note)).toThrow("Invalid text");
+    expect(parseReport({ platforms: { bilibili: { discovered: 2 }, xiaohongshu: { discovered: 0 } } })).toHaveProperty("xiaohongshu");
+  });
+  it("keeps pushing medium Bilibili alerts (only Weibo/Tieba are push-high-only)", async () => {
+    const { env } = environment();
+    const video = { ...validPost(), channel: "bilibili", url: "https://www.bilibili.com/video/BV1fnWn6QEh1", title: "孙宇晨", text: "孙宇晨早年谈高考，一语道破现实" };
+    expect((await worker.fetch(request(video), env)).status).toBe(200);
+    expect(mocks.run.mock.calls[0][0].alertPushMinSeverity).toBeUndefined();
+  });
   it("records but does not push medium alerts for Mac-collected posts", async () => {
     const { env } = environment();
     const local = { ...validPost(), channel: "weibo", url: "https://m.weibo.cn/detail/5360563145411531", title: "孙宇晨", text: "孙宇晨今天又上热搜了，波场相关" };

@@ -10,11 +10,15 @@ type IngestEnv = Omit<AgentReachEnv, "AI"> & { INGEST_TOKEN: string; AI: Workers
 
 const MAX_BODY_BYTES = 48_000;
 export const DAILY_CAP = 20;
-/** Per-platform daily caps; the Mac browser collector feeds Weibo and Tieba at higher volume. */
-export const PLATFORM_DAILY_CAPS: Record<string, number> = { weibo: 150, tieba: 40 };
-const CHANNELS = new Set(["web", "reddit", "youtube", "xiaohongshu", "weibo", "tieba"]);
-/** Platforms collected by the local logged-in browser rather than Agent-Reach public routes. */
-const LOCAL_BROWSER = new Set(["weibo", "tieba"]);
+/** Per-platform daily caps; the Mac browser collector feeds these platforms at higher volume. */
+export const PLATFORM_DAILY_CAPS: Record<string, number> = { weibo: 150, tieba: 40, bilibili: 80, xiaohongshu: 80 };
+const CHANNELS = new Set(["web", "reddit", "youtube", "xiaohongshu", "weibo", "tieba", "bilibili"]);
+/** Platforms only the Mac's logged-in browser collector sends (never Agent-Reach public routes). */
+const LOCAL_ONLY = new Set(["weibo", "tieba", "bilibili"]);
+/** Platforms the Mac collector reports heartbeats for (Xiaohongshu is shared with Agent-Reach). */
+const LOCAL_BROWSER = new Set([...LOCAL_ONLY, "xiaohongshu"]);
+/** Gossip-heavy local platforms whose medium alerts stay in the alert center (user choice 11-08). */
+const PUSH_HIGH_ONLY = new Set(["weibo", "tieba"]);
 export const LOCAL_HEALTH_KEY = "cf_local_source_health";
 
 export function dailyCap(platform: string): number {
@@ -42,7 +46,8 @@ export function parsePost(value: unknown, now = Date.now()): DiscoveredPost {
     : belongs("youtube.com") || host === "youtu.be" ? "youtube"
     : belongs("xiaohongshu.com") || host === "xhslink.com" ? "xiaohongshu"
     : belongs("weibo.com") || belongs("weibo.cn") ? "weibo"
-    : host === "tieba.baidu.com" ? "tieba" : "web";
+    : host === "tieba.baidu.com" ? "tieba"
+    : belongs("bilibili.com") ? "bilibili" : "web";
   if (platform !== p.channel) throw new Error("Channel/host mismatch");
   if (platform === "reddit" && !/^\/r\/[^/]+\/comments\/[a-z0-9]+\//i.test(url.pathname)) throw new Error("Reddit post permalink required");
   if (platform === "xiaohongshu" && host !== "xhslink.com" && !/^\/(?:explore|discovery\/item)\/[a-z0-9]+/i.test(url.pathname)) throw new Error("Xiaohongshu note permalink required");
@@ -56,8 +61,10 @@ export function parsePost(value: unknown, now = Date.now()): DiscoveredPost {
     (host === "weibo.com" && /^\/\d+\/[A-Za-z0-9]+\/?$/.test(url.pathname))
   )) throw new Error("Weibo post permalink required");
   if (platform === "tieba" && !/^\/p\/\d+\/?$/.test(url.pathname)) throw new Error("Tieba thread permalink required");
-  // Weibo posts and Tieba threads are often short; other channels keep the 40-character floor.
-  const minText = LOCAL_BROWSER.has(platform) ? 8 : 40;
+  if (platform === "bilibili" && !(host === "www.bilibili.com" && /^\/video\/BV[0-9A-Za-z]{10}\/?$/.test(url.pathname))) throw new Error("Bilibili video permalink required");
+  const local = LOCAL_ONLY.has(platform) || (LOCAL_BROWSER.has(platform) && p.collector === "local_browser");
+  // Local posts (Weibo, Tieba threads, video titles, note titles) are often short; others keep 40.
+  const minText = local ? 8 : 40;
   if (typeof p.title !== "string" || !p.title.trim() || p.title.length > 512) throw new Error("Invalid title");
   if (typeof p.text !== "string" || p.text.trim().length < minText || p.text.length > 12_000) throw new Error("Invalid text");
   if (typeof p.publishedAt !== "number" || !Number.isFinite(p.publishedAt) ||
@@ -66,8 +73,8 @@ export function parsePost(value: unknown, now = Date.now()): DiscoveredPost {
   return {
     url: normalizeUrl(url.href), title: p.title.trim(), contentSnippet: p.text.trim(),
     publishedAt: p.publishedAt, sourcePlatform: platform,
-    sourceName: LOCAL_BROWSER.has(platform) ? "local_browser" : "agent_reach",
-    fetchEngineHint: LOCAL_BROWSER.has(platform) ? "local_browser" : "agent_reach_public", fetchCostUsdHint: 0,
+    sourceName: local ? "local_browser" : "agent_reach",
+    fetchEngineHint: local ? "local_browser" : "agent_reach_public", fetchCostUsdHint: 0,
   };
 }
 
@@ -165,7 +172,7 @@ export default {
           importPosts: [post],
           maxArticles: 1,
           // Weibo/Tieba are high-volume and gossip-heavy: medium alerts go to the alert center only.
-          ...(post.sourceName === "local_browser" ? { alertPushMinSeverity: "high" as const } : {}),
+          ...(PUSH_HIGH_ONLY.has(post.sourcePlatform) ? { alertPushMinSeverity: "high" as const } : {}),
         })));
       const status = result.failed || result.analysisFailed ? "failed" : result.inserted ? "inserted" : "filtered_or_duplicate";
       await env.HYPERDRIVE.prepare("UPDATE agentReachReceipts SET status = ?, result = ? WHERE urlHash = ?")

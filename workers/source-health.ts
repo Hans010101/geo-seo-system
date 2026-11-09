@@ -17,6 +17,7 @@ export const SOURCE_LABELS: Record<string, string> = {
   binance_square: "币安广场", xiaohongshu: "小红书", douyin: "抖音",
   kuaishou: "快手", bilibili: "B站", weibo: "微博", tieba: "百度贴吧", zhihu: "知乎",
   local_weibo: "微博（本机采集）", local_tieba: "百度贴吧（本机采集）",
+  local_bilibili: "B站（本机采集）", local_xiaohongshu: "小红书（本机采集）",
 };
 
 /** Diagnostic source name → monitor_articles.sourcePlatform, used once to seed history. */
@@ -195,7 +196,7 @@ export function buildOutageMessage(
     }
     lines.push("常见原因：登录失效、接口额度用尽、浏览器容量不足。请到运维中心查看。");
     if (down.some(source => source.name.startsWith("local_"))) {
-      lines.push("本机采集：请确认 Mac 已开机未睡眠；微博若提示登录，运行 collector.py login weibo 重新扫码。");
+      lines.push("本机采集：请确认 Mac 已开机未睡眠；微博或小红书若提示登录，运行 collector.py login weibo（或 xiaohongshu）重新扫码。");
     }
   }
   if (recovered.length > 0) {

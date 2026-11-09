@@ -48,8 +48,35 @@ def test_mentions():
     assert c.mentions("Justin Sun", "justin sun said")
 
 
+def test_bilibili_posts():
+    posts = c.bili_posts([
+        {"bvid": "BV1fnWn6QEh1", "pubdate": 1794135959, "title": '如何评价<em class="keyword">孙宇晨</em>', "author": "某UP", "description": "-"},
+        {"bvid": "bad", "pubdate": 1, "title": "x"},
+    ])
+    assert posts == [{"url": "https://www.bilibili.com/video/BV1fnWn6QEh1", "title": "如何评价孙宇晨",
+                      "text": "UP主 某UP：如何评价孙宇晨", "publishedAt": 1794135959000}]
+
+
+def test_xhs_times_and_posts():
+    assert c.xhs_time("3小时前", NOW) == ms(NOW - dt.timedelta(hours=3))
+    assert c.xhs_time("昨天 21:05", NOW) == ms(dt.datetime(2026, 11, 7, 21, 5, tzinfo=c.BJ))
+    assert c.xhs_time("2天前 上海", NOW) == ms(NOW - dt.timedelta(days=2))
+    assert c.xhs_time("11-05", NOW) == ms(dt.datetime(2026, 11, 5, 12, tzinfo=c.BJ))
+    payload = {"data": {"items": [
+        {"id": "6720a1b2000000001b012345", "model_type": "note", "note_card": {
+            "display_title": "孙宇晨又上热搜", "user": {"nickname": "小红"},
+            "corner_tag_info": [{"type": "publish_time", "text": "5分钟前"}]}},
+        {"id": "hot", "model_type": "hot_query"},
+    ]}}
+    posts = c.xhs_posts([payload], NOW)
+    assert posts == [{"url": "https://www.xiaohongshu.com/explore/6720a1b2000000001b012345", "title": "孙宇晨又上热搜",
+                      "text": "@小红：孙宇晨又上热搜", "publishedAt": ms(NOW - dt.timedelta(minutes=5))}]
+    assert c.xhs_guest_flag([{"data": {"guest": False}}]) is False
+    assert c.xhs_guest_flag([]) is None
+
+
 if __name__ == "__main__":
-    test_mentions()
-    test_display_times()
-    test_cards_to_posts()
+    for name, fn in list(globals().items()):
+        if name.startswith("test_") and callable(fn):
+            fn()
     print("ok")

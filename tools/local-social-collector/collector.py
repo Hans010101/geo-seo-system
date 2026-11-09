@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""TRON GEO local social collector (Weibo + Tieba) for the always-on Mac.
+"""TRON GEO local social collector (Weibo, Tieba, Bilibili, Xiaohongshu) for the always-on Mac.
 
-Runs a plain headless Google Chrome with its own profile (logged in to Weibo once by QR scan),
+Runs a plain headless Google Chrome with its own profile (logged in to Weibo and Xiaohongshu once
+by QR scan; Bilibili and Tieba need no login),
 searches each keyword for the newest posts and forwards those published in the last 48 hours to
 the geo-agent-reach-pilot ingest worker, which runs them through the normal monitor pipeline
 (dedup, relevance, AI analysis, alerts). Each run also posts a heartbeat that the cron worker
@@ -10,6 +11,7 @@ turns into an outage alert when a platform stays silent.
 Commands:
   collector.py run              one collection run (launchd: 9/11/13/15/17/19/21/3 o'clock)
   collector.py login weibo      open a visible Chrome window and wait for a QR-code login
+  collector.py login xiaohongshu
   collector.py status           show the last run and the Weibo login state
 
 It never solves CAPTCHAs or security checks: when a platform shows one, the run records the
@@ -39,8 +41,11 @@ ROOT = Path.home() / "Library/Application Support/TronGeo/local-social-collector
 PROFILE = ROOT / "chrome-profile"
 KEYWORDS = ("孙宇晨", "波场", "TRON", "Justin Sun", "孙哥", "孙割", "孙宇晨 火币", "孙宇晨 HTX")
 TIEBA_KEYWORDS = ("孙宇晨", "波场", "孙割", "孙宇晨 HTX")
+BILI_KEYWORDS = tuple(k for k in KEYWORDS if k != "TRON")  # on Bilibili "TRON" is mostly e-tron/M-Tron noise
+XHS_KEYWORDS = ("孙宇晨", "波场", "孙哥", "孙割", "Justin Sun")  # fewer searches on the strictest site
 WINDOW_MS = 48 * 3600_000
 WEIBO_MAX_PAGES = 4  # newest-first pages per keyword; enough to cover the 21:00→03:00→09:00 gaps
+BILI_MAX_PAGES = 2
 STATE = ROOT / "state.json"
 BJ = dt.timezone(dt.timedelta(hours=8))
 SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
@@ -217,6 +222,159 @@ def weibo_page(context, keyword, page):
     return weibo_posts(payload)
 
 
+# ---------------------------------------------------------------- Bilibili
+BILI_SEARCH = "https://search.bilibili.com/video?keyword={}&order=pubdate&page={}"
+# The search page is server-rendered into its Pinia store; collect every video object in it.
+BILI_VIDEOS_JS = """() => { const found = []; const seen = new Set();
+  const walk = (o, d) => { if (!o || d > 9) return;
+    if (Array.isArray(o)) { o.forEach(x => walk(x, d + 1)); return; }
+    if (typeof o !== 'object') return;
+    if (typeof o.bvid === 'string' && typeof o.pubdate === 'number') {
+      if (!seen.has(o.bvid)) { seen.add(o.bvid); found.push({ bvid: o.bvid, pubdate: o.pubdate, title: o.title || '',
+        author: o.author || '', description: o.description || '' }); }
+      return; }
+    Object.values(o).forEach(x => walk(x, d + 1)); };
+  walk(window.__pinia, 0); return found; }"""
+
+
+def bili_posts(videos):
+    posts = []
+    for video in videos:
+        bvid = str(video.get("bvid") or "")
+        if not re.fullmatch(r"BV[0-9A-Za-z]{10}", bvid) or not video.get("pubdate"):
+            continue
+        title = strip_html(video.get("title"))
+        desc = strip_html(video.get("description"))
+        desc = "" if desc in ("-", title) else desc
+        author = (video.get("author") or "").strip()
+        posts.append({
+            "url": f"https://www.bilibili.com/video/{bvid}",
+            "title": title or f"{author} 的视频",
+            "text": (f"UP主 {author}：" if author else "") + title + (f"\n{desc}" if desc else ""),
+            "publishedAt": int(video["pubdate"]) * 1000,
+        })
+    return posts
+
+
+def search_bilibili(page, keyword, since_ms):
+    posts = []
+    for number in range(1, BILI_MAX_PAGES + 1):
+        page.goto(BILI_SEARCH.format(urllib.parse.quote(keyword), number), wait_until="domcontentloaded", timeout=45_000)
+        page.wait_for_timeout(2500)
+        if "验证" in page.title() or "risk" in page.url:
+            raise NeedsUser("B站要求安全验证，稍后再试")
+        batch = bili_posts(page.evaluate(BILI_VIDEOS_JS))
+        posts.extend(batch)
+        stamps = [p["publishedAt"] for p in batch]
+        if not stamps or min(stamps) <= since_ms:
+            break
+        time.sleep(random.uniform(2, 4))
+    return posts
+
+
+# ---------------------------------------------------------------- Xiaohongshu
+XHS_HOME = "https://www.xiaohongshu.com/explore"
+XHS_SEARCH = "https://www.xiaohongshu.com/search_result?keyword={}&source=web_search_result_notes"
+
+
+def xhs_time(text, now=None):
+    """Note card times: 刚刚 / 5分钟前 / 3小时前 / 昨天 21:05 / 2天前 / 11-05 / 2025-11-05 (may carry a place)."""
+    now = now or dt.datetime.now(BJ)
+    text = (text or "").strip()
+    if text.startswith("刚刚"):
+        return int(now.timestamp() * 1000)
+    m = re.match(r"(\d+)\s*(分钟|小时|天)前", text)
+    if m:
+        unit = {"分钟": "minutes", "小时": "hours", "天": "days"}[m.group(2)]
+        return int((now - dt.timedelta(**{unit: int(m.group(1))})).timestamp() * 1000)
+    m = re.match(r"(今天|昨天)\s*(\d{1,2}):(\d{2})", text)
+    if m:
+        day = now - dt.timedelta(days=1 if m.group(1) == "昨天" else 0)
+        return int(day.replace(hour=int(m.group(2)), minute=int(m.group(3)), second=0, microsecond=0).timestamp() * 1000)
+    m = re.match(r"(?:(\d{4})-)?(\d{1,2})-(\d{1,2})", text)
+    if m:
+        stamp = dt.datetime(int(m.group(1) or now.year), int(m.group(2)), int(m.group(3)), 12, tzinfo=BJ)
+        return int(stamp.timestamp() * 1000)
+    return None
+
+
+def xhs_posts(payloads, now=None):
+    posts, seen = [], set()
+    for payload in payloads:
+        items = ((payload or {}).get("data") or {}).get("items") or [] if isinstance(payload, dict) else []
+        for item in items:
+            card = item.get("note_card") if isinstance(item, dict) else None
+            note_id = str(item.get("id") or "") if card else ""
+            if not re.fullmatch(r"[0-9a-f]{24}", note_id) or note_id in seen:
+                continue
+            seen.add(note_id)
+            corner = next((c.get("text") for c in card.get("corner_tag_info") or []
+                           if isinstance(c, dict) and c.get("type") == "publish_time"), None)
+            title = strip_html(card.get("display_title") or card.get("title"))
+            desc = strip_html(card.get("desc"))
+            user = ((card.get("user") or {}).get("nickname") or (card.get("user") or {}).get("nick_name") or "").strip()
+            posts.append({
+                # No xsec_token: it changes per search and would break URL dedup.
+                "url": f"https://www.xiaohongshu.com/explore/{note_id}",
+                "title": title or title_of(desc) or f"{user} 的笔记",
+                "text": (f"@{user}：" if user else "") + (title or "") + (f"\n{desc}" if desc and desc != title else ""),
+                "publishedAt": xhs_time(corner, now) if corner else (int(card["time"]) if str(card.get("time") or "").isdigit() else None),
+            })
+    return posts
+
+
+def xhs_guest_flag(payloads):
+    """True/False from the page's own /user/me response; None when it was not seen."""
+    for payload in payloads:
+        data = (payload or {}).get("data") if isinstance(payload, dict) else None
+        if isinstance(data, dict) and "guest" in data:
+            return bool(data["guest"])
+    return None
+
+
+def capture_json(page, needle):
+    store = []
+
+    def on_response(response):
+        if needle in response.url and "json" in (response.headers.get("content-type") or ""):
+            try:
+                store.append(response.json())
+            except Exception:
+                pass
+    page.on("response", on_response)
+    return store, lambda: page.remove_listener("response", on_response)
+
+
+def sort_xhs_newest(page):
+    """Pick 最新 in the search filter so results are newest first; best effort."""
+    try:
+        page.get_by_text("筛选", exact=True).first.hover(timeout=4000)
+        page.wait_for_timeout(800)
+        page.get_by_text("最新", exact=True).first.click(timeout=4000)
+        page.wait_for_timeout(2500)
+        return True
+    except Exception:
+        return False
+
+
+def search_xhs(page, keyword):
+    notes, stop_notes = capture_json(page, "/api/sns/web/v1/search/notes")
+    me, stop_me = capture_json(page, "/user/me")
+    try:
+        page.goto(XHS_SEARCH.format(urllib.parse.quote(keyword)), wait_until="domcontentloaded", timeout=45_000)
+        page.wait_for_timeout(4000)
+        if "website-login/captcha" in page.url or "验证" in page.title():
+            raise NeedsUser("小红书要求安全验证，稍后再试或手动打开一次")
+        if xhs_guest_flag(me) is True or "login" in page.url:
+            raise NeedsUser("小红书未登录，需要运行 collector.py login xiaohongshu 扫码")
+        if sort_xhs_newest(page):
+            del notes[:-1]  # keep only the newest-sorted response
+        return xhs_posts(notes)
+    finally:
+        stop_notes()
+        stop_me()
+
+
 # ---------------------------------------------------------------- Tieba
 TIEBA_SEARCH_PAGE = "https://tieba.baidu.com/f/search/res?ie=utf-8&qw={}&rn=20&sm=1"
 TIEBA_API = ("https://tieba.baidu.com/mo/q/search/multsearch?rn=20&st=1&word={}&needbrand=1&sug_type=2"
@@ -295,6 +453,7 @@ def deliver(cfg, db, platform, posts, stats):
         status, body = post_json(cfg, "/ingest", {
             "channel": platform, "url": post["url"], "title": post["title"][:500], "text": post["text"][:12_000],
             "publishedAt": post["publishedAt"], "access": "public", "completenessVerified": False,
+            "collector": "local_browser",
         })
         if status == 429:
             stats["capped"] = True
@@ -336,16 +495,25 @@ def run(args):
         state = json.loads(STATE.read_text())
     except (OSError, ValueError):
         state = {}
-    # Page Weibo back to the previous successful run (capped at 48h) so overnight gaps are covered.
-    weibo_since = max(started - WINDOW_MS, int(state.get("weiboSuccessAt") or 0))
+    # Page back to the previous successful run (capped at 48h) so overnight gaps are covered.
+    since = {name: max(started - WINDOW_MS, int(state.get(f"{name}SuccessAt") or 0)) for name in ("weibo", "bilibili")}
+    selected = set(args.platforms.split(",")) if getattr(args, "platforms", None) else None
     with sync_playwright() as playwright:
         context = browser(playwright)
         page = context.new_page()
-        for platform, keywords in (("weibo", KEYWORDS), ("tieba", TIEBA_KEYWORDS)):
+        searches = (
+            ("weibo", KEYWORDS, lambda kw: search_weibo(page, context, kw, since["weibo"])),
+            ("tieba", TIEBA_KEYWORDS, lambda kw: search_tieba(page, kw)),
+            ("bilibili", BILI_KEYWORDS, lambda kw: search_bilibili(page, kw, since["bilibili"])),
+            ("xiaohongshu", XHS_KEYWORDS, lambda kw: search_xhs(page, kw)),
+        )
+        for platform, keywords, search in searches:
+            if selected and platform not in selected:
+                continue
             stats = {"found": 0, "fresh": 0, "sent": 0, "outcomes": {}, "errors": [], "capped": False}
             for keyword in keywords:
                 try:
-                    posts = search_weibo(page, context, keyword, weibo_since) if platform == "weibo" else search_tieba(page, keyword)
+                    posts = search(keyword)
                 except NeedsUser as reason:
                     stats["errors"].append(str(reason))
                     break  # same cause for every keyword; don't hammer the site
@@ -363,8 +531,8 @@ def run(args):
                     deliver(cfg, db, platform, fresh, stats)
                 time.sleep(random.uniform(3, 7))
             report[platform] = {"discovered": stats["found"], **({"error": stats["errors"][0]} if stats["errors"] else {})}
-            if platform == "weibo" and stats["found"] > 0 and not stats.get("offline") and not args.dry_run:
-                state["weiboSuccessAt"] = started
+            if platform in since and stats["found"] > 0 and not stats.get("offline") and not args.dry_run:
+                state[f"{platform}SuccessAt"] = started
             log("platform", platform=platform, **stats)
         context.close()
     if args.dry_run:
@@ -384,9 +552,33 @@ def weibo_logged_in(context):
     return any(c["name"] == "SUB" and c["value"] and "weibo" in c["domain"] for c in context.cookies())
 
 
+def login_xhs():
+    with sync_playwright() as playwright:
+        context = browser(playwright, headless=False)
+        page = context.pages[0] if context.pages else context.new_page()
+        me, _stop = capture_json(page, "/user/me")
+        page.goto(XHS_HOME, wait_until="domcontentloaded", timeout=60_000)
+        print("请在弹出的 Chrome 窗口里用小红书 App 扫码登录（最多等 5 分钟）……", flush=True)
+        deadline = time.time() + 300
+        # The page asks /user/me again once the QR login completes; wait for guest=false.
+        while time.time() < deadline and xhs_guest_flag(me[-1:]) is not False:
+            page.wait_for_timeout(3000)
+        if xhs_guest_flag(me[-1:]) is not False:
+            context.close()
+            raise SystemExit("没有检测到小红书登录，请重试")
+        page.wait_for_timeout(3000)
+        try:
+            posts = search_xhs(page, XHS_KEYWORDS[0])
+            print(f"登录成功，测试搜索拿到 {len(posts)} 条笔记。", flush=True)
+        except NeedsUser as reason:
+            print(f"已登录，但搜索还不通：{reason}", flush=True)
+        context.close()
+    return 0
+
+
 def login(args):
-    if args.platform != "weibo":
-        raise SystemExit("only weibo needs a login")
+    if args.platform == "xiaohongshu":
+        return login_xhs()
     with sync_playwright() as playwright:
         context = browser(playwright, headless=False)
         page = context.pages[0] if context.pages else context.new_page()
@@ -421,9 +613,10 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
     run_parser = sub.add_parser("run")
     run_parser.add_argument("--dry-run", action="store_true", help="search only; send nothing")
+    run_parser.add_argument("--platforms", help="comma-separated subset, e.g. bilibili,xiaohongshu")
     run_parser.set_defaults(func=run)
     login_parser = sub.add_parser("login")
-    login_parser.add_argument("platform", choices=["weibo"])
+    login_parser.add_argument("platform", choices=["weibo", "xiaohongshu"])
     login_parser.set_defaults(func=login)
     sub.add_parser("status").set_defaults(func=status)
     args = parser.parse_args()
