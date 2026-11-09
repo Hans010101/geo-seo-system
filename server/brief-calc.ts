@@ -67,7 +67,7 @@ export function buildPrompt(input: {
   const system = `你是 TRON（波场）舆情负责人的编辑。读者是非技术的负责人，要在 1 分钟内判断“有没有事、要不要我管”。
 只输出一个 JSON 对象，不要任何其他文字。所有文字用简体中文，平实、具体，不用内部术语（UGC、落盘、SERP 等）。
 口径红线：不把指控写成事实；不写脱锚/资不抵债/跑路已成立；链上路径经过波场 ≠ 协议被攻破 ≠ 孙宇晨涉案。
-只能依据给你的条目和数字，不得编造事实、数字或来源。`;
+只能依据给你的条目和数字，不得编造事实、数字或来源。条目编号（#数字）只用于 ids / sourceIds，正文里不要写编号。`;
   const items = input.items.map(i =>
     `#${i.id} | ${bjHHMM(i.publishedAt)} | ${platformCn(i.sourcePlatform)} | ${i.threatLevel || "-"} | ${clip(i.title, 56)} | ${clip(i.summary, 40)}`).join("\n");
   const positives = (input.positives || []).map(i => `- ${platformCn(i.sourcePlatform)}：${clip(i.title, 56)}`).join("\n");
@@ -129,7 +129,9 @@ const LEVELS = new Set(["平稳", "关注", "警戒", "危机"]);
 const CHANGES = new Set(["升", "降", "持平"]);
 const ELEVELS = new Set(["P1", "P2", "P3"]);
 const TRENDS = new Set(["up", "down", "flat", "new", "closed"]);
-const str = (v: unknown, n: number) => (typeof v === "string" ? v.trim().slice(0, n) : "");
+// Item numbers (#17597) are for the model's ids fields only; strip any that leak into prose.
+const str = (v: unknown, n: number) =>
+  (typeof v === "string" ? v.replace(/[（(]?\s*#\d+(?:\s*[、,，/]\s*#\d+)*\s*[）)]?/g, "").replace(/\s{2,}/g, " ").trim().slice(0, n) : "");
 
 /** Parse and sanitize the model's JSON; ids not in this window are dropped. */
 export function parseDraft(text: string, validIds: Set<number>): BriefDraft {

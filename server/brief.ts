@@ -200,10 +200,11 @@ async function findAsks(now: number): Promise<string[]> {
   return asks;
 }
 
-export async function getLatestBrief(before?: number) {
+/** Latest brief before `before`, skipping `excludeId` (a regeneration must compare with the previous period). */
+export async function getLatestBrief(before?: number, excludeId = "") {
   const client = await d1();
-  const row = await client.prepare(`SELECT data FROM dailyBriefs WHERE generatedAt < ? ORDER BY generatedAt DESC LIMIT 1`)
-    .bind(before ?? Date.now() + DAY).first<{ data: string }>();
+  const row = await client.prepare(`SELECT data FROM dailyBriefs WHERE generatedAt < ? AND id <> ? ORDER BY generatedAt DESC LIMIT 1`)
+    .bind(before ?? Date.now() + DAY, excludeId).first<{ data: string }>();
   return row ? (JSON.parse(row.data) as BriefData) : null;
 }
 
@@ -227,7 +228,7 @@ export async function generateBrief(opts: { kind?: BriefKind; now?: number; push
   const kind: BriefKind = opts.kind ?? (new Date(now + 8 * HOUR).getUTCHours() < 13 ? "am" : "pm");
   const client = await d1();
   const settings = await getBriefSettings();
-  const previous = await getLatestBrief(now);
+  const previous = await getLatestBrief(now, `${bjDay(now)}-${kind}`);
   const win = briefWindow(kind, now, previous?.windowEnd);
   const [cur, cmp] = await Promise.all([counts(client, win.start, win.end), counts(client, win.compareStart, win.compareEnd)]);
   const itemRows = await client.prepare(`SELECT id, publishedAt, sourcePlatform, domain, threatLevel, sentimentScore, title,

@@ -2904,7 +2904,8 @@ const briefsRouter = router({
     .mutation(async ({ input }) => { await setBriefSettings(input); return { success: true }; }),
   // Regenerates the current period's brief now (no Telegram push unless asked).
   generate: adminProcedure
-    .input(z.object({ kind: z.enum(["am", "pm"]), push: z.boolean().default(false), email: z.boolean().default(false) }))
+    // email omitted → follows the 发送邮件 switch (an old cached page must not silently skip the mail).
+    .input(z.object({ kind: z.enum(["am", "pm"]), push: z.boolean().default(false), email: z.boolean().optional() }))
     .mutation(async ({ input }) => {
       const brief = await generateBrief({ kind: input.kind, push: input.push, email: input.email });
       return { id: brief.id, emailed: brief.emailed ?? false, emailError: brief.emailError };

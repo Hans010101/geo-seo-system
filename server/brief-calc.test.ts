@@ -44,6 +44,9 @@ describe("daily brief", () => {
     expect(draft.events).toHaveLength(1);
     expect(draft.events[0]).toMatchObject({ key: "jingtian-lawsuit", ids: [1, 2], sourceIds: [2], trend: "down" });
     expect(parseDraft('{"level":"x","events":[]}', new Set()).level).toBe("关注");
+    const leaked = parseDraft('{"others":{"watch":"跑路传闻零星出现（#17597、#17162），属推测","funds":"#17125 称美财政部切断 MEXC"},"events":[]}', new Set());
+    expect(leaked.others.watch).toBe("跑路传闻零星出现，属推测");
+    expect(leaked.others.funds).toBe("称美财政部切断 MEXC");
     expect(() => parseDraft("没有 JSON", new Set())).toThrow();
   });
 
