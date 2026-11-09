@@ -42,4 +42,4 @@ ROOT="$HOME/Library/Application Support/TronGeo/local-social-collector"
 ```
 
 修改 `collector.py` 后运行 `tools/local-social-collector/install.sh` 同步到运行目录并重载计划任务。
-入库上限：微博 150、贴吧 40、B站 80、小红书 80、百分点 800 条/天（`workers/agent-reach-ingest.ts` 的 `PLATFORM_DAILY_CAPS`）。
+入库上限：微博 300、贴吧 40、B站 80、小红书 80、百分点 800 条/天（`workers/agent-reach-ingest.ts` 的 `PLATFORM_DAILY_CAPS`）。
