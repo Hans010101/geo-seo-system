@@ -136,7 +136,7 @@ describe("Agent-Reach pilot boundary", () => {
     const post = parsePost(item);
     expect(post).toMatchObject({ sourcePlatform: "douyin", sourceName: "percent", fetchEngineHint: "percent" });
     expect(capKey(post)).toBe("percent");
-    expect(dailyCap("percent")).toBe(500);
+    expect(dailyCap("percent")).toBe(800);
     expect(parsePost({ ...item, platform: "unknown", url: "https://www.toutiao.com/article/7570000000000000000/" }).sourcePlatform).toBe("web");
     expect(() => parsePost({ ...item, url: "http://www.douyin.com/x" })).toThrow();
     expect(() => parsePost({ ...item, publishedAt: Date.now() - 49 * 3600_000 })).toThrow("48 hours");

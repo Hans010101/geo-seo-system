@@ -13,7 +13,7 @@ const MAX_BODY_BYTES = 48_000;
 const MAX_BATCH_BYTES = 1_000_000;
 export const DAILY_CAP = 20;
 /** Per-platform daily caps; the Mac browser collector feeds these platforms at higher volume. */
-export const PLATFORM_DAILY_CAPS: Record<string, number> = { weibo: 150, tieba: 40, bilibili: 80, xiaohongshu: 80, percent: 500 };
+export const PLATFORM_DAILY_CAPS: Record<string, number> = { weibo: 150, tieba: 40, bilibili: 80, xiaohongshu: 80, percent: 800 };
 const CHANNELS = new Set(["web", "reddit", "youtube", "xiaohongshu", "weibo", "tieba", "bilibili", "percent"]);
 /** 百分点 Mediaforce sensitive posts keep their original platform for display and stats. */
 const PERCENT_PLATFORMS = new Set(["douyin", "kuaishou", "zhihu", "xiaohongshu", "weibo", "wechat", "bilibili", "tieba", "web"]);

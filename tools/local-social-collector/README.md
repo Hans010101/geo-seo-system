@@ -18,7 +18,7 @@
 同一个 Chrome 配置里还登录了两个服务商后台（由用户本人登录，脚本不保存账号、密码或令牌，只复用页面自己发出的查询）：
 
 - **百分点 Mediaforce**（mf.percent.cn，方案“波场TRON”）：每轮取上次成功以来的“敏感”信息（百分点合并相似后的列表），
-  逐条走 `/ingest`（channel `percent`，按原平台记 `sourcePlatform`，引擎显示“百分点舆情导入”，日上限 500，
+  逐条走 `/ingest`（channel `percent`，按原平台记 `sourcePlatform`，引擎显示“百分点舆情导入”，日上限 800，
   中威胁只进预警中心、高威胁才推送）。另把当天和前一天的总量、敏感量、敏感平台分布写入 D1 `externalDailyStats`。
 - **智推时代 GenOptima 星枢监测**（app.zhituishidai.com，项目“波场TRON”）：每轮按时间倒序翻 AI 问答记录，
   把上次之后的新回答（6 个国内 AI 平台，约 780 条/天）原样写入 D1 `externalGeoAnswers`（`/external-geo`），
@@ -42,4 +42,4 @@ ROOT="$HOME/Library/Application Support/TronGeo/local-social-collector"
 ```
 
 修改 `collector.py` 后运行 `tools/local-social-collector/install.sh` 同步到运行目录并重载计划任务。
-入库上限：微博 150、贴吧 40、B站 80、小红书 80、百分点 500 条/天（`workers/agent-reach-ingest.ts` 的 `PLATFORM_DAILY_CAPS`）。
+入库上限：微博 150、贴吧 40、B站 80、小红书 80、百分点 800 条/天（`workers/agent-reach-ingest.ts` 的 `PLATFORM_DAILY_CAPS`）。
