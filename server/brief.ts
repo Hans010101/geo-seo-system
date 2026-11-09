@@ -315,7 +315,7 @@ export async function generateBrief(opts: { kind?: BriefKind; now?: number; push
   if (opts.email ?? settings.email) {
     // Locked recipient (alert_email_recipient, else the login allow-list address); never throws.
     const mail = buildBriefEmail(data, `${SITE}/briefs/${data.id}`);
-    const sent = await sendEmailAlert(mail.subject, mail.html);
+    const sent = await sendEmailAlert(mail.subject, mail.html, mail.text);
     return { ...data, emailed: sent.sent, emailError: sent.error };
   }
   return data;

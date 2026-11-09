@@ -29,7 +29,7 @@ export async function setEmailAlertConfig(p: { apiKey?: string; from?: string; r
 }
 
 // Thin sender: one Resend POST, locked recipient, never throws, silent-degrades when unconfigured.
-export async function sendEmailAlert(subject: string, html: string): Promise<{ sent: boolean; error?: string }> {
+export async function sendEmailAlert(subject: string, html: string, text?: string): Promise<{ sent: boolean; error?: string }> {
   try {
     // Config load is INSIDE the try — getSysConfig hits the DB and can reject; the sender must never throw.
     const { apiKey, from, recipient } = await getEmailAlertConfig();
@@ -45,7 +45,8 @@ export async function sendEmailAlert(subject: string, html: string): Promise<{ s
         "User-Agent": "geo-seo-system/1.0",
         "Idempotency-Key": `geo-alert-${sha256(`${recipient}\n${subject}\n${html}`).slice(0, 48)}`,
       },
-      body: JSON.stringify({ from, to: [recipient], subject, html }),
+      // A plain-text part makes the mail read (and get filed) like a normal message.
+      body: JSON.stringify({ from, to: [recipient], subject, html, ...(text ? { text } : {}) }),
     });
     const result = await response.json().catch(() => ({})) as Record<string, unknown>;
     if (!response.ok) {
