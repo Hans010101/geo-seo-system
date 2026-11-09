@@ -8,12 +8,22 @@ import {
 
 function envWith(overrides: Record<string, string> = {}) {
   const sendBatch = vi.fn(async (_messages: Array<{ body: QueueTask }>) => undefined);
+  const allBatches: Array<Array<{ body: QueueTask }>> = [];
   return {
     env: {
-      MONITOR_QUEUE: { sendBatch },
+      MONITOR_QUEUE: {
+        // Every firing also queues the one-off brief-request check; it is asserted in its own
+        // test, so the schedule assertions below see the batch without it.
+        sendBatch: async (messages: Array<{ body: QueueTask }>) => {
+          allBatches.push(messages);
+          const rest = messages.filter(m => m.body.kind !== "brief_request");
+          if (rest.length) await sendBatch(rest);
+        },
+      },
       ...overrides,
     } as unknown as QueueEnv,
     sendBatch,
+    allBatches,
   };
 }
 
@@ -142,5 +152,13 @@ describe("Cloudflare migration feature flags", () => {
     const other = envWith(off);
     await enqueueScheduledMonitor(Date.UTC(2026, 10, 9, 3, 15), other.env); // 11:15
     expect(JSON.stringify(other.sendBatch.mock.calls)).not.toContain("daily_brief");
+  });
+
+  it("checks for a one-off brief request on every firing", async () => {
+    for (const minute of [15, 40]) {
+      const env = envWith();
+      await enqueueScheduledMonitor(Date.UTC(2026, 10, 9, 5, minute), env.env);
+      expect(env.allBatches[0]).toContainEqual({ body: expect.objectContaining({ kind: "brief_request" }) });
+    }
   });
 });

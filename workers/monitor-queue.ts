@@ -10,7 +10,7 @@ import {
 import { sendEmailAlert } from "../server/monitor/email-alert";
 import { dispatchNotification } from "../server/_core/notification";
 import { checkMarketAlerts } from "../server/market";
-import { generateBrief, getBriefSettings } from "../server/brief";
+import { generateBrief, getBriefSettings, runRequestedBrief } from "../server/brief";
 import { boundedJson } from "./bounded-json";
 import { cycleFailureReason } from "./cycle-failure";
 import {
@@ -237,6 +237,12 @@ type DailyBriefTask = {
   scheduledTime: number;
 };
 
+/** Checks sysConfigs daily_brief_request on every firing (one-off briefs without an admin login). */
+type BriefRequestTask = {
+  kind: "brief_request";
+  scheduledTime: number;
+};
+
 type FreshnessAuditTask = {
   kind: "freshness_audit";
   auditId: string;
@@ -300,6 +306,7 @@ export type QueueTask =
   | MaintenanceTask
   | MarketPricesTask
   | DailyBriefTask
+  | BriefRequestTask
   | FreshnessAuditTask
   | BinanceProbeTask
   | GeoDailyShardTask
@@ -2863,6 +2870,11 @@ async function processTask(task: QueueTask, env: QueueEnv): Promise<void> {
   if (task.kind === "openrouter_preflight") return runOpenRouterPreflight(task, env);
   if (task.kind === "browser_shadow") return browserShadow(task, env);
   if (task.kind === "post_cycle") return postCycle(task, env);
+  if (task.kind === "brief_request") {
+    const brief = await runRequestedBrief();
+    if (brief) console.log(JSON.stringify({ event: "daily_brief.requested", id: brief.id, emailed: brief.emailed, emailError: brief.emailError }));
+    return;
+  }
   if (task.kind === "daily_brief") {
     if (!(await getBriefSettings()).enabled) return;
     const brief = await generateBrief({ kind: task.brief });
@@ -3042,5 +3054,6 @@ export async function enqueueScheduledMonitor(
   // Daily briefs: 早报 09:20 and 晚报 17:45 (five minutes after the 09:15 / 17:40 cloud batches start).
   const brief = local.hour === 9 && local.minute === 15 ? "am" : local.hour === 17 && local.minute === 40 ? "pm" : null;
   if (brief) messages.push({ body: { kind: "daily_brief", brief, scheduledTime }, delaySeconds: 300 });
+  messages.push({ body: { kind: "brief_request", scheduledTime } });
   if (messages.length > 0) await env.MONITOR_QUEUE.sendBatch(messages);
 }

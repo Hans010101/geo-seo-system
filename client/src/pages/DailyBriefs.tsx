@@ -255,8 +255,9 @@ function AdminBar() {
   if (!isAdmin || !settings) return null;
   return (
     <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-sm">
-      <label className="flex items-center gap-2"><Switch checked={settings.enabled} onCheckedChange={(v) => save.mutate({ enabled: v, push: settings.push })} />自动生成（09:20 / 17:45）</label>
-      <label className="flex items-center gap-2"><Switch checked={settings.push} onCheckedChange={(v) => save.mutate({ enabled: settings.enabled, push: v })} />推送 Telegram</label>
+      <label className="flex items-center gap-2"><Switch checked={settings.enabled} onCheckedChange={(v) => save.mutate({ ...settings, enabled: v })} />自动生成（09:20 / 17:45）</label>
+      <label className="flex items-center gap-2"><Switch checked={settings.email} onCheckedChange={(v) => save.mutate({ ...settings, email: v })} />发送邮件</label>
+      <label className="flex items-center gap-2"><Switch checked={settings.push} onCheckedChange={(v) => save.mutate({ ...settings, push: v })} />推送 Telegram</label>
       <Button size="sm" variant="outline" disabled={generate.isPending} onClick={() => generate.mutate({ kind: "am" })}>生成早报</Button>
       <Button size="sm" variant="outline" disabled={generate.isPending} onClick={() => generate.mutate({ kind: "pm" })}>生成晚报</Button>
       {generate.isPending ? <span className="text-muted-foreground">生成中，约需 1 分钟…</span> : null}

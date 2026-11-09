@@ -2900,14 +2900,14 @@ const briefsRouter = router({
   get: protectedProcedure.input(z.object({ id: z.string().max(20) })).query(async ({ input }) => getBrief(input.id)),
   settings: protectedProcedure.query(async () => getBriefSettings()),
   setSettings: adminProcedure
-    .input(z.object({ enabled: z.boolean(), push: z.boolean() }))
+    .input(z.object({ enabled: z.boolean(), push: z.boolean(), email: z.boolean() }))
     .mutation(async ({ input }) => { await setBriefSettings(input); return { success: true }; }),
   // Regenerates the current period's brief now (no Telegram push unless asked).
   generate: adminProcedure
-    .input(z.object({ kind: z.enum(["am", "pm"]), push: z.boolean().default(false) }))
+    .input(z.object({ kind: z.enum(["am", "pm"]), push: z.boolean().default(false), email: z.boolean().default(false) }))
     .mutation(async ({ input }) => {
-      const brief = await generateBrief({ kind: input.kind, push: input.push });
-      return { id: brief.id };
+      const brief = await generateBrief({ kind: input.kind, push: input.push, email: input.email });
+      return { id: brief.id, emailed: brief.emailed ?? false, emailError: brief.emailError };
     }),
 });
 

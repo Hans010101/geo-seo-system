@@ -6,6 +6,8 @@ import { getCloudflareEnv } from "./_core/cloudflare-env";
 import { ENV } from "./_core/env";
 import { invokeLLM } from "./_core/llm";
 import { dispatchNotification } from "./_core/notification";
+import { sendEmailAlert } from "./monitor/email-alert";
+import { buildBriefEmail } from "./brief-email";
 import { excessReturn, priceAt, toSeries } from "./market-calc";
 import {
   BRIEF_LABEL, bjDay, bjDayStart, bjHHMM, bjMMDD, briefWindow, buildPrompt, parseDraft, platformCn, pushText,
@@ -17,7 +19,10 @@ const DAY = 24 * HOUR;
 const NEG = "relevance IN ('high','medium') AND sentimentScore <= 2";
 const POS = "relevance IN ('high','medium') AND sentimentScore >= 4";
 const SITE = "https://trongeo.asia";
-const KEYS = { enabled: "daily_brief_enabled", push: "daily_brief_push_enabled", model: "daily_brief_model" } as const;
+const KEYS = {
+  enabled: "daily_brief_enabled", push: "daily_brief_push_enabled", email: "daily_brief_email_enabled",
+  model: "daily_brief_model", request: "daily_brief_request",
+} as const;
 const DEFAULT_MODEL = "anthropic/claude-sonnet-5.5";
 const COINS: [string, string][] = [["JST", "JUST"], ["BTT", "BitTorrent"], ["NFT", "APENFT"], ["WIN", "WINkLink"]];
 
@@ -59,13 +64,30 @@ export type BriefData = {
 };
 
 export async function getBriefSettings() {
-  const [enabled, push, model] = await Promise.all([getSysConfig(KEYS.enabled), getSysConfig(KEYS.push), getSysConfig(KEYS.model)]);
-  return { enabled: enabled !== "false", push: push !== "false", model: model?.trim() || DEFAULT_MODEL };
+  const [enabled, push, email, model] = await Promise.all([
+    getSysConfig(KEYS.enabled), getSysConfig(KEYS.push), getSysConfig(KEYS.email), getSysConfig(KEYS.model),
+  ]);
+  return { enabled: enabled !== "false", push: push !== "false", email: email !== "false", model: model?.trim() || DEFAULT_MODEL };
 }
 
-export async function setBriefSettings(s: { enabled: boolean; push: boolean }) {
+export async function setBriefSettings(s: { enabled: boolean; push: boolean; email: boolean }) {
   await setSysConfig(KEYS.enabled, String(s.enabled));
   await setSysConfig(KEYS.push, String(s.push));
+  await setSysConfig(KEYS.email, String(s.email));
+}
+
+/**
+ * One-off generation requested through sysConfigs `daily_brief_request` = {"kind":"pm","push":false,"email":true}
+ * (lets an operator without an admin login trigger a brief); picked up by the cron queue at :15 / :40.
+ */
+export async function runRequestedBrief(): Promise<BriefData | null> {
+  const raw = await getSysConfig(KEYS.request);
+  if (!raw?.trim()) return null;
+  await setSysConfig(KEYS.request, ""); // consume first so a failure cannot loop every firing
+  let req: { kind?: string; push?: boolean; email?: boolean } = {};
+  try { req = JSON.parse(raw); } catch { return null; }
+  const kind: BriefKind | undefined = req.kind === "am" || req.kind === "pm" ? req.kind : undefined;
+  return generateBrief({ kind, push: req.push === true, email: req.email !== false });
 }
 
 const pct2 = (v: number | null) => (v === null || !Number.isFinite(v) ? null : Math.round(v * 100) / 100);
@@ -200,7 +222,7 @@ export async function getBrief(id: string) {
 }
 
 /** Build, store and (optionally) push one brief. `kind` defaults from the Beijing hour. */
-export async function generateBrief(opts: { kind?: BriefKind; now?: number; push?: boolean } = {}): Promise<BriefData> {
+export async function generateBrief(opts: { kind?: BriefKind; now?: number; push?: boolean; email?: boolean } = {}): Promise<BriefData & { emailed?: boolean; emailError?: string }> {
   const now = opts.now ?? Date.now();
   const kind: BriefKind = opts.kind ?? (new Date(now + 8 * HOUR).getUTCHours() < 13 ? "am" : "pm");
   const client = await d1();
@@ -285,6 +307,12 @@ export async function generateBrief(opts: { kind?: BriefKind; now?: number; push
       asks, link: `${SITE}/briefs/${data.id}`,
     });
     await dispatchNotification({ messageType: "batch_summary", title: msg.title, content: msg.content });
+  }
+  if (opts.email ?? settings.email) {
+    // Locked recipient (alert_email_recipient, else the login allow-list address); never throws.
+    const mail = buildBriefEmail(data, `${SITE}/briefs/${data.id}`);
+    const sent = await sendEmailAlert(mail.subject, mail.html);
+    return { ...data, emailed: sent.sent, emailError: sent.error };
   }
   return data;
 }
