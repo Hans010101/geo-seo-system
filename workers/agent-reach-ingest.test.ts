@@ -93,7 +93,7 @@ describe("Agent-Reach pilot boundary", () => {
       { channel: "web", url: "https://m.weibo.cn/detail/5360563145411531" },
       { channel: "weibo", url: "https://m.weibo.cn/detail/5360563145411531", text: "短" },
     ]) expect(() => parsePost({ ...base, ...patch })).toThrow();
-    expect(dailyCap("weibo")).toBe(150);
+    expect(dailyCap("weibo")).toBe(300);
   });
   it("accepts Bilibili videos and locally collected Xiaohongshu notes", () => {
     const base = { ...validPost(), title: "孙宇晨谈高考", text: "孙宇晨早年谈高考" };
