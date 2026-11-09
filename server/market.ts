@@ -265,7 +265,8 @@ export async function getMarketLinkage(days: number, now = Date.now()) {
   const links = dailyLinks(series, byDay, Math.max(start, now - 30 * DAY), now);
   return {
     step, chart,
-    events: impacts.slice(0, 80),
+    // Every high-threat event, plus the newest medium ones (the medium tail is mostly noise).
+    events: [...impacts.filter(e => e.threatLevel === "high"), ...impacts.filter(e => e.threatLevel !== "high").slice(0, 80)],
     eventSummary: [summarize("high"), summarize("medium")],
     daily: links,
     correlation: correlation(links),

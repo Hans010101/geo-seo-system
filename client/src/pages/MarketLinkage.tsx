@@ -28,9 +28,10 @@ function formatPrice(price: number | null) {
   return `$${price.toExponential(3)}`;
 }
 
+/** Beijing time as "MM-DD HH:mm" (or "HH:mm"), independent of the browser locale's padding. */
 const bjTime = (ms: number, withDate = true) => {
-  const text = new Date(ms).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false });
-  return withDate ? text.slice(5, 16) : text.slice(11, 16);
+  const text = new Date(ms + 8 * 3_600_000).toISOString(); // YYYY-MM-DDTHH:mm in UTC+8
+  return withDate ? `${text.slice(5, 10)} ${text.slice(11, 16)}` : text.slice(11, 16);
 };
 
 function Overview() {
