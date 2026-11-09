@@ -14,7 +14,6 @@ type Series = [number, number][];
 
 const HOUR = 3_600_000;
 const hhmm = (ms: number) => new Date(ms + 8 * HOUR).toISOString().slice(11, 16);
-const mmddhhmm = (ms: number) => { const s = new Date(ms + 8 * HOUR).toISOString(); return `${s.slice(5, 10)} ${s.slice(11, 16)}`; };
 const signed = (v: number | null | undefined) => (v === null || v === undefined ? "—" : `${v > 0 ? "+" : ""}${v.toFixed(2)}%`);
 const price = (v: number | null | undefined) => (v === null || v === undefined ? "—" : v >= 0.01 ? `$${v.toFixed(4)}` : `$${v.toExponential(3)}`);
 const tone = (v: number | null | undefined) => (v === null || v === undefined ? "" : v >= 0 ? "text-green-600" : "text-red-600");
@@ -63,7 +62,9 @@ function PriceChart({ series }: { series: Series }) {
       <polyline points={pts} fill="none" className="stroke-red-600" strokeWidth={2.2} strokeLinejoin="round" />
       {Array.from(marks.entries()).map(([i, name]) => (
         <g key={i}><circle cx={X(i)} cy={Y(vals[i])} r={4} className="fill-background stroke-red-600" strokeWidth={2} />
-          <text x={Math.min(X(i), w - 50)} y={Y(vals[i]) - 9} textAnchor="middle" className="fill-foreground text-[11px] font-semibold">{name} {vals[i].toFixed(4)}</text></g>
+          {/* The newest point sits on the right edge: right-align its label so it stays inside. */}
+          <text x={i === vals.length - 1 ? X(i) - 6 : i === 0 ? X(i) + 6 : X(i)} y={Y(vals[i]) - 9}
+            textAnchor={i === vals.length - 1 ? "end" : i === 0 ? "start" : "middle"} className="fill-foreground text-[11px] font-semibold">{name} {vals[i].toFixed(4)}</text></g>
       ))}
     </svg>
   );
@@ -121,13 +122,9 @@ function BriefView({ brief }: { brief: Brief }) {
   const m = brief.market;
   return (
     <div className="grid gap-5 max-w-[880px]">
-      <header className="border-b-[3px] border-red-600 pb-2 grid gap-1">
-        <h1 className="text-2xl font-extrabold tracking-tight">{brief.title}
-          <span className="ml-2 text-sm font-medium text-muted-foreground">{brief.dateLabel} · 内部限阅</span></h1>
-        <div className="flex flex-wrap gap-x-4 text-xs text-muted-foreground tabular-nums">
-          <span>监测时段 {mmddhhmm(brief.windowStart)} → {mmddhhmm(brief.windowEnd)}</span>
-          <span>生成 {mmddhhmm(brief.generatedAt)}</span><span>下一期 {brief.nextLabel}</span>
-        </div>
+      <header className="border-b-[3px] border-red-600 pb-2">
+        <h1 className="text-2xl font-extrabold tracking-tight m-0">{brief.title}
+          <span className="ml-2 text-sm font-medium text-muted-foreground">{brief.dateLabel}</span></h1>
       </header>
 
       <section className="grid sm:grid-cols-[auto_1fr] border bg-card">
@@ -149,7 +146,7 @@ function BriefView({ brief }: { brief: Brief }) {
         {[
           ["高威胁舆情", String(k.high), `中威胁 ${k.medium}（上一日同时段 ${k.mediumPrev}）`, ""],
           ["负面舆情", String(k.negative), `上一日同时段 ${k.negativePrev} · 相关 ${k.relevant} 条`, ""],
-          ["TRX 价格", price(m?.trx.price), `24h ${signed(m?.trx.change24h)}`, ""],
+          ["新发表舆情", String(k.published), `上一日同时段 ${k.publishedPrev} · 正面 ${k.positive} 条`, ""],
           ["TRX 相对大盘", signed(m?.excess24h), `24h 超额；同期大盘 ${signed(m?.benchmark24h)}`, tone(m?.excess24h)],
         ].map(([label, value, sub, cls]) => (
           <div key={label} className="border bg-card px-3.5 py-3 grid gap-0.5 min-w-0">
@@ -166,19 +163,17 @@ function BriefView({ brief }: { brief: Brief }) {
           <div className="border bg-card p-3.5 grid gap-1.5 min-w-0">
             <h4 className="m-0 text-sm font-semibold">TRX 近 24 小时（小时价，USD）</h4>
             <PriceChart series={m.trx.series as Series} />
-            <p className="m-0 text-sm text-muted-foreground">{m.note}</p>
           </div>
-          <div className="border bg-card p-3.5 grid grid-cols-2 gap-x-3 gap-y-2 content-start min-w-0">
+          <div className="border bg-card px-3.5 py-4 grid grid-cols-2 gap-x-4 gap-y-5 content-evenly min-w-0">
             {m.coins.map(c => (
               <div key={c.symbol} className="grid min-w-0">
                 <div className="flex items-baseline gap-1.5"><b className="text-sm">{c.symbol}</b>
                   <span className="text-[11px] text-muted-foreground flex-1 truncate">{c.name}</span>
                   <span className={`text-xs font-semibold tabular-nums ${tone(c.change24h)}`}>{signed(c.change24h)}</span></div>
                 <div className="text-[15px] font-semibold tabular-nums">{price(c.price)}</div>
-                <Spark series={c.series as Series} up={(c.change24h ?? 0) >= 0} />
+                <div className="mt-1"><Spark series={c.series as Series} up={(c.change24h ?? 0) >= 0} /></div>
               </div>
             ))}
-            <p className="col-span-2 m-0 text-sm text-muted-foreground">{m.coinsNote}</p>
           </div>
         </section>
       </> : null}
