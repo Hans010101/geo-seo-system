@@ -830,7 +830,8 @@ def run(args):
             # GenOptima answers arrive in a couple of daily batches; count only answers newer than before.
             discovered = stats.get("new", stats["found"]) if name == "genoptima" else stats["found"]
             report[name] = {"discovered": discovered, **({"error": stats["errors"][0]} if stats["errors"] else {})}
-            if name == "percent" and not stats["errors"] and not args.dry_run:
+            # A capped run left posts unsent: keep the old start so the next run picks them up.
+            if name == "percent" and not stats["errors"] and not stats.get("capped") and not args.dry_run:
                 state["percentSuccessAt"] = started
             log("platform", platform=name, **stats)
         context.close()
