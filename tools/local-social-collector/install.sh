@@ -1,5 +1,5 @@
 #!/bin/bash
-# Install or update the local Weibo/Tieba/Bilibili/Xiaohongshu collector on this Mac.
+# Install or update the local collector (Weibo/Tieba/Bilibili/Xiaohongshu + 百分点/智推时代) on this Mac.
 # Usage: tools/local-social-collector/install.sh   (re-run after editing collector.py)
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -21,3 +21,5 @@ launchctl bootstrap "gui/$(id -u)" "$PLIST"
 echo "已安装：新加坡时间 9、11、13、15、17、19、21、3 点的 :05 运行。首次请执行："
 echo "  \"$ROOT/venv/bin/python\" \"$ROOT/collector.py\" login weibo"
 echo "  \"$ROOT/venv/bin/python\" \"$ROOT/collector.py\" login xiaohongshu"
+echo "  \"$ROOT/venv/bin/python\" \"$ROOT/collector.py\" login percent"
+echo "  \"$ROOT/venv/bin/python\" \"$ROOT/collector.py\" login genoptima"

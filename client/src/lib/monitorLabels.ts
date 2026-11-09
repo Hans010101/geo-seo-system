@@ -32,6 +32,7 @@ export const FETCH_ENGINE_LABELS: Record<string, string> = {
   wechat_rss: "微信聚合 RSS",
   agent_reach_public: "Agent-Reach 公开内容（不保证完整）",
   local_browser: "本机浏览器采集",
+  percent: "百分点舆情导入",
 };
 
 export const SOURCE_PLATFORM_META: Record<string, { label: string; color: string }> = {

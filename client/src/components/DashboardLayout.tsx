@@ -39,6 +39,7 @@ import {
   Network,
   Mail,
   Bot,
+  Telescope,
 } from "lucide-react";
 import { CSSProperties, FormEvent, useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
@@ -52,6 +53,7 @@ const primaryMenuItems = [
   { icon: LayoutDashboard, label: "工作台", path: "/", matches: ["/"] },
   { icon: Radar, label: "舆情情报", path: "/sentiment-monitor", matches: ["/sentiment-monitor"] },
   { icon: Bot, label: "GEO 洞察", path: "/geo", matches: ["/geo", "/questions", "/citations"] },
+  { icon: Telescope, label: "外部监测", path: "/external", matches: ["/external"] },
   { icon: Network, label: "联动分析", path: "/sentiment-monitor/penetration", matches: ["/sentiment-monitor/penetration"] },
   { icon: Bell, label: "预警与处置", path: "/alerts", matches: ["/alerts"] },
   { icon: FileBarChart, label: "报告中心", path: "/report-center", matches: ["/report-center", "/reports", "/sentiment-monitor/reports"] },

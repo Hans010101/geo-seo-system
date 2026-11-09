@@ -75,6 +75,43 @@ def test_xhs_times_and_posts():
     assert c.xhs_guest_flag([]) is None
 
 
+
+def test_percent_posts():
+    items = [
+        {"url": "https://www.douyin.com/share/video/7706063586551958793", "titleAll": "孙宇晨 北大学霸",
+         "content": "孙宇晨 这世界既残酷也温柔", "pubTime": 1794207755000, "author": "可爱的广告君", "platform": "抖音",
+         "docType": "short_video"},
+        {"url": "http://mp.weixin.qq.com/s/abc", "title": "<em>波场</em>新动态", "content": "", "pubTime": 1794207000000,
+         "author": "", "platform": None, "source": "微信", "docType": "weixin"},
+        {"url": "https://www.douyin.com/share/video/7706063586551958793", "pubTime": 1794207755000},
+        {"url": "ftp://x", "pubTime": 1},
+        {"url": "https://www.toutiao.com/a1", "title": "火币", "content": "火币", "pubTime": "", "platform": "今日头条"},
+        {"url": "https://www.example-news.cn/a.html", "title": "标题", "content": "正文", "pubTime": 1794200000000,
+         "platform": "网易", "docType": "news", "forwardContent": "原文"},
+    ]
+    posts = c.percent_posts(items)
+    assert [p["platform"] for p in posts] == ["douyin", "wechat", "web"]
+    assert posts[0]["text"] == "【抖音】@可爱的广告君：孙宇晨 这世界既残酷也温柔"
+    assert posts[1]["url"] == "https://mp.weixin.qq.com/s/abc" and posts[1]["title"] == "波场新动态"
+    assert posts[1]["text"] == "【微信】波场新动态"
+    assert posts[2]["text"].endswith("//转发：原文")
+
+
+def test_geno_records():
+    raw = [{"id": "01a1bdad-ad97-7206-9d9f-5f78289785da", "platform": "https://x.aliyuncs.com/static/images/doubao.png",
+            "content": "回答", "intentType": 3, "brandMentioned": None, "brandRank": None, "brandSentiment": "negative",
+            "competitors": [{"name": "以太坊"}, "Solana", 3], "referenceSources": [{"code": "百度百科"}, {"icon": "x"}],
+            "referenceSourceCount": 23, "queryTime": "2026-11-09 08:20:38", "question": "波场TRON合规吗？"},
+           {"id": "", "queryTime": "2026-11-09 08:20:38", "question": "q"},
+           {"id": "x1", "queryTime": "bad", "question": "q"}]
+    records = c.geno_records(raw)
+    assert len(records) == 1
+    r = records[0]
+    assert r["platform"] == "doubao" and r["references"] == ["百度百科"] and r["referenceCount"] == 23
+    assert r["competitors"] == ["以太坊", "Solana"] and r["sentiment"] == "negative"
+    assert r["queryTime"] == ms(dt.datetime(2026, 11, 9, 8, 20, 38, tzinfo=c.BJ))
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_") and callable(fn):

@@ -44,6 +44,7 @@ import {
   unbindTelegram,
 } from "./monitor/telegram-connect";
 import { isCloudflareRuntime } from "./runtime";
+import { getExternalGeoAnswer, getExternalGeoOverview, listExternalGeoAnswers, listPercentDailyStats } from "./external";
 import { emptyAnswerError, shouldLimitReasoning } from "./llm-answer";
 import { dateRangePeriod, geoReportKey, parsePeriod, reportDateRangeSchema } from "../shared/report-period";
 
@@ -2868,6 +2869,29 @@ const monitorRouter = router({
     }),
 });
 
+// ==================== External vendor systems (read-only mirrors) ====================
+const externalRouter = router({
+  geoOverview: protectedProcedure
+    .input(z.object({ days: z.number().int().min(1).max(30) }))
+    .query(async ({ input }) => getExternalGeoOverview(input.days)),
+  geoAnswers: protectedProcedure
+    .input(z.object({
+      days: z.number().int().min(1).max(60),
+      platform: z.string().max(32).optional(),
+      sentiment: z.enum(["positive", "negative", "none"]).optional(),
+      question: z.string().max(200).optional(),
+      limit: z.number().int().min(1).max(100).default(30),
+      offset: z.number().int().min(0).default(0),
+    }))
+    .query(async ({ input }) => listExternalGeoAnswers(input)),
+  geoAnswer: protectedProcedure
+    .input(z.object({ id: z.string().max(64) }))
+    .query(async ({ input }) => getExternalGeoAnswer(input.id)),
+  percentDaily: protectedProcedure
+    .input(z.object({ days: z.number().int().min(1).max(90) }))
+    .query(async ({ input }) => listPercentDailyStats(input.days)),
+});
+
 // ==================== App Router ====================
 export const appRouter = router({
   system: systemRouter,
@@ -2903,6 +2927,7 @@ export const appRouter = router({
   users: usersRouter,
   notifications: notificationsRouter,
   monitor: monitorRouter,
+  external: externalRouter,
 });
 
 export type AppRouter = typeof appRouter;

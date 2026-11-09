@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""TRON GEO local social collector (Weibo, Tieba, Bilibili, Xiaohongshu) for the always-on Mac.
+"""TRON GEO local collector for the always-on Mac: Weibo, Tieba, Bilibili and Xiaohongshu searches,
+plus two vendor systems the team subscribes to (百分点 Mediaforce sentiment, 智推时代 GenOptima GEO).
 
 Runs a plain headless Google Chrome with its own profile (logged in to Weibo and Xiaohongshu once
 by QR scan; Bilibili and Tieba need no login),
@@ -8,10 +9,16 @@ the geo-agent-reach-pilot ingest worker, which runs them through the normal moni
 (dedup, relevance, AI analysis, alerts). Each run also posts a heartbeat that the cron worker
 turns into an outage alert when a platform stays silent.
 
+百分点 sensitive posts go through the same /ingest pipeline (plus a daily totals snapshot);
+GenOptima AI answers are mirrored as-is to /external-geo. Both are read with the user's own login,
+through the requests their web pages already make; no credential is stored by this script.
+
 Commands:
   collector.py run              one collection run (launchd: 9/11/13/15/17/19/21/3 o'clock)
   collector.py login weibo      open a visible Chrome window and wait for a QR-code login
   collector.py login xiaohongshu
+  collector.py login percent    百分点 Mediaforce (WeChat QR / SMS code, entered by the user)
+  collector.py login genoptima  智推时代 GenOptima (SMS code, entered by the user)
   collector.py status           show the last run and the Weibo login state
 
 It never solves CAPTCHAs or security checks: when a platform shows one, the run records the
@@ -50,6 +57,9 @@ STATE = ROOT / "state.json"
 BJ = dt.timezone(dt.timedelta(hours=8))
 SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
 WEIBO_LOGIN_URL = "https://passport.weibo.com/sso/signin?entry=miniblog&source=miniblog&url=https%3A%2F%2Fweibo.com%2F"
+
+
+VENDORS = ("percent", "genoptima")
 
 
 class NeedsUser(Exception):
@@ -430,6 +440,254 @@ def mentions(keyword, text):
     return all(part.lower() in lowered for part in keyword.split())
 
 
+# ---------------------------------------------------------------- 百分点 Mediaforce
+PERCENT_LOGIN = "https://mf.percent.cn/user/login"
+PERCENT_MONITOR = "https://mf.percent.cn/monitor"
+PERCENT_MAX_PAGES = 4  # 500 folded items per page; a day has ~400 sensitive ones
+PERCENT_PLATFORM_NAMES = {
+    "抖音": "douyin", "快手": "kuaishou", "知乎": "zhihu", "小红书": "xiaohongshu", "微博": "weibo",
+    "微信": "wechat", "哔哩哔哩": "bilibili", "B站": "bilibili", "bilibili": "bilibili", "百度贴吧": "tieba", "贴吧": "tieba",
+}
+PERCENT_DOC_TYPES = {"weibo": "weibo", "weixin": "wechat", "tieba": "tieba"}
+# Replays the page's own list query (its body carries the session's short-lived signature).
+PERCENT_QUERY_JS = """async body => { try {
+  const r = await fetch('/server/api/monitor/query', { method: 'POST', credentials: 'include',
+    headers: { 'Content-Type': 'application/json;charset=UTF-8', 'Accept': 'application/json' }, body: JSON.stringify(body) });
+  return await r.json(); } catch (e) { return { code: -1, desc: String(e) }; } }"""
+
+
+def percent_platform(item):
+    for name in (item.get("platform"), item.get("source"), item.get("siteName"), item.get("realSource")):
+        if name and name.strip() in PERCENT_PLATFORM_NAMES:
+            return PERCENT_PLATFORM_NAMES[name.strip()]
+    return PERCENT_DOC_TYPES.get(item.get("docType"), "web")
+
+
+def percent_posts(items):
+    posts, seen = [], set()
+    for item in items:
+        url = str(item.get("url") or "").strip()
+        if url.startswith("http://"):
+            url = "https://" + url[len("http://"):]
+        if not url.startswith("https://") or url in seen or not str(item.get("pubTime") or "").isdigit():
+            continue
+        seen.add(url)
+        content = strip_html(item.get("content") or item.get("contentAbstract"))
+        title = strip_html(item.get("titleAll") or item.get("title")) or title_of(content)
+        forward = strip_html(item.get("forwardContent"))
+        label = (item.get("platform") or item.get("source") or item.get("siteName") or "").strip()
+        author = (item.get("author") or item.get("promulgator") or "").strip()
+        text = (f"【{label}】" if label else "") + (f"@{author}：" if author else "") + (content or title)
+        if forward:
+            text += f"\n//转发：{forward}"
+        posts.append({
+            "url": url, "title": title or f"{author} 的内容", "text": text,
+            "publishedAt": int(item["pubTime"]), "platform": percent_platform(item), "label": label or "其他",
+        })
+    return posts
+
+
+def percent_session(page):
+    """Open the 舆情 list and keep the query body the page sends with the user's session."""
+    captured = []
+
+    def on_request(request):
+        if request.method == "POST" and "/server/api/monitor/query" in request.url and request.post_data:
+            captured.append(request.post_data)
+    page.on("request", on_request)
+    try:
+        page.goto(PERCENT_MONITOR, wait_until="domcontentloaded", timeout=60_000)
+        for _ in range(20):
+            if captured or "/user/login" in page.url:
+                break
+            page.wait_for_timeout(1000)
+    finally:
+        page.remove_listener("request", on_request)
+    if "/user/login" in page.url:
+        raise NeedsUser("百分点登录已失效，需要运行 collector.py login percent 重新登录")
+    if not captured:
+        raise NeedsUser("百分点舆情页没有发出查询，可能需要重新登录")
+    return json.loads(captured[-1])
+
+
+def percent_query(page, base, start_ms, end_ms, sensitive, offset=0, limit=500):
+    body = json.loads(json.dumps(base))
+    body["timeRange"] = {"startTime": int(start_ms), "endTime": int(end_ms)}
+    body["page"] = {"start": offset, "limit": limit}
+    condition = body.setdefault("condition", {})
+    condition["emotion"] = ["negative"] if sensitive else []
+    condition["sortFlag"] = "timeDesc"
+    payload = page.evaluate(PERCENT_QUERY_JS, body) or {}
+    if payload.get("code") != 0:
+        desc = str(payload.get("desc") or payload.get("msg") or payload.get("code"))[:80]
+        if payload.get("code") in (301, 401, 403) or "Token" in desc or "登录" in desc:
+            raise NeedsUser(f"百分点会话失效（{desc}），需要运行 collector.py login percent")
+        raise RuntimeError(f"百分点查询失败：{desc}")
+    return payload.get("data") or {}
+
+
+def percent_list(page, base, start_ms, end_ms):
+    items = []
+    for number in range(PERCENT_MAX_PAGES):
+        data = percent_query(page, base, start_ms, end_ms, True, offset=number * 500)
+        batch = data.get("monitorLists") or []
+        items.extend(batch)
+        if len(batch) < 500:
+            break
+        time.sleep(random.uniform(1, 2))
+    return items
+
+
+def percent_day_stats(page, base, day_start_ms, end_ms):
+    everything = percent_query(page, base, day_start_ms, end_ms, False, limit=1)
+    sensitive = percent_list(page, base, day_start_ms, end_ms)
+    platforms = {}
+    for item in percent_posts(sensitive):
+        platforms[item["label"]] = platforms.get(item["label"], 0) + 1
+    sensitive_totals = percent_query(page, base, day_start_ms, end_ms, True, limit=1)
+    return {
+        "total": everything.get("allDocNumber"), "totalFolded": everything.get("afterFoldNumber"),
+        "sensitive": sensitive_totals.get("allDocNumber"), "sensitiveFolded": sensitive_totals.get("afterFoldNumber"),
+        "sensitiveByPlatform": platforms, "complete": end_ms >= day_start_ms + 86400_000,
+    }
+
+
+def bj_day_start(ms):
+    day = dt.datetime.fromtimestamp(ms / 1000, BJ).replace(hour=0, minute=0, second=0, microsecond=0)
+    return int(day.timestamp() * 1000)
+
+
+def collect_percent(page, cfg, db, state, started, dry_run):
+    stats = {"found": 0, "fresh": 0, "sent": 0, "outcomes": {}, "errors": [], "capped": False}
+    base = percent_session(page)
+    # Overlap the previous run by an hour; the ingest worker only takes the last 48h.
+    since = max(started - WINDOW_MS + 3600_000, int(state.get("percentSuccessAt") or 0) - 3600_000)
+    posts = percent_posts(percent_list(page, base, since, started))
+    stats["found"] = stats["fresh"] = len(posts)
+    if dry_run:
+        stats["samples"] = [f"{p['label']} {p['title'][:30]}" for p in posts[:3]]
+    else:
+        deliver(cfg, db, "percent", posts, stats)
+    today = bj_day_start(started)
+    days = [(today, started)]
+    if state.get("percentStatsFinal") != dt.datetime.fromtimestamp((today - 1) / 1000, BJ).strftime("%Y-%m-%d"):
+        days.append((today - 86400_000, today))  # finish yesterday's numbers once
+    for start, end in days:
+        day = dt.datetime.fromtimestamp(start / 1000, BJ).strftime("%Y-%m-%d")
+        snapshot = percent_day_stats(page, base, start, end)
+        if dry_run:
+            stats.setdefault("days", {})[day] = {k: v for k, v in snapshot.items() if k != "sensitiveByPlatform"}
+            continue
+        status, body = post_json(cfg, "/external-stats", {"source": "percent", "day": day, "stats": snapshot})
+        if status != 200:
+            stats["errors"].append(f"日汇总 {day} 上传失败：HTTP {status} {body.get('error', '')}")
+        elif snapshot["complete"]:
+            state["percentStatsFinal"] = day
+    return stats
+
+
+# ---------------------------------------------------------------- 智推时代 GenOptima
+GENO_LOGIN = "https://app.zhituishidai.com/login"
+GENO_PROJECT = ("https://app.zhituishidai.com/xingshu/ai-qa?project_id=e8f58902-545e-4550-84e4-109ce46240a7"
+                "&project_name=%E6%B3%A2%E5%9C%BATRON")
+GENO_RECORDS = "https://xingshu-api.zhituishidai.com/api/v1/xingshu/ai-qa/records"
+GENO_PAGE = 500
+GENO_MAX_PAGES = 20
+GENO_BATCH = 50
+GENO_JS = """async ([url, body, auth]) => { try {
+  const r = await fetch(url, { method: 'POST', body: JSON.stringify(body),
+    headers: { 'Content-Type': 'application/json', 'Accept-Language': 'zh-CN', 'Authorization': auth } });
+  let data = null; try { data = await r.json(); } catch (e) {}
+  return { status: r.status, data }; } catch (e) { return { status: 0, data: { message: String(e) } }; } }"""
+
+
+def geno_time(text):
+    try:
+        return int(dt.datetime.strptime(text, "%Y-%m-%d %H:%M:%S").replace(tzinfo=BJ).timestamp() * 1000)
+    except (TypeError, ValueError):
+        return None
+
+
+def geno_records(raw_records):
+    records = []
+    for raw in raw_records:
+        if not isinstance(raw, dict):
+            continue
+        platform = re.sub(r"\.\w+$", "", str(raw.get("platform") or "").rsplit("/", 1)[-1])
+        stamp = geno_time(raw.get("queryTime"))
+        if not raw.get("id") or not stamp or not raw.get("question"):
+            continue
+        refs = [r.get("code") for r in raw.get("referenceSources") or [] if isinstance(r, dict) and r.get("code")]
+        competitors = [c.get("name") if isinstance(c, dict) else c for c in raw.get("competitors") or []]
+        records.append({
+            "id": str(raw["id"]), "platform": platform, "question": raw["question"], "answer": raw.get("content") or "",
+            "sentiment": raw.get("brandSentiment"), "brandMentioned": raw.get("brandMentioned"),
+            "brandRank": raw.get("brandRank"), "intentType": raw.get("intentType"),
+            "references": refs, "referenceCount": raw.get("referenceSourceCount") or len(refs),
+            "competitors": [c for c in competitors if isinstance(c, str)], "queryTime": stamp,
+        })
+    return records
+
+
+def geno_session(page):
+    """Open the AI 问答记录 page and keep the query body and session header it sends (memory only)."""
+    captured = []
+
+    def on_request(request):
+        if request.method == "POST" and "/ai-qa/records" in request.url and request.post_data:
+            captured.append((request.post_data, request.headers.get("authorization")))
+    page.on("request", on_request)
+    try:
+        page.goto(GENO_PROJECT, wait_until="domcontentloaded", timeout=60_000)
+        for _ in range(25):
+            if captured or page.url.rstrip("/").endswith("/login"):
+                break
+            page.wait_for_timeout(1000)
+    finally:
+        page.remove_listener("request", on_request)
+    if page.url.rstrip("/").endswith("/login") or "/login?" in page.url:
+        raise NeedsUser("智推时代登录已失效，需要运行 collector.py login genoptima 重新登录")
+    if not captured or not captured[-1][1]:
+        raise NeedsUser("智推时代问答记录页没有发出查询，可能需要重新登录")
+    body, auth = captured[-1]
+    return json.loads(body), auth
+
+
+def collect_genoptima(page, cfg, state, dry_run):
+    stats = {"found": 0, "new": 0, "inserted": 0, "errors": []}
+    base, auth = geno_session(page)
+    latest = int(state.get("genoptimaLatest") or 0)
+    stop_at = latest - 3600_000 if latest else 0
+    fresh = []
+    for number in range(GENO_MAX_PAGES):
+        body = {**base, "time_range": "7d", "limit": GENO_PAGE, "offset": number * GENO_PAGE}
+        result = page.evaluate(GENO_JS, [GENO_RECORDS, body, auth]) or {}
+        if result.get("status") in (401, 403):
+            raise NeedsUser("智推时代会话失效，需要运行 collector.py login genoptima")
+        data = (result.get("data") or {}).get("data") if isinstance(result.get("data"), dict) else None
+        if result.get("status") != 200 or not isinstance(data, dict):
+            raise RuntimeError(f"智推时代查询失败：HTTP {result.get('status')}")
+        batch = geno_records(data.get("records") or [])
+        stats["found"] += len(batch)
+        fresh.extend(r for r in batch if r["queryTime"] > stop_at)
+        if len(data.get("records") or []) < GENO_PAGE or (batch and min(r["queryTime"] for r in batch) <= stop_at):
+            break
+        time.sleep(random.uniform(1, 2))
+    stats["new"] = sum(1 for r in fresh if r["queryTime"] > latest)
+    if dry_run:
+        stats["samples"] = [f"{r['platform']} {r['sentiment']} {r['question'][:24]}" for r in fresh[:3]]
+        return stats
+    for index in range(0, len(fresh), GENO_BATCH):
+        status, body = post_json(cfg, "/external-geo", {"source": "genoptima", "records": fresh[index:index + GENO_BATCH]})
+        if status != 200:
+            stats["errors"].append(f"上传失败：HTTP {status} {body.get('error', '')}")
+            return stats  # keep genoptimaLatest so the next run retries the rest
+        stats["inserted"] += body.get("inserted", 0)
+    if fresh:
+        state["genoptimaLatest"] = max(latest, max(r["queryTime"] for r in fresh))
+    return stats
+
+
 # ---------------------------------------------------------------- delivery
 def outbox():
     db = sqlite3.connect(ROOT / "outbox.sqlite3")
@@ -463,7 +721,7 @@ def deliver(cfg, db, platform, posts, stats):
         status, body = post_json(cfg, "/ingest", {
             "channel": platform, "url": post["url"], "title": post["title"][:500], "text": post["text"][:12_000],
             "publishedAt": post["publishedAt"], "access": "public", "completenessVerified": False,
-            "collector": "local_browser",
+            "collector": "local_browser", **({"platform": post["platform"]} if post.get("platform") else {}),
         })
         if status == 429:
             stats["capped"] = True
@@ -520,6 +778,8 @@ def run(args):
             ("xiaohongshu", XHS_KEYWORDS, lambda kw: search_xhs(page, kw)),
         )
         for platform, keywords, search in searches:
+            if platform in VENDORS:
+                continue
             if selected and platform not in selected:
                 continue
             stats = {"found": 0, "fresh": 0, "sent": 0, "outcomes": {}, "errors": [], "capped": False}
@@ -547,6 +807,24 @@ def run(args):
             if platform in since and stats["found"] > 0 and not stats.get("offline") and not args.dry_run:
                 state[f"{platform}SuccessAt"] = started
             log("platform", platform=platform, **stats)
+        for name, collect in (
+            ("percent", lambda: collect_percent(page, cfg, db, state, started, args.dry_run)),
+            ("genoptima", lambda: collect_genoptima(page, cfg, state, args.dry_run)),
+        ):
+            if selected and name not in selected:
+                continue
+            try:
+                stats = collect()
+            except NeedsUser as reason:
+                stats = {"found": 0, "errors": [str(reason)]}
+            except Exception as error:
+                stats = {"found": 0, "errors": [f"{type(error).__name__}: {str(error)[:160]}"]}
+            # GenOptima answers arrive in a couple of daily batches; count only answers newer than before.
+            discovered = stats.get("new", stats["found"]) if name == "genoptima" else stats["found"]
+            report[name] = {"discovered": discovered, **({"error": stats["errors"][0]} if stats["errors"] else {})}
+            if name == "percent" and not stats["errors"] and not args.dry_run:
+                state["percentSuccessAt"] = started
+            log("platform", platform=name, **stats)
         context.close()
     if args.dry_run:
         log("dry-run done", report=report)
@@ -589,9 +867,51 @@ def login_xhs():
     return 0
 
 
+def login_vendor(name):
+    """The user signs in themselves in a visible window; we only wait until the site lets them in."""
+    login_url, prompt, done = {
+        "percent": (PERCENT_LOGIN, "请在弹出的 Chrome 窗口里登录百分点（微信扫码或手机验证码）",
+                    lambda url: "mf.percent.cn" in url and "/user/login" not in url),
+        "genoptima": (GENO_LOGIN, "请在弹出的 Chrome 窗口里登录智推时代 GenOptima（手机验证码）",
+                      lambda url: "zhituishidai.com" in url and not url.rstrip("/").endswith("/login") and "/login?" not in url),
+    }[name]
+    with sync_playwright() as playwright:
+        context = browser(playwright, headless=False)
+        page = context.pages[0] if context.pages else context.new_page()
+        page.goto(login_url, wait_until="domcontentloaded", timeout=60_000)
+        print(prompt + "（最多等 5 分钟）……", flush=True)
+        deadline = time.time() + 300
+        while time.time() < deadline and not done(page.url):
+            page.wait_for_timeout(2000)
+        if not done(page.url):
+            context.close()
+            raise SystemExit("没有检测到登录，请重试")
+        page.wait_for_timeout(3000)
+        try:
+            if name == "percent":
+                base = percent_session(page)
+                data = percent_query(page, base, now_ms() - 86400_000, now_ms(), True, limit=1)
+                print(f"登录成功，近 24 小时敏感信息 {data.get('allDocNumber')} 条。", flush=True)
+            else:
+                base, auth = geno_session(page)
+                result = page.evaluate(GENO_JS, [GENO_RECORDS, {**base, "time_range": "1d", "limit": 1, "offset": 0}, auth])
+                total = ((result.get("data") or {}).get("data") or {}).get("total")
+                print(f"登录成功，近 1 天 AI 问答 {total} 条。", flush=True)
+        except (NeedsUser, RuntimeError) as reason:
+            print(f"已登录，但读取数据还不通：{reason}", flush=True)
+        session_only = [c["name"] for c in context.cookies() if c.get("expires", -1) in (-1, 0)
+                        and any(d in c["domain"] for d in ("percent.cn", "zhituishidai.com"))]
+        if session_only:
+            print(f"提示：有 {len(session_only)} 个会话级 Cookie，关闭浏览器后可能失效，下一轮采集会验证。", flush=True)
+        context.close()
+    return 0
+
+
 def login(args):
     if args.platform == "xiaohongshu":
         return login_xhs()
+    if args.platform in VENDORS:
+        return login_vendor(args.platform)
     with sync_playwright() as playwright:
         context = browser(playwright, headless=False)
         page = context.pages[0] if context.pages else context.new_page()
@@ -629,7 +949,7 @@ def main():
     run_parser.add_argument("--platforms", help="comma-separated subset, e.g. bilibili,xiaohongshu")
     run_parser.set_defaults(func=run)
     login_parser = sub.add_parser("login")
-    login_parser.add_argument("platform", choices=["weibo", "xiaohongshu"])
+    login_parser.add_argument("platform", choices=["weibo", "xiaohongshu", "percent", "genoptima"])
     login_parser.set_defaults(func=login)
     sub.add_parser("status").set_defaults(func=status)
     args = parser.parse_args()

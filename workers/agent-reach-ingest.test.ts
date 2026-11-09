@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({ run: vi.fn() }));
 vi.mock("../server/monitor/pipeline", () => ({ runMonitorCycle: mocks.run }));
 vi.mock("../server/db", () => ({ withHyperdriveDatabase: (_db: unknown, fn: () => unknown) => fn() }));
-import worker, { authorized, parsePost, DAILY_CAP, dailyCap, mergeLocalHealth, parseReport } from "./agent-reach-ingest";
+import worker, { authorized, parsePost, DAILY_CAP, dailyCap, capKey, mergeLocalHealth, parseReport, parseExternalGeo, parseExternalStats } from "./agent-reach-ingest";
 
 const token = "a".repeat(64);
 const validPost = () => ({
@@ -129,5 +129,33 @@ describe("Agent-Reach pilot boundary", () => {
     const second = mergeLocalHealth(JSON.stringify(first), { weibo: { discovered: 0, error: "需要登录" } }, 2000);
     expect(second.weibo).toEqual({ lastRunAt: 2000, lastDiscoveredAt: 1000, lastError: "需要登录" });
     expect(second.tieba).toEqual(first.tieba);
+  });
+  it("accepts 百分点 posts under their original platform with their own cap and no medium push", async () => {
+    const item = { ...validPost(), channel: "percent", platform: "douyin", url: "https://www.douyin.com/share/video/7706063586551958793",
+      title: "孙宇晨 北大学霸", text: "【抖音】@可爱的广告君：孙宇晨 这世界既残酷也温柔" };
+    const post = parsePost(item);
+    expect(post).toMatchObject({ sourcePlatform: "douyin", sourceName: "percent", fetchEngineHint: "percent" });
+    expect(capKey(post)).toBe("percent");
+    expect(dailyCap("percent")).toBe(500);
+    expect(parsePost({ ...item, platform: "unknown", url: "https://www.toutiao.com/article/7570000000000000000/" }).sourcePlatform).toBe("web");
+    expect(() => parsePost({ ...item, url: "http://www.douyin.com/x" })).toThrow();
+    expect(() => parsePost({ ...item, publishedAt: Date.now() - 49 * 3600_000 })).toThrow("48 hours");
+    const { env } = environment();
+    expect((await worker.fetch(request(item), env)).status).toBe(200);
+    expect(mocks.run.mock.calls[0][0]).toMatchObject({ alertPushMinSeverity: "high" });
+    expect(parseReport({ platforms: { percent: { discovered: 3 }, genoptima: { discovered: 0 } } })).toHaveProperty("genoptima");
+  });
+  it("validates GenOptima answer batches and 百分点 daily stats", () => {
+    const record = { id: "01a1bdad-ad97-7206-9d9f-5f78289785da", platform: "doubao", question: "波场TRON合规吗？",
+      answer: "回答", sentiment: "negative", brandMentioned: null, brandRank: null, intentType: 3,
+      references: ["百度百科", 5, ""], referenceCount: 23, competitors: [], queryTime: Date.now() - 3600_000 };
+    const [parsed] = parseExternalGeo({ source: "genoptima", records: [record] });
+    expect(parsed).toMatchObject({ sentiment: "negative", references: ["百度百科"], brandMentioned: null, referenceCount: 23 });
+    expect(parseExternalGeo({ source: "genoptima", records: [{ ...record, sentiment: "weird" }] })[0].sentiment).toBeNull();
+    expect(() => parseExternalGeo({ source: "genoptima", records: [{ ...record, platform: "chatgpt" }] })).toThrow("platform");
+    expect(() => parseExternalGeo({ source: "other", records: [record] })).toThrow();
+    expect(() => parseExternalGeo({ source: "genoptima", records: Array(101).fill(record) })).toThrow();
+    expect(parseExternalStats({ source: "percent", day: "2026-11-09", stats: { total: 1422 } }).stats).toBe('{"total":1422}');
+    expect(() => parseExternalStats({ source: "percent", day: "11-09", stats: {} })).toThrow("day");
   });
 });

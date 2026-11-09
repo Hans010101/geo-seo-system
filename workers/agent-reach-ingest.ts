@@ -9,20 +9,31 @@ import type { WorkersAiBinding } from "../server/_core/cloudflare-env";
 type IngestEnv = Omit<AgentReachEnv, "AI"> & { INGEST_TOKEN: string; AI: WorkersAiBinding };
 
 const MAX_BODY_BYTES = 48_000;
+/** External-GEO batches carry full AI answers (≈1.5 KB each, up to 100 per request). */
+const MAX_BATCH_BYTES = 1_000_000;
 export const DAILY_CAP = 20;
 /** Per-platform daily caps; the Mac browser collector feeds these platforms at higher volume. */
-export const PLATFORM_DAILY_CAPS: Record<string, number> = { weibo: 150, tieba: 40, bilibili: 80, xiaohongshu: 80 };
-const CHANNELS = new Set(["web", "reddit", "youtube", "xiaohongshu", "weibo", "tieba", "bilibili"]);
+export const PLATFORM_DAILY_CAPS: Record<string, number> = { weibo: 150, tieba: 40, bilibili: 80, xiaohongshu: 80, percent: 500 };
+const CHANNELS = new Set(["web", "reddit", "youtube", "xiaohongshu", "weibo", "tieba", "bilibili", "percent"]);
+/** 百分点 Mediaforce sensitive posts keep their original platform for display and stats. */
+const PERCENT_PLATFORMS = new Set(["douyin", "kuaishou", "zhihu", "xiaohongshu", "weibo", "wechat", "bilibili", "tieba", "web"]);
 /** Platforms only the Mac's logged-in browser collector sends (never Agent-Reach public routes). */
 const LOCAL_ONLY = new Set(["weibo", "tieba", "bilibili"]);
 /** Platforms the Mac collector reports heartbeats for (Xiaohongshu is shared with Agent-Reach). */
 const LOCAL_BROWSER = new Set([...LOCAL_ONLY, "xiaohongshu"]);
+/** Heartbeat names: local platforms plus the two vendor systems read through the Mac browser. */
+const REPORT_SOURCES = new Set([...LOCAL_BROWSER, "percent", "genoptima"]);
 /** Gossip-heavy local platforms whose medium alerts stay in the alert center (user choice 11-08). */
 const PUSH_HIGH_ONLY = new Set(["weibo", "tieba"]);
 export const LOCAL_HEALTH_KEY = "cf_local_source_health";
 
 export function dailyCap(platform: string): number {
   return PLATFORM_DAILY_CAPS[platform] ?? DAILY_CAP;
+}
+
+/** Receipt/cap bucket: 百分点 posts share one cap whatever their original platform. */
+export function capKey(post: DiscoveredPost): string {
+  return post.sourceName === "percent" ? "percent" : post.sourcePlatform;
 }
 
 export function authorized(header: string | null, token: string | undefined): boolean {
@@ -42,6 +53,7 @@ export function parsePost(value: unknown, now = Date.now()): DiscoveredPost {
   if (!/^[a-z0-9-]+(?:\.[a-z0-9-]+)+$/.test(host) || !/[a-z]{2,}$/.test(host) ||
       /(?:^|\.)(localhost|local|internal|test|example|invalid)$/.test(host)) throw new Error("Public host required");
   const belongs = (domain: string) => host === domain || host.endsWith(`.${domain}`);
+  if (p.channel === "percent") return parsePercentPost(p, url, now);
   const platform = belongs("reddit.com") ? "reddit"
     : belongs("youtube.com") || host === "youtu.be" ? "youtube"
     : belongs("xiaohongshu.com") || host === "xhslink.com" ? "xiaohongshu"
@@ -65,17 +77,80 @@ export function parsePost(value: unknown, now = Date.now()): DiscoveredPost {
   const local = LOCAL_ONLY.has(platform) || (LOCAL_BROWSER.has(platform) && p.collector === "local_browser");
   // Local posts (Weibo, Tieba threads, video titles, note titles) are often short; others keep 40.
   const minText = local ? 8 : 40;
+  const body = checkPostBody(p, minText, now);
+  return {
+    url: normalizeUrl(url.href), title: body.title, contentSnippet: body.text,
+    publishedAt: body.publishedAt, sourcePlatform: platform,
+    sourceName: local ? "local_browser" : "agent_reach",
+    fetchEngineHint: local ? "local_browser" : "agent_reach_public", fetchCostUsdHint: 0,
+  };
+}
+
+function checkPostBody(p: Record<string, unknown>, minText: number, now: number): { title: string; text: string; publishedAt: number } {
   if (typeof p.title !== "string" || !p.title.trim() || p.title.length > 512) throw new Error("Invalid title");
   if (typeof p.text !== "string" || p.text.trim().length < minText || p.text.length > 12_000) throw new Error("Invalid text");
   if (typeof p.publishedAt !== "number" || !Number.isFinite(p.publishedAt) ||
       p.publishedAt > now + 60 * 60_000 || p.publishedAt < now - 48 * 60 * 60_000) throw new Error("Verified publication within 48 hours required");
   if (p.access !== "public" || p.completenessVerified !== false) throw new Error("Public partial provenance required");
+  return { title: p.title.trim(), text: p.text.trim(), publishedAt: p.publishedAt };
+}
+
+/** A 百分点 Mediaforce item: any public article URL, labelled with the platform 百分点 reported. */
+function parsePercentPost(p: Record<string, unknown>, url: URL, now: number): DiscoveredPost {
+  const body = checkPostBody(p, 8, now);
+  const platform = typeof p.platform === "string" && PERCENT_PLATFORMS.has(p.platform) ? p.platform : "web";
   return {
-    url: normalizeUrl(url.href), title: p.title.trim(), contentSnippet: p.text.trim(),
-    publishedAt: p.publishedAt, sourcePlatform: platform,
-    sourceName: local ? "local_browser" : "agent_reach",
-    fetchEngineHint: local ? "local_browser" : "agent_reach_public", fetchCostUsdHint: 0,
+    url: normalizeUrl(url.href), title: body.title, contentSnippet: body.text,
+    publishedAt: body.publishedAt, sourcePlatform: platform,
+    sourceName: "percent", fetchEngineHint: "percent", fetchCostUsdHint: 0,
   };
+}
+
+export type ExternalGeoRecord = {
+  id: string; platform: string; question: string; answer: string; sentiment: string | null;
+  brandMentioned: number | null; brandRank: number | null; intentType: number | null;
+  references: string[]; referenceCount: number; competitors: string[]; queryTime: number;
+};
+
+const GEO_PLATFORMS = new Set(["wenxin", "kimi", "yuanbao", "doubao", "deepseek", "qianwen"]);
+const text = (v: unknown, max: number) => (typeof v === "string" ? v.slice(0, max) : "");
+const names = (v: unknown, max: number) =>
+  (Array.isArray(v) ? v : []).filter((x): x is string => typeof x === "string" && x.length > 0).slice(0, max).map(x => x.slice(0, 120));
+
+/** One 智推时代 GenOptima AI-answer batch: { source: "genoptima", records: [...] }. */
+export function parseExternalGeo(value: unknown, now = Date.now()): ExternalGeoRecord[] {
+  const body = value as { source?: unknown; records?: unknown } | null;
+  if (body?.source !== "genoptima" || !Array.isArray(body.records) || body.records.length === 0 || body.records.length > 100) {
+    throw new Error("Expected 1-100 genoptima records");
+  }
+  return body.records.map((raw) => {
+    const r = (raw || {}) as Record<string, unknown>;
+    if (typeof r.id !== "string" || !/^[\w-]{8,64}$/.test(r.id)) throw new Error("Invalid record id");
+    if (typeof r.platform !== "string" || !GEO_PLATFORMS.has(r.platform)) throw new Error("Unsupported AI platform");
+    if (typeof r.question !== "string" || !r.question.trim()) throw new Error("Invalid question");
+    if (typeof r.queryTime !== "number" || !Number.isFinite(r.queryTime) || r.queryTime > now + 3600_000 ||
+        r.queryTime < now - 60 * 86400_000) throw new Error("Invalid queryTime");
+    const sentiment = r.sentiment === "positive" || r.sentiment === "negative" || r.sentiment === "neutral" ? r.sentiment : null;
+    const int = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? Math.round(v) : null);
+    const mentioned = typeof r.brandMentioned === "boolean" ? Number(r.brandMentioned) : null;
+    return {
+      id: r.id, platform: r.platform, question: r.question.trim().slice(0, 500), answer: text(r.answer, 20_000),
+      sentiment, brandMentioned: mentioned, brandRank: int(r.brandRank), intentType: int(r.intentType),
+      references: names(r.references, 50), referenceCount: Math.max(0, int(r.referenceCount) ?? 0),
+      competitors: names(r.competitors, 20), queryTime: r.queryTime,
+    };
+  });
+}
+
+/** A vendor's daily summary snapshot, e.g. 百分点 totals and sensitive counts per platform. */
+export function parseExternalStats(value: unknown): { source: string; day: string; stats: string } {
+  const body = value as { source?: unknown; day?: unknown; stats?: unknown } | null;
+  if (body?.source !== "percent") throw new Error("Unsupported source");
+  if (typeof body.day !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(body.day)) throw new Error("Invalid day");
+  if (!body.stats || typeof body.stats !== "object" || Array.isArray(body.stats)) throw new Error("Invalid stats");
+  const stats = JSON.stringify(body.stats);
+  if (stats.length > 8000) throw new Error("Stats too large");
+  return { source: body.source, day: body.day, stats };
 }
 
 export type LocalHealthEntry = { lastRunAt: number; lastDiscoveredAt?: number; lastError?: string };
@@ -85,7 +160,7 @@ export function parseReport(value: unknown): Record<string, { discovered: number
   if (!platforms || typeof platforms !== "object") throw new Error("Expected platforms");
   const out: Record<string, { discovered: number; error?: string }> = {};
   for (const [name, raw] of Object.entries(platforms as Record<string, unknown>)) {
-    if (!LOCAL_BROWSER.has(name) || !raw || typeof raw !== "object") throw new Error("Unsupported platform");
+    if (!REPORT_SOURCES.has(name) || !raw || typeof raw !== "object") throw new Error("Unsupported platform");
     const r = raw as { discovered?: unknown; error?: unknown };
     if (typeof r.discovered !== "number" || !Number.isFinite(r.discovered) || r.discovered < 0) throw new Error("Invalid discovered");
     out[name] = { discovered: Math.floor(r.discovered), ...(typeof r.error === "string" && r.error ? { error: r.error.slice(0, 300) } : {}) };
@@ -109,7 +184,7 @@ export function mergeLocalHealth(
   return health;
 }
 
-async function readJson(request: Request): Promise<unknown> {
+async function readJson(request: Request, maxBytes = MAX_BODY_BYTES): Promise<unknown> {
   if (!request.body) throw new Error("Missing body");
   const reader = request.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -118,7 +193,7 @@ async function readJson(request: Request): Promise<unknown> {
     const { value, done } = await reader.read();
     if (done) break;
     size += value.byteLength;
-    if (size > MAX_BODY_BYTES) {
+    if (size > maxBytes) {
       await reader.cancel();
       throw new Error("Body too large");
     }
@@ -151,6 +226,28 @@ export default {
         .bind(LOCAL_HEALTH_KEY, JSON.stringify(health), Math.floor(Date.now() / 1000)).run();
       return Response.json({ ok: true, health });
     }
+    if (path === "/external-geo" && request.method === "POST") {
+      let records: ExternalGeoRecord[];
+      try { records = parseExternalGeo(await readJson(request, MAX_BATCH_BYTES)); }
+      catch (e) { return Response.json({ error: String((e as Error).message).slice(0, 160) }, { status: 400 }); }
+      const now = Date.now();
+      const results = await env.HYPERDRIVE.batch(records.map(r => env.HYPERDRIVE.prepare(`INSERT OR IGNORE INTO externalGeoAnswers
+        (id, source, platform, question, answer, sentiment, brandMentioned, brandRank, intentType, refs, referenceCount, competitors, queryTime, queryDay, createdAt)
+        VALUES (?, 'genoptima', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(
+        r.id, r.platform, r.question, r.answer, r.sentiment, r.brandMentioned, r.brandRank, r.intentType,
+        JSON.stringify(r.references), r.referenceCount, JSON.stringify(r.competitors), r.queryTime,
+        new Date(r.queryTime + 8 * 3600_000).toISOString().slice(0, 10), now)));
+      return Response.json({ received: records.length, inserted: results.reduce((n, x) => n + (x.meta.changes || 0), 0) });
+    }
+    if (path === "/external-stats" && request.method === "POST") {
+      let row: { source: string; day: string; stats: string };
+      try { row = parseExternalStats(await readJson(request)); }
+      catch (e) { return Response.json({ error: String((e as Error).message).slice(0, 160) }, { status: 400 }); }
+      await env.HYPERDRIVE.prepare(`INSERT INTO externalDailyStats (source, day, stats, updatedAt) VALUES (?, ?, ?, ?)
+        ON CONFLICT(source, day) DO UPDATE SET stats = excluded.stats, updatedAt = excluded.updatedAt`)
+        .bind(row.source, row.day, row.stats, Date.now()).run();
+      return Response.json({ ok: true });
+    }
     if (path !== "/ingest" || request.method !== "POST") return new Response(null, { status: 404 });
     if (!Number.isFinite(Date.parse(env.PILOT_END)) || Date.now() >= Date.parse(env.PILOT_END)) return Response.json({ error: "Pilot expired" }, { status: 410 });
     let post: DiscoveredPost;
@@ -161,7 +258,7 @@ export default {
     // A durable unique claim prevents timeout retries from spending AI tokens twice.
     const claim = await env.HYPERDRIVE.prepare(`INSERT OR IGNORE INTO agentReachReceipts (urlHash, day, platform, status, createdAt)
       SELECT ?, ?, ?, 'processing', ? WHERE (SELECT COUNT(*) FROM agentReachReceipts WHERE day = ? AND platform = ?) < ?`)
-      .bind(hash, day, post.sourcePlatform, Date.now(), day, post.sourcePlatform, dailyCap(post.sourcePlatform)).run();
+      .bind(hash, day, capKey(post), Date.now(), day, capKey(post), dailyCap(capKey(post))).run();
     if (!claim.meta.changes) {
       const existing = await env.HYPERDRIVE.prepare("SELECT status, result FROM agentReachReceipts WHERE urlHash = ?").bind(hash).first();
       return existing ? Response.json({ replay: true, ...existing }) : Response.json({ error: "Daily pilot cap reached" }, { status: 429 });
@@ -171,8 +268,8 @@ export default {
         runMonitorCycle({
           importPosts: [post],
           maxArticles: 1,
-          // Weibo/Tieba are high-volume and gossip-heavy: medium alerts go to the alert center only.
-          ...(PUSH_HIGH_ONLY.has(post.sourcePlatform) ? { alertPushMinSeverity: "high" as const } : {}),
+          // Weibo/Tieba and 百分点's bulk sensitive feed are noisy: medium alerts stay in the alert center.
+          ...(PUSH_HIGH_ONLY.has(post.sourcePlatform) || post.sourceName === "percent" ? { alertPushMinSeverity: "high" as const } : {}),
         })));
       const status = result.failed || result.analysisFailed ? "failed" : result.inserted ? "inserted" : "filtered_or_duplicate";
       await env.HYPERDRIVE.prepare("UPDATE agentReachReceipts SET status = ?, result = ? WHERE urlHash = ?")

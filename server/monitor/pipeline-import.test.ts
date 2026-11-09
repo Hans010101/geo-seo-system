@@ -33,6 +33,10 @@ it("labels Mac-browser posts as local_browser", async () => {
   await runMonitorCycle({ importPosts: [{ ...post(), sourceName: "local_browser", fetchEngineHint: "local_browser", sourcePlatform: "weibo" }], maxArticles: 1 });
   expect(m.db.createMonitorArticle).toHaveBeenCalledWith(expect.objectContaining({ fetchEngine: "local_browser" }));
 });
+it("labels 百分点 imports with their own engine and original platform", async () => {
+  await runMonitorCycle({ importPosts: [{ ...post(), sourceName: "percent", fetchEngineHint: "percent", sourcePlatform: "douyin" }], maxArticles: 1 });
+  expect(m.db.createMonitorArticle).toHaveBeenCalledWith(expect.objectContaining({ fetchEngine: "percent", sourcePlatform: "douyin" }));
+});
 it("does not discover anything on an empty import or admit irrelevant/old posts", async () => {
   await runMonitorCycle({ importPosts: [] });
   await runMonitorCycle({ importPosts: [{ ...post(), title: "电影 TRON 配乐", contentSnippet: "a film soundtrack" }, { ...post(), publishedAt: 1 }] });
