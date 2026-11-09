@@ -31,6 +31,7 @@ export const FETCH_ENGINE_LABELS: Record<string, string> = {
   social_browser: "Cloudflare 社媒浏览器",
   wechat_rss: "微信聚合 RSS",
   agent_reach_public: "Agent-Reach 公开内容（不保证完整）",
+  local_browser: "本机浏览器采集",
 };
 
 export const SOURCE_PLATFORM_META: Record<string, { label: string; color: string }> = {

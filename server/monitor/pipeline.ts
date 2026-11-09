@@ -229,7 +229,8 @@ export async function runMonitorCycle(opts?: MonitorCycleOptions): Promise<Monit
         if (opts?.importPosts !== undefined) {
           contentMd = (p.contentSnippet || "").slice(0, MAX_CONTENT_CHARS);
           title = p.title;
-          fetchEngine = "agent_reach_public";
+          // Mac-browser Weibo/Tieba posts are full post text, not the pilot's partial public reads.
+          fetchEngine = p.fetchEngineHint === "local_browser" ? "local_browser" : "agent_reach_public";
           fetchStatus = "partial";
         } else if (p.fullContent && p.fullContent.length > 0) {
           // Source (e.g. 币安广场 API, Gate list render) already returned full text → skip the fetch router.

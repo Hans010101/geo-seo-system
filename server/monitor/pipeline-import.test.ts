@@ -29,6 +29,10 @@ it("imports partial content through existing filters, analysis and alerting with
   expect(m.db.createMonitorArticle).toHaveBeenCalledWith(expect.objectContaining({ fetchStatus: "partial", fetchEngine: "agent_reach_public" }));
   expect(m.alert).toHaveBeenCalledOnce();
 });
+it("labels Mac-browser posts as local_browser", async () => {
+  await runMonitorCycle({ importPosts: [{ ...post(), sourceName: "local_browser", fetchEngineHint: "local_browser", sourcePlatform: "weibo" }], maxArticles: 1 });
+  expect(m.db.createMonitorArticle).toHaveBeenCalledWith(expect.objectContaining({ fetchEngine: "local_browser" }));
+});
 it("does not discover anything on an empty import or admit irrelevant/old posts", async () => {
   await runMonitorCycle({ importPosts: [] });
   await runMonitorCycle({ importPosts: [{ ...post(), title: "电影 TRON 配乐", contentSnippet: "a film soundtrack" }, { ...post(), publishedAt: 1 }] });
