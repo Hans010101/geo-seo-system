@@ -26,17 +26,18 @@ const sampleBrief: BriefData = {
 };
 
 describe("brief email", () => {
-  it("renders a text-first email with escaped content, sources and the web link", () => {
+  it("renders the approved layout with escaped content, sources, charts and a text part", () => {
     const { subject, html, text } = buildBriefEmail(sampleBrief, "https://trongeo.asia/briefs/2026-11-09-pm");
     expect(subject).toBe("🟡 TRON 舆情晚报｜11-09 周一｜关注（持平）");
     expect(html).toContain("&lt;script&gt;注入&lt;/script&gt;");
     expect(html).not.toContain("<script>");
     expect(html).not.toContain("javascript:alert");
-    expect(html).not.toMatch(/<img|<table/);
-    expect(html).toContain('<a href="https://toutiao.com/x">头条：标题</a>');
-    expect(text).toContain("【P2】孙宇晨与景甜彩礼纠纷　▼缓和　63 条（上期 91）");
-    expect(text).toContain("TRX $0.3172，24 小时 -0.99%");
-    expect(text).toContain("完整版：https://trongeo.asia/briefs/2026-11-09-pm");
+    expect(html).toContain("https://quickchart.io/chart?");
+    expect(html).toContain("市场走势");
+    expect(html).toMatch(/<a href="https:\/\/toutiao.com\/x" [^>]*>头条：标题<\/a>/);
+    expect(text).toContain("【P2】孙宇晨与景甜彩礼纠纷　▼ 缓和　63 条（上期 91）");
+    expect(text).toContain("TRX $0.3172，24h -0.99%");
+    expect(text).toContain("在线查看：https://trongeo.asia/briefs/2026-11-09-pm");
     expect(html).toContain("63 条（上期 91）");
     expect(html).toContain("https://trongeo.asia/briefs/2026-11-09-pm");
     expect(html).toContain("明日预判");
