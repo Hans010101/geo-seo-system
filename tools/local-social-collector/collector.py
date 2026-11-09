@@ -286,7 +286,10 @@ def xhs_time(text, now=None):
     m = re.match(r"(\d+)\s*(分钟|小时|天)前", text)
     if m:
         unit = {"分钟": "minutes", "小时": "hours", "天": "days"}[m.group(2)]
-        return int((now - dt.timedelta(**{unit: int(m.group(1))})).timestamp() * 1000)
+        delta = dt.timedelta(**{unit: int(m.group(1))})
+        if unit == "days":
+            delta += dt.timedelta(minutes=1)  # "2天前" is at least 48h old: keep it outside the window
+        return int((now - delta).timestamp() * 1000)
     m = re.match(r"(今天|昨天)\s*(\d{1,2}):(\d{2})", text)
     if m:
         day = now - dt.timedelta(days=1 if m.group(1) == "昨天" else 0)
@@ -346,19 +349,28 @@ def capture_json(page, needle):
 
 
 def sort_xhs_newest(page):
-    """Pick 最新 in the search filter so results are newest first; best effort."""
+    """Hover 筛选 and pick 排序依据 → 最新 so results are newest first; best effort."""
     try:
-        page.get_by_text("筛选", exact=True).first.hover(timeout=4000)
-        page.wait_for_timeout(800)
-        page.get_by_text("最新", exact=True).first.click(timeout=4000)
-        page.wait_for_timeout(2500)
+        page.locator("div.filter").first.hover(timeout=5000)
+        page.wait_for_timeout(1200)
+        page.get_by_text("最新", exact=True).filter(visible=True).first.click(timeout=5000)
+        page.wait_for_timeout(3500)
         return True
     except Exception:
         return False
 
 
+# The search page keeps its results in the Vue store (camelCase); read it after sorting.
+XHS_FEEDS_JS = """() => { const s = window.__INITIAL_STATE__ && window.__INITIAL_STATE__.search;
+  const f = s && s.feeds; const arr = f && (f._value || f.value || f._rawValue || f);
+  if (!Array.isArray(arr)) return [];
+  return arr.map(x => { const n = x.noteCard || x.note_card || {}; const u = n.user || {};
+    return { id: x.id, note_card: { display_title: n.displayTitle || n.display_title || '', desc: n.desc || '',
+      user: { nickname: u.nickname || u.nickName || u.nick_name || '' },
+      corner_tag_info: n.cornerTagInfo || n.corner_tag_info || [] } }; }); }"""
+
+
 def search_xhs(page, keyword):
-    notes, stop_notes = capture_json(page, "/api/sns/web/v1/search/notes")
     me, stop_me = capture_json(page, "/user/me")
     try:
         page.goto(XHS_SEARCH.format(urllib.parse.quote(keyword)), wait_until="domcontentloaded", timeout=45_000)
@@ -367,11 +379,9 @@ def search_xhs(page, keyword):
             raise NeedsUser("小红书要求安全验证，稍后再试或手动打开一次")
         if xhs_guest_flag(me) is True or "login" in page.url:
             raise NeedsUser("小红书未登录，需要运行 collector.py login xiaohongshu 扫码")
-        if sort_xhs_newest(page):
-            del notes[:-1]  # keep only the newest-sorted response
-        return xhs_posts(notes)
+        sort_xhs_newest(page)
+        return xhs_posts([{"data": {"items": page.evaluate(XHS_FEEDS_JS)}}])
     finally:
-        stop_notes()
         stop_me()
 
 
@@ -466,6 +476,8 @@ def deliver(cfg, db, platform, posts, stats):
             stats["errors"].append(f"ingest HTTP {status}")
             continue
         outcome = body.get("status") or ("rejected" if status == 400 else str(status))
+        if status == 400 and len(stats["errors"]) < 5:
+            stats["errors"].append(f"拒收 {post['url'][-24:]}：{body.get('error', '')}")
         db.execute("INSERT OR REPLACE INTO sent VALUES (?, ?, ?, ?, ?)", (key, platform, post["url"], outcome, now_ms()))
         db.commit()
         stats["sent"] += 1
@@ -521,7 +533,8 @@ def run(args):
                     stats["errors"].append(f"{keyword}: {str(error)[:160]}")
                     continue
                 stats["found"] += len(posts)
-                fresh = [p for p in posts if p["publishedAt"] and started - WINDOW_MS <= p["publishedAt"] <= started + 3600_000
+                # 1h margin: the ingest worker re-checks the 48h window minutes later, at delivery.
+                fresh = [p for p in posts if p["publishedAt"] and started - WINDOW_MS + 3600_000 <= p["publishedAt"] <= started + 3600_000
                          and mentions(keyword, p["title"] + " " + p["text"])]
                 stats["fresh"] += len(fresh)
                 if args.dry_run:

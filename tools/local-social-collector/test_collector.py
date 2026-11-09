@@ -60,7 +60,7 @@ def test_bilibili_posts():
 def test_xhs_times_and_posts():
     assert c.xhs_time("3小时前", NOW) == ms(NOW - dt.timedelta(hours=3))
     assert c.xhs_time("昨天 21:05", NOW) == ms(dt.datetime(2026, 11, 7, 21, 5, tzinfo=c.BJ))
-    assert c.xhs_time("2天前 上海", NOW) == ms(NOW - dt.timedelta(days=2))
+    assert c.xhs_time("2天前 上海", NOW) == ms(NOW - dt.timedelta(days=2, minutes=1))
     assert c.xhs_time("11-05", NOW) == ms(dt.datetime(2026, 11, 5, 12, tzinfo=c.BJ))
     payload = {"data": {"items": [
         {"id": "6720a1b2000000001b012345", "model_type": "note", "note_card": {
