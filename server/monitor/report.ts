@@ -6,6 +6,7 @@ import * as db from "../db";
 import { dispatchNotification } from "../_core/notification";
 import { citationReachSql, normSql, rawRows } from "./penetration";
 import { log, SHARED_PLATFORM_DOMAINS } from "./util";
+import { getMarketPeriodSummary, type MarketPeriodSummary } from "../market";
 import {
   comparisonWindow,
   dateRangePeriod,
@@ -64,6 +65,8 @@ export interface MonitorReportData {
     totalUsd: number;
     byEngine: Record<string, { articles: number; fetchUsd: number }>;
   };
+  /** 市场表现 (币价联动); absent in reports generated before the module existed or without prices. */
+  market?: MarketPeriodSummary | null;
 }
 
 async function periodStats(startMs: number, endMs: number) {
@@ -193,6 +196,14 @@ export async function buildMonitorReport(p: ReportPeriod, nowMs = Date.now()): P
     analysisUsd += Number(r.analysisUsd) || 0;
   }
 
+  // —— 市场表现 ——（币价缺失不影响舆情报告）
+  let market: MarketPeriodSummary | null = null;
+  try {
+    market = await getMarketPeriodSummary(startMs, endMs);
+  } catch (error: any) {
+    log.warn(`Market summary skipped: ${error?.message || error}`);
+  }
+
   return {
     periodLabel: `${fmtDate(startMs)} ~ ${fmtDate(endMs - 1)}`,
     overview: {
@@ -223,6 +234,7 @@ export async function buildMonitorReport(p: ReportPeriod, nowMs = Date.now()): P
       totalUsd: Math.round((analysisUsd + fetchUsd) * 1e6) / 1e6,
       byEngine,
     },
+    market,
   };
 }
 
@@ -250,6 +262,10 @@ export function buildReportDigest(p: ReportPeriod, d: MonitorReportData): { titl
     L.push(`敌对信源动态: ${d.sources.hostileActivity.slice(0, 3).map((h) => `${h.domain}(${h.articles}篇/负${h.negatives})`).join("、")}`);
   if (d.penetration.newlyAmplifiedHostile.length > 0)
     L.push(`⚠️ 新进入AI引用的风险信源: ${d.penetration.newlyAmplifiedHostile.slice(0, 3).map((x) => `${x.domain}(${x.aiPlatforms}平台)`).join("、")}`);
+  if (d.market && d.market.trx !== null) {
+    const f = (v: number | null) => (v === null ? "—" : `${v > 0 ? "+" : ""}${v.toFixed(2)}%`);
+    L.push(`💹 TRX ${f(d.market.trx)} | 大盘 ${f(d.market.benchmark)} | 超额 ${f(d.market.excess)} | 生态指数 ${f(d.market.tronIndex)}`);
+  }
   L.push(`本期成本 $${d.costs.totalUsd.toFixed(4)}`);
   return { title: `舆情${typeLabel} ${p.reportPeriod} · 新增${d.overview.total}/负面${d.overview.sentiment.negative}`, content: L.join("\n") };
 }

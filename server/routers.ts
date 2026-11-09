@@ -44,6 +44,7 @@ import {
   unbindTelegram,
 } from "./monitor/telegram-connect";
 import { isCloudflareRuntime } from "./runtime";
+import { getMarketLinkage, getMarketOverview, setMarketAlertSettings } from "./market";
 import { getExternalGeoAnswer, getExternalGeoOverview, listExternalGeoAnswers, listPercentDailyStats } from "./external";
 import { emptyAnswerError, shouldLimitReasoning } from "./llm-answer";
 import { dateRangePeriod, geoReportKey, parsePeriod, reportDateRangeSchema } from "../shared/report-period";
@@ -2892,6 +2893,24 @@ const externalRouter = router({
     .query(async ({ input }) => listPercentDailyStats(input.days)),
 });
 
+// ==================== 币价联动 ====================
+const marketRouter = router({
+  overview: protectedProcedure.query(async () => getMarketOverview()),
+  linkage: protectedProcedure
+    .input(z.object({ days: z.number().int().min(1).max(90) }))
+    .query(async ({ input }) => getMarketLinkage(input.days)),
+  setAlertSettings: adminProcedure
+    .input(z.object({
+      enabled: z.boolean(),
+      usddDepegPct: z.number().min(0.1).max(10),
+      trxExcessDropPct: z.number().min(1).max(50),
+    }))
+    .mutation(async ({ input }) => {
+      await setMarketAlertSettings(input);
+      return { success: true };
+    }),
+});
+
 // ==================== App Router ====================
 export const appRouter = router({
   system: systemRouter,
@@ -2928,6 +2947,7 @@ export const appRouter = router({
   notifications: notificationsRouter,
   monitor: monitorRouter,
   external: externalRouter,
+  market: marketRouter,
 });
 
 export type AppRouter = typeof appRouter;

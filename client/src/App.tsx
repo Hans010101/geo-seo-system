@@ -13,6 +13,7 @@ const Home = lazy(() => import("./pages/Home"));
 const QuestionDetail = lazy(() => import("./pages/QuestionDetail"));
 const CitationAnalysis = lazy(() => import("./pages/CitationAnalysis"));
 const ExternalMonitor = lazy(() => import("./pages/ExternalMonitor"));
+const MarketLinkage = lazy(() => import("./pages/MarketLinkage"));
 const WeeklyReports = lazy(() => import("./pages/WeeklyReports"));
 const AlertCenter = lazy(() => import("./pages/AlertCenter"));
 const ConfigQuestions = lazy(() => import("./pages/ConfigQuestions"));
@@ -43,6 +44,7 @@ function Router() {
           <Route path="/questions/:questionId" component={QuestionDetail} />
           <Route path="/citations" component={CitationAnalysis} />
           <Route path="/external" component={ExternalMonitor} />
+          <Route path="/market" component={MarketLinkage} />
           <Route path="/reports" component={WeeklyReports} />
           <Route path="/alerts" component={AlertCenter} />
           <Route path="/sentiment-monitor" component={SentimentMonitor} />

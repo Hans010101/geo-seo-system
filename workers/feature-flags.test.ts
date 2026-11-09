@@ -43,7 +43,8 @@ describe("Cloudflare migration feature flags", () => {
   it("gates news and social schedules independently", async () => {
     const news = envWith({ CLOUDFLARE_MONITOR_NEWS_ENABLED: "false" });
     await enqueueScheduledMonitor(Date.UTC(2026, 6, 29, 19, 15), news.env);
-    expect(news.sendBatch).not.toHaveBeenCalled();
+    // News off: only the market-price task (independent of the monitor flags) is queued at :15.
+    expect(news.sendBatch).toHaveBeenCalledWith([{ body: expect.objectContaining({ kind: "market_prices" }) }]);
 
     const social = envWith({ CLOUDFLARE_MONITOR_SOCIAL_ENABLED: "true" });
     await enqueueScheduledMonitor(Date.UTC(2026, 6, 29, 19, 40), social.env);

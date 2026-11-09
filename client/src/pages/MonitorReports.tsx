@@ -700,6 +700,44 @@ export default function MonitorReports() {
                   </CardContent>
                 </Card>
 
+                {/* 市场表现（币价联动） */}
+                {d.market ? (
+                  <Card>
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-sm">市场表现</CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-3">
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                        {([
+                          ["TRX", d.market.trx],
+                          ["TRON 生态指数", d.market.tronIndex],
+                          ["大盘（BTC/ETH/BNB/SOL）", d.market.benchmark],
+                          ["TRX 超额收益", d.market.excess],
+                        ] as [string, number | null][]).map(([label, value]) => (
+                          <div key={label} className="rounded-lg border px-3 py-2">
+                            <p className="text-xs text-muted-foreground">{label}</p>
+                            <p className={`text-sm font-semibold ${value === null ? "" : value >= 0 ? "text-green-600" : "text-red-600"}`}>
+                              {value === null ? "—" : `${value > 0 ? "+" : ""}${value.toFixed(2)}%`}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        {(d.market.tokens || [])
+                          .map((t: { symbol: string; change: number | null }) =>
+                            `${t.symbol} ${t.change === null ? "—" : `${t.change > 0 ? "+" : ""}${t.change.toFixed(2)}%`}`)
+                          .join(" · ")}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {d.market.worstDay ? `跑输大盘最多：${d.market.worstDay.day}（${d.market.worstDay.excess.toFixed(2)}%）` : ""}
+                        {d.market.bestDay ? `；跑赢最多：${d.market.bestDay.day}（${d.market.bestDay.excess > 0 ? "+" : ""}${d.market.bestDay.excess.toFixed(2)}%）` : ""}
+                        {d.market.usddMin !== null ? `；USDD 区间 $${d.market.usddMin.toFixed(4)}–$${d.market.usddMax.toFixed(4)}` : ""}
+                        。详见 <Link href="/market" className="underline">币价联动</Link>。
+                      </p>
+                    </CardContent>
+                  </Card>
+                ) : null}
+
                 {/* 成本 byEngine */}
                 <Card>
                   <CardHeader className="pb-2">
