@@ -85,7 +85,7 @@ export default function ConfigUsers() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight">用户管理</h1>
           <p className="text-muted-foreground text-sm mt-1">
-            管理系统用户和角色权限，共 {usersList?.length || 0} 个用户；打开“早晚报邮件”的用户每天 09:20 / 17:45 会收到早晚报（无需登录后台）
+            管理系统用户和角色权限，共 {usersList?.length || 0} 个用户；打开“早晚报邮件”的用户每天 09:30 / 17:30 会收到早晚报（无需登录后台）
           </p>
         </div>
         <div className="flex items-center gap-2 text-sm text-muted-foreground">

@@ -10,7 +10,7 @@ import {
 import { sendEmailAlert } from "../server/monitor/email-alert";
 import { dispatchNotification } from "../server/_core/notification";
 import { checkMarketAlerts } from "../server/market";
-import { generateBrief, getBriefSettings, runRequestedBrief } from "../server/brief";
+import { deliverScheduledBrief, generateBrief, getBriefSettings, runRequestedBrief } from "../server/brief";
 import { boundedJson } from "./bounded-json";
 import { cycleFailureReason } from "./cycle-failure";
 import {
@@ -237,6 +237,13 @@ type DailyBriefTask = {
   scheduledTime: number;
 };
 
+/** Sends the prepared brief at 09:30 / 17:30 (queued at :15 with a 15-minute delay). */
+type BriefSendTask = {
+  kind: "brief_send";
+  brief: "am" | "pm";
+  scheduledTime: number;
+};
+
 /** Checks sysConfigs daily_brief_request on every firing (one-off briefs without an admin login). */
 type BriefRequestTask = {
   kind: "brief_request";
@@ -306,6 +313,7 @@ export type QueueTask =
   | MaintenanceTask
   | MarketPricesTask
   | DailyBriefTask
+  | BriefSendTask
   | BriefRequestTask
   | FreshnessAuditTask
   | BinanceProbeTask
@@ -2875,9 +2883,15 @@ async function processTask(task: QueueTask, env: QueueEnv): Promise<void> {
     if (brief) console.log(JSON.stringify({ event: "daily_brief.requested", id: brief.id, emailed: brief.emailed, emailError: brief.emailError }));
     return;
   }
+  if (task.kind === "brief_send") {
+    const result = await deliverScheduledBrief(task.brief);
+    console.log(JSON.stringify({ event: "daily_brief.sent", ...result }));
+    return;
+  }
   if (task.kind === "daily_brief") {
     if (!(await getBriefSettings()).enabled) return;
-    const brief = await generateBrief({ kind: task.brief });
+    // Prepare only; brief_send delivers it at :30.
+    const brief = await generateBrief({ kind: task.brief, push: false, email: false });
     console.log(JSON.stringify({ event: "daily_brief", id: brief.id, events: brief.events.length, usage: brief.usage }));
     return;
   }
@@ -3051,9 +3065,13 @@ export async function enqueueScheduledMonitor(
     }
   }
   if (local.minute === 15) messages.push({ body: { kind: "market_prices", scheduledTime } });
-  // Daily briefs: 早报 09:20 and 晚报 17:45 (five minutes after the 09:15 / 17:40 cloud batches start).
-  const brief = local.hour === 9 && local.minute === 15 ? "am" : local.hour === 17 && local.minute === 40 ? "pm" : null;
-  if (brief) messages.push({ body: { kind: "daily_brief", brief, scheduledTime }, delaySeconds: 300 });
+  // Daily briefs: prepared at 09:18 / 17:18 (after the Mac's :05 run and this :15 batch start),
+  // sent at 09:30 / 17:30 sharp.
+  const brief = local.minute === 15 && (local.hour === 9 || local.hour === 17) ? (local.hour === 9 ? "am" : "pm") : null;
+  if (brief) {
+    messages.push({ body: { kind: "daily_brief", brief, scheduledTime }, delaySeconds: 180 });
+    messages.push({ body: { kind: "brief_send", brief, scheduledTime }, delaySeconds: 900 });
+  }
   messages.push({ body: { kind: "brief_request", scheduledTime } });
   if (messages.length > 0) await env.MONITOR_QUEUE.sendBatch(messages);
 }

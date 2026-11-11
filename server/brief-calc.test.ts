@@ -15,9 +15,9 @@ describe("daily brief", () => {
     expect([pm.start, pm.end]).toEqual([at(9, 0), at(9, 17, 45)]);
     expect(pm.compareStart).toBe(at(8, 0));
     expect(briefWindow("am", at(10, 9, 20), at(9, 17, 45)).start).toBe(at(9, 17, 45));
-    // No usable previous cutoff: fall back to 17:45 the day before.
-    expect(briefWindow("am", at(10, 9, 20), null).start).toBe(at(9, 17, 45));
-    expect(briefWindow("am", at(10, 9, 20), at(7, 17, 45)).start).toBe(at(9, 17, 45));
+    // No usable previous cutoff: fall back to 17:18 the day before (when the 晚报 data is prepared).
+    expect(briefWindow("am", at(10, 9, 20), null).start).toBe(at(9, 17, 18));
+    expect(briefWindow("am", at(10, 9, 20), at(7, 17, 45)).start).toBe(at(9, 17, 18));
   });
 
   it("puts numbers, asks, previous events and numbered items in the prompt", () => {

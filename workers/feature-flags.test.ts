@@ -141,14 +141,19 @@ describe("Cloudflare migration feature flags", () => {
     ]);
   });
 
-  it("queues the 早报 at 09:15 and the 晚报 at 17:40 with a five-minute delay", async () => {
+  it("prepares the 早报 / 晚报 at :18 and sends them at 09:30 / 17:30", async () => {
     const off = { CLOUDFLARE_MONITOR_NEWS_ENABLED: "false", CLOUDFLARE_MONITOR_SOCIAL_ENABLED: "false" };
     const am = envWith(off);
     await enqueueScheduledMonitor(Date.UTC(2026, 10, 9, 1, 15), am.env); // 09:15 Beijing
-    expect(am.sendBatch.mock.calls[0][0]).toContainEqual({ body: expect.objectContaining({ kind: "daily_brief", brief: "am" }), delaySeconds: 300 });
+    expect(am.sendBatch.mock.calls[0][0]).toContainEqual({ body: expect.objectContaining({ kind: "daily_brief", brief: "am" }), delaySeconds: 180 });
+    expect(am.sendBatch.mock.calls[0][0]).toContainEqual({ body: expect.objectContaining({ kind: "brief_send", brief: "am" }), delaySeconds: 900 });
     const pm = envWith(off);
-    await enqueueScheduledMonitor(Date.UTC(2026, 10, 9, 9, 40), pm.env); // 17:40 Beijing
-    expect(pm.sendBatch.mock.calls[0][0]).toContainEqual({ body: expect.objectContaining({ kind: "daily_brief", brief: "pm" }), delaySeconds: 300 });
+    await enqueueScheduledMonitor(Date.UTC(2026, 10, 9, 9, 15), pm.env); // 17:15 Beijing
+    expect(pm.sendBatch.mock.calls[0][0]).toContainEqual({ body: expect.objectContaining({ kind: "daily_brief", brief: "pm" }), delaySeconds: 180 });
+    expect(pm.sendBatch.mock.calls[0][0]).toContainEqual({ body: expect.objectContaining({ kind: "brief_send", brief: "pm" }), delaySeconds: 900 });
+    const late = envWith(off);
+    await enqueueScheduledMonitor(Date.UTC(2026, 10, 9, 9, 40), late.env); // 17:40: nothing brief-related any more
+    expect(JSON.stringify(late.sendBatch.mock.calls)).not.toContain("daily_brief");
     const other = envWith(off);
     await enqueueScheduledMonitor(Date.UTC(2026, 10, 9, 3, 15), other.env); // 11:15
     expect(JSON.stringify(other.sendBatch.mock.calls)).not.toContain("daily_brief");

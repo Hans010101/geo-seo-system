@@ -8,3 +8,5 @@ CREATE TABLE IF NOT EXISTS dailyBriefs (
   data TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS dailyBriefs_generated ON dailyBriefs(generatedAt);
+-- 2026-11-11: scheduled sends (09:30 / 17:30) mark delivery so queue retries never mail twice.
+-- (Run once on an existing table:) ALTER TABLE dailyBriefs ADD COLUMN deliveredAt INTEGER;

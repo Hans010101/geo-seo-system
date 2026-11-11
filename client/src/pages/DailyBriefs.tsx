@@ -255,7 +255,7 @@ function AdminBar() {
   if (!isAdmin || !settings) return null;
   return (
     <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-sm">
-      <label className="flex items-center gap-2"><Switch checked={settings.enabled} onCheckedChange={(v) => save.mutate({ ...settings, enabled: v })} />自动生成（09:20 / 17:45）</label>
+      <label className="flex items-center gap-2"><Switch checked={settings.enabled} onCheckedChange={(v) => save.mutate({ ...settings, enabled: v })} />自动发送（09:30 / 17:30）</label>
       <label className="flex items-center gap-2"><Switch checked={settings.email} onCheckedChange={(v) => save.mutate({ ...settings, email: v })} />发送邮件</label>
       <label className="flex items-center gap-2"><Switch checked={settings.push} onCheckedChange={(v) => save.mutate({ ...settings, push: v })} />推送 Telegram</label>
       {/* Manual runs email the brief when 发送邮件 is on; Telegram stays scheduled-only. */}
@@ -279,7 +279,7 @@ export default function DailyBriefs() {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">早晚报</h1>
-          <p className="text-muted-foreground text-sm mt-1">每日 09:20 早报、17:45 晚报，由系统汇总舆情、AI 回答与币价后自动生成</p>
+          <p className="text-muted-foreground text-sm mt-1">每日 09:30 早报、17:30 晚报（提前 15 分钟整理数据），由系统汇总舆情、AI 回答与币价后自动生成并发送</p>
         </div>
         {list && list.length ? (
           <Select value={id} onValueChange={(v) => navigate(`/briefs/${v}`)}>
@@ -294,7 +294,7 @@ export default function DailyBriefs() {
       </div>
       <AdminBar />
       {brief ? <BriefView brief={brief} /> : isLoading && id ? <p className="text-sm text-muted-foreground">加载中…</p>
-        : <div className="border bg-card p-6 text-sm text-muted-foreground">还没有早晚报。系统会在每天 09:20、17:45 自动生成；管理员也可以点上方按钮立即生成。</div>}
+        : <div className="border bg-card p-6 text-sm text-muted-foreground">还没有早晚报。系统会在每天 09:30、17:30 自动生成并发送；管理员也可以点上方按钮立即生成。</div>}
       {brief ? <Badge variant="outline" className="text-muted-foreground font-normal">{brief.model} · {brief.events.length} 个事件</Badge> : null}
     </div>
   );

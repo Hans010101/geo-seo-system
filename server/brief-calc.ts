@@ -15,12 +15,12 @@ export const bjHHMM = (ms: number) => new Date(ms + BJ).toISOString().slice(11, 
 export const bjMMDD = (ms: number) => new Date(ms + BJ).toISOString().slice(5, 10);
 export const weekday = (ms: number) => WEEKDAYS[new Date(ms + BJ).getUTCDay()];
 
-/** 早报 covers the night since the previous 晚报 cutoff (default 17:45); 晚报 covers today so far. */
+/** 早报 covers the night since the previous 晚报 cutoff (default 17:18, when 晚报 data is prepared); 晚报 covers today so far. */
 export function briefWindow(kind: BriefKind, now: number, previousEnd?: number | null) {
   const dayStart = bjDayStart(now);
   const start = kind === "pm"
     ? dayStart
-    : previousEnd && previousEnd < now && now - previousEnd < 30 * HOUR ? previousEnd : dayStart - DAY + 17.75 * HOUR;
+    : previousEnd && previousEnd < now && now - previousEnd < 30 * HOUR ? previousEnd : dayStart - DAY + 17.3 * HOUR;
   return { start, end: now, compareStart: start - DAY, compareEnd: now - DAY };
 }
 

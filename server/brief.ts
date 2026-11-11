@@ -1,6 +1,6 @@
 // Daily 早报 / 晚报: assembled from D1 (sentiment, vendors, prices), events and wording by one LLM
 // call, stored in D1 dailyBriefs, pushed to Telegram as the 5-line decision summary.
-// Scheduled from the cron queue (早报 09:20, 晚报 17:45) and runnable by an admin from the page.
+// Prepared by the cron queue at 09:18 / 17:18 and sent at 09:30 / 17:30; runnable by an admin from the page.
 import { getDb, getSysConfig, setSysConfig } from "./db";
 import { getCloudflareEnv } from "./_core/cloudflare-env";
 import { ENV } from "./_core/env";
@@ -337,7 +337,7 @@ export async function generateBrief(opts: { kind?: BriefKind; now?: number; push
     id: `${day}-${kind}`, kind, title: `TRON 舆情${BRIEF_LABEL[kind]}`,
     dateLabel: `${day.slice(0, 4)}年${day.slice(5, 7)}月${day.slice(8, 10)}日 ${weekday(now)}`,
     windowStart: win.start, windowEnd: win.end, generatedAt: Date.now(),
-    nextLabel: kind === "am" ? "今日 17:45 晚报" : "明日 09:20 早报",
+    nextLabel: kind === "am" ? "今日 17:30 晚报" : "明日 09:30 早报",
     verdict: { level: draft.level, change: draft.change, lead: draft.lead, points: draft.points },
     kpis: {
       high: cur.hi, highPrev: cmp.hi, medium: cur.med, mediumPrev: cmp.med, negative: cur.neg, negativePrev: cmp.neg,
@@ -349,27 +349,55 @@ export async function generateBrief(opts: { kind?: BriefKind; now?: number; push
     ON CONFLICT(id) DO UPDATE SET generatedAt = excluded.generatedAt, data = excluded.data`)
     .bind(data.id, kind, day, data.generatedAt, JSON.stringify(data)).run();
 
-  if (opts.push ?? settings.push) {
+  const push = opts.push ?? settings.push;
+  const email = opts.email ?? settings.email;
+  if (!push && !email) return data;
+  return { ...data, ...(await deliverBrief(data, { push, email })) };
+}
+
+/** Telegram 5-line summary and/or the email to every selected user. Never throws on send errors. */
+export async function deliverBrief(data: BriefData, opts: { push: boolean; email: boolean }) {
+  const link = `${SITE}/briefs/${data.id}`;
+  if (opts.push) {
     const msg = pushText({
-      kind, at: now, level: draft.level, change: draft.change, lead: draft.lead,
-      events: events.map(e => ({ short: e.short, title: e.title, trend: e.trend })),
-      trxPrice: market?.trx.price ?? null, trx24h: market?.trx.change24h ?? null, excess24h: market?.excess24h ?? null,
-      asks, link: `${SITE}/briefs/${data.id}`,
+      kind: data.kind, at: data.windowEnd, level: data.verdict.level, change: data.verdict.change, lead: data.verdict.lead,
+      events: data.events.map(e => ({ short: e.short, title: e.title, trend: e.trend })),
+      trxPrice: data.market?.trx.price ?? null, trx24h: data.market?.trx.change24h ?? null, excess24h: data.market?.excess24h ?? null,
+      asks: data.asks, link,
     });
     await dispatchNotification({ messageType: "batch_summary", title: msg.title, content: msg.content });
   }
-  if (opts.email ?? settings.email) {
-    // One message per selected user (用户管理 → 早晚报邮件); never throws.
-    const mail = buildBriefEmail(data, `${SITE}/briefs/${data.id}`);
-    const recipients = await resolveBriefRecipients();
-    const result = await sendEmailToEach(recipients, mail.subject, mail.html, mail.text);
-    return {
-      ...data, emailed: result.sent.length > 0, emailedTo: result.sent,
-      emailError: result.failed.length ? result.failed.map(f => `${f.to}: ${f.error}`).join("; ").slice(0, 300)
-        : recipients.length ? undefined : "没有选定收件人",
-    };
-  }
-  return data;
+  if (!opts.email) return {};
+  // One message per selected user (用户管理 → 早晚报邮件).
+  const mail = buildBriefEmail(data, link);
+  const recipients = await resolveBriefRecipients();
+  const result = await sendEmailToEach(recipients, mail.subject, mail.html, mail.text);
+  return {
+    emailed: result.sent.length > 0, emailedTo: result.sent,
+    emailError: result.failed.length ? result.failed.map(f => `${f.to}: ${f.error}`).join("; ").slice(0, 300)
+      : recipients.length ? undefined : "没有选定收件人",
+  };
+}
+
+/**
+ * Scheduled send (09:30 早报 / 17:30 晚报): deliver the brief prepared at :18 for this period, once.
+ * Throws while the brief is not ready yet so the queue retries a minute later.
+ */
+export async function deliverScheduledBrief(kind: BriefKind, now = Date.now()) {
+  const settings = await getBriefSettings();
+  if (!settings.enabled) return { skipped: "disabled" };
+  const id = `${bjDay(now)}-${kind}`;
+  const client = await d1();
+  const row = await client.prepare("SELECT data, deliveredAt FROM dailyBriefs WHERE id = ?").bind(id)
+    .first<{ data: string; deliveredAt: number | null }>();
+  if (!row) throw new Error(`brief ${id} not ready yet`);
+  if (row.deliveredAt) return { skipped: "already delivered", id };
+  // Claim before sending so a retry after a partial failure cannot mail everyone twice.
+  const claim = await client.prepare("UPDATE dailyBriefs SET deliveredAt = ? WHERE id = ? AND deliveredAt IS NULL")
+    .bind(now, id).run() as { meta?: { changes?: number } };
+  if (!claim.meta?.changes) return { skipped: "already delivered", id };
+  const result = await deliverBrief(JSON.parse(row.data) as BriefData, { push: settings.push, email: settings.email });
+  return { id, ...result };
 }
 
 export { platformCn };
