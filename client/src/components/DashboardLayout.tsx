@@ -24,23 +24,13 @@ import {
   LayoutDashboard,
   LogOut,
   PanelLeft,
-  FileBarChart,
-  Bell,
   Database,
-  Target,
   Globe,
-  ListChecks,
   Activity,
-  Clock,
-  Users,
-  Bell as BellIcon,
   Radar,
   ScanSearch,
-  Network,
   Mail,
   Bot,
-  Telescope,
-  CandlestickChart,
   Newspaper,
 } from "lucide-react";
 import { CSSProperties, FormEvent, useEffect, useRef, useState } from "react";
@@ -51,32 +41,69 @@ import { Input } from "./ui/input";
 import { trpc } from "@/lib/trpc";
 import { Separator } from "./ui/separator";
 
-const primaryMenuItems = [
-  { icon: LayoutDashboard, label: "工作台", path: "/", matches: ["/"] },
-  { icon: Radar, label: "舆情情报", path: "/sentiment-monitor", matches: ["/sentiment-monitor"] },
-  { icon: Newspaper, label: "早晚报", path: "/briefs", matches: ["/briefs"] },
-  { icon: Bot, label: "GEO 洞察", path: "/geo", matches: ["/geo", "/questions", "/citations"] },
-  { icon: Telescope, label: "外部监测", path: "/external", matches: ["/external"] },
-  { icon: Globe, label: "行业动态", path: "/industry", matches: ["/industry"] },
-  { icon: CandlestickChart, label: "币价联动", path: "/market", matches: ["/market"] },
-  { icon: Network, label: "联动分析", path: "/sentiment-monitor/penetration", matches: ["/sentiment-monitor/penetration"] },
-  { icon: Bell, label: "预警与处置", path: "/alerts", matches: ["/alerts"] },
-  { icon: FileBarChart, label: "报告中心", path: "/report-center", matches: ["/report-center", "/reports", "/sentiment-monitor/reports"] },
-  { icon: Activity, label: "运行中心", path: "/operations", matches: ["/operations"] },
+// Sidebar = 8 groups (was 20 entries, 11-11); pages inside a group are switched with the tab bar
+// above the content. Every URL stays the same.
+type NavTab = { label: string; path: string; prefixes?: string[]; developerOnly?: boolean };
+type NavGroup = { icon: typeof LayoutDashboard; label: string; tabs: NavTab[] };
+
+const primaryGroups: NavGroup[] = [
+  { icon: LayoutDashboard, label: "工作台", tabs: [{ label: "工作台", path: "/" }] },
+  {
+    icon: Radar, label: "舆情情报", tabs: [
+      { label: "舆情列表", path: "/sentiment-monitor" },
+      { label: "联动分析", path: "/sentiment-monitor/penetration" },
+      { label: "预警与处置", path: "/alerts" },
+    ],
+  },
+  {
+    icon: Newspaper, label: "早晚报与报告", tabs: [
+      { label: "早晚报", path: "/briefs", prefixes: ["/briefs/"] },
+      { label: "报告中心", path: "/report-center", prefixes: ["/reports", "/sentiment-monitor/reports"] },
+    ],
+  },
+  {
+    icon: Globe, label: "行业与币价", tabs: [
+      { label: "行业动态", path: "/industry", prefixes: ["/industry/"] },
+      { label: "币价联动", path: "/market" },
+    ],
+  },
+  {
+    icon: Bot, label: "GEO 洞察", tabs: [
+      { label: "GEO 洞察", path: "/geo", prefixes: ["/questions", "/citations"] },
+      { label: "外部监测", path: "/external" },
+    ],
+  },
 ];
 
-const configMenuItems = [
-  { icon: Database, label: "问题库管理", path: "/config/questions" },
-  { icon: Target, label: "目标事实", path: "/config/target-facts" },
-  { icon: ListChecks, label: "己方URL库", path: "/config/our-content" },
-  { icon: ScanSearch, label: "监控关键词", path: "/config/monitor-keywords" },
-  { icon: Globe, label: "平台配置", path: "/config/platforms" },
-  { icon: Activity, label: "采集管理", path: "/config/collection" },
-  { icon: Clock, label: "定时采集", path: "/config/scheduler" },
+const configGroups: NavGroup[] = [
+  {
+    icon: Database, label: "GEO 知识库", tabs: [
+      { label: "问题库管理", path: "/config/questions" },
+      { label: "目标事实", path: "/config/target-facts" },
+      { label: "己方 URL 库", path: "/config/our-content" },
+    ],
+  },
+  {
+    icon: ScanSearch, label: "采集配置", tabs: [
+      { label: "监控关键词", path: "/config/monitor-keywords" },
+      { label: "平台配置", path: "/config/platforms" },
+      { label: "采集管理", path: "/config/collection" },
+      { label: "定时采集", path: "/config/scheduler" },
+    ],
+  },
+  {
+    icon: Activity, label: "运行与系统", tabs: [
+      { label: "运行中心", path: "/operations" },
+      { label: "通知设置", path: "/config/notifications", developerOnly: true },
+      { label: "用户管理", path: "/config/users", developerOnly: true },
+    ],
+  },
 ];
 
-const isMenuActive = (location: string, item: { matches?: string[]; path: string }) =>
-  (item.matches ?? [item.path]).includes(location);
+const tabMatches = (location: string, tab: NavTab) =>
+  location === tab.path || (tab.prefixes ?? []).some(p => location === p || location.startsWith(p.endsWith("/") ? p : `${p}/`) || location.startsWith(`${p}?`));
+const visibleTabs = (group: NavGroup, isDeveloper: boolean) => group.tabs.filter(t => !t.developerOnly || isDeveloper);
+const activeTabOf = (location: string, group: NavGroup) => group.tabs.find(t => tabMatches(location, t));
 
 const SIDEBAR_WIDTH_KEY = "sidebar-width";
 const DEFAULT_WIDTH = 260;
@@ -371,8 +398,31 @@ function DashboardLayoutContent({
   const isCollapsed = state === "collapsed";
   const [isResizing, setIsResizing] = useState(false);
   const sidebarRef = useRef<HTMLDivElement>(null);
-  const allItems = [...primaryMenuItems, ...configMenuItems];
-  const activeMenuItem = allItems.find((item) => isMenuActive(location, item));
+  const isDeveloper = user?.role === "developer";
+  const allGroups = [...primaryGroups, ...configGroups];
+  const activeGroup = allGroups.find(g => activeTabOf(location, g));
+  const activeTab = activeGroup ? activeTabOf(location, activeGroup) : undefined;
+  const groupTabs = activeGroup ? visibleTabs(activeGroup, isDeveloper) : [];
+  const renderGroups = (groups: NavGroup[]) => groups.map(group => {
+    const tabs = visibleTabs(group, isDeveloper);
+    if (!tabs.length) return null;
+    const isActive = activeGroup === group;
+    // Clicking a group opens its first page (or stays on the current one inside it).
+    const target = isActive && activeTab ? activeTab.path : tabs[0].path;
+    return (
+      <SidebarMenuItem key={group.label}>
+        <SidebarMenuButton
+          isActive={isActive}
+          onClick={() => setLocation(target)}
+          tooltip={group.label}
+          className="h-9 transition-all font-normal text-sm"
+        >
+          <group.icon className={`h-4 w-4 ${isActive ? "text-sidebar-primary" : ""}`} />
+          <span>{group.label}</span>
+        </SidebarMenuButton>
+      </SidebarMenuItem>
+    );
+  });
   const isMobile = useIsMobile();
 
   useEffect(() => {
@@ -436,22 +486,7 @@ function DashboardLayoutContent({
                 </p>
               )}
               <SidebarMenu>
-                {primaryMenuItems.map((item) => {
-                  const isActive = isMenuActive(location, item);
-                  return (
-                    <SidebarMenuItem key={item.path}>
-                      <SidebarMenuButton
-                        isActive={isActive}
-                        onClick={() => setLocation(item.path)}
-                        tooltip={item.label}
-                        className="h-9 transition-all font-normal text-sm"
-                      >
-                        <item.icon className={`h-4 w-4 ${isActive ? "text-sidebar-primary" : ""}`} />
-                        <span>{item.label}</span>
-                      </SidebarMenuButton>
-                    </SidebarMenuItem>
-                  );
-                })}
+                {renderGroups(primaryGroups)}
               </SidebarMenu>
             </div>
 
@@ -463,48 +498,7 @@ function DashboardLayoutContent({
                 </p>
               )}
               <SidebarMenu>
-                {configMenuItems.map((item) => {
-                  const isActive = location === item.path;
-                  return (
-                    <SidebarMenuItem key={item.path}>
-                      <SidebarMenuButton
-                        isActive={isActive}
-                        onClick={() => setLocation(item.path)}
-                        tooltip={item.label}
-                        className="h-9 transition-all font-normal text-sm"
-                      >
-                        <item.icon className={`h-4 w-4 ${isActive ? "text-sidebar-primary" : ""}`} />
-                        <span>{item.label}</span>
-                      </SidebarMenuButton>
-                    </SidebarMenuItem>
-                  );
-                })}
-                {user?.role === "developer" && (
-                  <>
-                    <SidebarMenuItem>
-                      <SidebarMenuButton
-                        isActive={location === "/config/notifications"}
-                        onClick={() => setLocation("/config/notifications")}
-                        tooltip="通知设置"
-                        className="h-9 transition-all font-normal text-sm"
-                      >
-                        <BellIcon className={`h-4 w-4 ${location === "/config/notifications" ? "text-sidebar-primary" : ""}`} />
-                        <span>通知设置</span>
-                      </SidebarMenuButton>
-                    </SidebarMenuItem>
-                    <SidebarMenuItem>
-                      <SidebarMenuButton
-                        isActive={location === "/config/users"}
-                        onClick={() => setLocation("/config/users")}
-                        tooltip="用户管理"
-                        className="h-9 transition-all font-normal text-sm"
-                      >
-                        <Users className={`h-4 w-4 ${location === "/config/users" ? "text-sidebar-primary" : ""}`} />
-                        <span>用户管理</span>
-                      </SidebarMenuButton>
-                    </SidebarMenuItem>
-                  </>
-                )}
+                {renderGroups(configGroups)}
               </SidebarMenu>
             </div>
           </SidebarContent>
@@ -567,12 +561,30 @@ function DashboardLayoutContent({
             <div className="flex items-center gap-2">
               <SidebarTrigger className="h-9 w-9 rounded-lg bg-background" />
               <span className="tracking-tight text-foreground text-sm font-medium">
-                {activeMenuItem?.label ?? "TRON GEO 系统"}
+                {activeTab?.label ?? activeGroup?.label ?? "TRON GEO 系统"}
               </span>
             </div>
           </div>
         )}
-        <main className="flex-1 p-4 lg:p-6">{children}</main>
+        <main className="flex-1 p-4 lg:p-6">
+          {groupTabs.length > 1 ? (
+            <nav className="mb-4 -mt-1 flex flex-wrap gap-1 border-b" aria-label={activeGroup?.label}>
+              {groupTabs.map(tab => {
+                const on = tab === activeTab;
+                return (
+                  <button
+                    key={tab.path}
+                    onClick={() => setLocation(tab.path)}
+                    className={`px-3 py-2 text-sm -mb-px border-b-2 transition-colors ${on ? "border-primary text-foreground font-medium" : "border-transparent text-muted-foreground hover:text-foreground"}`}
+                  >
+                    {tab.label}
+                  </button>
+                );
+              })}
+            </nav>
+          ) : null}
+          {children}
+        </main>
       </SidebarInset>
     </>
   );
