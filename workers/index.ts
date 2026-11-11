@@ -19,7 +19,6 @@ if (typeof MessagePort === "undefined") {
 
 import { Hono } from "hono";
 import { boundedJson } from "./bounded-json";
-import { deleteCookie } from "hono/cookie";
 import { fetchRequestHandler } from "@trpc/server/adapters/fetch";
 import { sql } from "drizzle-orm";
 import { COOKIE_NAME } from "../shared/const";
@@ -155,7 +154,13 @@ app.post("/api/telegram/webhook", async (c) => {
 // ─── tRPC ───
 app.all("/api/trpc/*", async (c) => {
   const env = c.env;
+  // The tRPC fetch adapter builds its own Response, so a cookie deleted on the Hono context never
+  // reached the browser and 退出登录 kept the session. Emit the expiry through responseMeta instead.
+  let clearCookie = false;
   return fetchRequestHandler({
+    responseMeta: () => (clearCookie
+      ? { headers: { "set-cookie": `${COOKIE_NAME}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=None` } }
+      : {}),
     endpoint: "/api/trpc",
     req: c.req.raw,
     router: appRouter,
@@ -167,11 +172,7 @@ app.all("/api/trpc/*", async (c) => {
         res: null,
         user,
         clearSessionCookie: () => {
-          deleteCookie(c, COOKIE_NAME, {
-            path: "/",
-            sameSite: "None",
-            secure: true,
-          });
+          clearCookie = true;
         },
       };
     },
