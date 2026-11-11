@@ -237,7 +237,7 @@ export default function WeeklyReports() {
             <div className="space-y-4">
               {/* Summary */}
               <Card>
-                <CardHeader className="pb-3 flex-row items-start justify-between gap-3 space-y-0">
+                <CardHeader className="pb-3 flex-row flex-wrap items-start justify-between gap-3 space-y-0">
                   <div>
                     <CardTitle className="text-base font-semibold">
                       GEO {kind}总览
@@ -277,7 +277,7 @@ export default function WeeklyReports() {
                       );
                     const prev = summary.previous;
                     return (
-                      <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
+                      <div className="grid grid-cols-3 xl:grid-cols-6 gap-3">
                         <MetricCard
                           label="情感均值"
                           value={summary.overallSentimentAvg?.toFixed(1) || "—"}
