@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.trongeo.industry-agent</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>__ROOT__/venv/bin/python</string>
+		<string>__ROOT__/collector.py</string>
+		<string>industry</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PYTHONUNBUFFERED</key>
+		<string>1</string>
+	</dict>
+	<!-- 行业动态 agent: every 15 minutes, no browser. New items trigger the cloud triage at once. -->
+	<key>StartInterval</key>
+	<integer>900</integer>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>ProcessType</key>
+	<string>Background</string>
+	<key>StandardOutPath</key>
+	<string>__ROOT__/industry.log</string>
+	<key>StandardErrorPath</key>
+	<string>__ROOT__/industry-error.log</string>
+</dict>
+</plist>

@@ -11,7 +11,11 @@ import { parseIndustryBatch } from "../server/industry-calc";
 import { parseIndustryMetrics, parseIndustrySnapshot } from "../server/industry-metrics";
 import { storeIndustryItems, type D1Like as IndustryD1 } from "../server/industry";
 
-type IngestEnv = Omit<AgentReachEnv, "AI"> & { INGEST_TOKEN: string; AI: WorkersAiBinding };
+type IngestEnv = Omit<AgentReachEnv, "AI"> & {
+  INGEST_TOKEN: string; AI: WorkersAiBinding;
+  /** Producer on the cron worker's queue: new 行业动态 items trigger a triage right away. */
+  MONITOR_QUEUE?: { send(body: unknown): Promise<void> };
+};
 
 const MAX_BODY_BYTES = 48_000;
 /** External-GEO batches carry full AI answers (≈1.5 KB each, up to 100 per request). */
@@ -260,7 +264,12 @@ export default {
       const sources = (body as { sources?: unknown }).sources;
       const perSource = sources && typeof sources === "object" && !Array.isArray(sources) && JSON.stringify(sources).length < 4000
         ? sources as Record<string, unknown> : {};
-      return Response.json(await storeIndustryItems(env.HYPERDRIVE as unknown as IndustryD1, items, perSource));
+      const stored = await storeIndustryItems(env.HYPERDRIVE as unknown as IndustryD1, items, perSource);
+      if (stored.inserted > 0 && env.MONITOR_QUEUE) {
+        try { await env.MONITOR_QUEUE.send({ kind: "industry_triage", scheduledTime: Date.now() }); }
+        catch (e) { console.log(JSON.stringify({ event: "industry.trigger_failed", error: String((e as Error).message).slice(0, 120) })); }
+      }
+      return Response.json(stored);
     }
     if (path === "/industry-metrics" && request.method === "POST") {
       // Daily competitor / macro numbers (DefiLlama, Fear & Greed, Polymarket) from the Mac.

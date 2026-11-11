@@ -19,7 +19,13 @@ chmod 600 "$ROOT/config.json"
 sed "s#__ROOT__#$ROOT#g" "$HERE/$LABEL.plist" > "$PLIST"
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
-echo "已安装：新加坡时间 9、11、13、15、17、19、21、3 点的 :05 运行。首次请执行："
+# 行业动态 agent (every 15 minutes, no browser).
+AGENT_LABEL="com.trongeo.industry-agent"
+AGENT_PLIST="$HOME/Library/LaunchAgents/$AGENT_LABEL.plist"
+sed "s#__ROOT__#$ROOT#g" "$HERE/$AGENT_LABEL.plist" > "$AGENT_PLIST"
+launchctl bootout "gui/$(id -u)/$AGENT_LABEL" 2>/dev/null || true
+launchctl bootstrap "gui/$(id -u)" "$AGENT_PLIST"
+echo "已安装：浏览器采集在新加坡时间 9、11、13、15、17、19、21、3 点的 :05 运行；行业动态 agent 每 15 分钟运行。首次请执行："
 echo "  \"$ROOT/venv/bin/python\" \"$ROOT/collector.py\" login weibo"
 echo "  \"$ROOT/venv/bin/python\" \"$ROOT/collector.py\" login xiaohongshu"
 echo "  \"$ROOT/venv/bin/python\" \"$ROOT/collector.py\" login percent"

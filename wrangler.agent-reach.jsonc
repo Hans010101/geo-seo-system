@@ -17,5 +17,6 @@
     "database_id": "c5389b9d-218e-4e11-bb64-6659233d812f"
   }],
   "ai": { "binding": "AI" },
+  "queues": { "producers": [{ "binding": "MONITOR_QUEUE", "queue": "geo-seo-monitor" }] },
   "observability": { "enabled": true }
 }

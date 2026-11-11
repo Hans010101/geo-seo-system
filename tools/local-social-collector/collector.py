@@ -924,16 +924,6 @@ def run(args):
                 stats = {"found": 0, "errors": [f"{type(error).__name__}: {str(error)[:160]}"]}
             report["market"] = {"discovered": stats["found"], **({"error": stats["errors"][0]} if stats["errors"] else {})}
             log("platform", platform="market", **stats)
-        if not selected or "industry" in selected:
-            # 行业动态 feeds, macro prices and daily competitor numbers (industry.py); all public, keyless.
-            try:
-                stats = industry.collect(cfg, state, args.dry_run, post_json, SSL_CONTEXT)
-            except Exception as error:
-                stats = {"found": 0, "errors": [f"{type(error).__name__}: {str(error)[:160]}"]}
-            # One flaky feed is normal; only a failed upload or no items at all count as an error.
-            fatal = next((e for e in stats["errors"] if "上传失败" in e), None) or (stats["errors"][0] if stats["errors"] and not stats["found"] else None)
-            report["industry"] = {"discovered": stats["found"], **({"error": fatal[:200]} if fatal else {})}
-            log("platform", platform="industry", **stats)
         searches = (
             ("weibo", KEYWORDS, lambda kw: search_weibo(page, context, kw, since["weibo"])),
             ("tieba", TIEBA_KEYWORDS, lambda kw: search_tieba(page, kw)),
@@ -1146,6 +1136,45 @@ def status(_args):
     return 0
 
 
+# ---------------------------------------------------------------- 行业动态 agent
+INDUSTRY_STATE = ROOT / "industry-state.json"
+INDUSTRY_STATE_KEYS = ("industryMarks", "macroBackfilled", "industryMetricsAt", "industryMetricsBackfilled")
+
+
+def run_industry(args):
+    """行业动态 agent (own launchd job, every 15 minutes): feeds, macro prices, daily numbers.
+    No browser and its own lock/state file, so it runs alongside the slower browser collection."""
+    cfg = config()
+    lock = open(ROOT / "industry.lock", "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        log("skip", reason="another industry run is active")
+        return 0
+    try:
+        state = json.loads(INDUSTRY_STATE.read_text())
+    except (OSError, ValueError):
+        # First run: take over the marks the browser collector kept before 2026-11-11.
+        try:
+            old = json.loads(STATE.read_text())
+        except (OSError, ValueError):
+            old = {}
+        state = {k: old[k] for k in INDUSTRY_STATE_KEYS if k in old}
+    try:
+        stats = industry.collect(cfg, state, args.dry_run, post_json, SSL_CONTEXT)
+    except Exception as error:
+        stats = {"found": 0, "errors": [f"{type(error).__name__}: {str(error)[:160]}"]}
+    log("platform", platform="industry", **stats)
+    if args.dry_run:
+        return 0
+    INDUSTRY_STATE.write_text(json.dumps(state))
+    # One flaky feed is normal; only a failed upload or no items at all count as an error.
+    fatal = next((e for e in stats["errors"] if "上传失败" in e), None) or (stats["errors"][0] if stats["errors"] and not stats["found"] else None)
+    status, _ = post_json(cfg, "/report", {"platforms": {"industry": {"discovered": stats["found"], **({"error": fatal[:200]} if fatal else {})}}})
+    log("done", heartbeat=status)
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1160,6 +1189,9 @@ def main():
     plain.add_argument("--sites", help="comma-separated: weibo,xiaohongshu,percent,genoptima (default all)")
     plain.set_defaults(func=login_browser)
     sub.add_parser("status").set_defaults(func=status)
+    industry_parser = sub.add_parser("industry", help="行业动态 agent: feeds, macro prices, daily numbers (no browser)")
+    industry_parser.add_argument("--dry-run", action="store_true", help="fetch only; send nothing")
+    industry_parser.set_defaults(func=run_industry)
     args = parser.parse_args()
     return args.func(args)
 

@@ -29,6 +29,8 @@ const TRIAGE_STATUS_KEY = "industry_last_triage";
 const MODEL_KEY = "industry_model";
 const DEFAULT_MODEL = "anthropic/claude-haiku-5.5";
 const ALERTS_KEY = "industry_alerts_enabled";
+const LOCK_KEY = "industry_triage_lock";
+const LOCK_TTL_MS = 12 * 60_000;
 
 async function runBatches(client: D1Like, statements: D1Stmt[]) {
   for (let i = 0; i < statements.length; i += 50) await client.batch(statements.slice(i, i + 50));
@@ -87,11 +89,26 @@ async function callTriage(model: string, items: Pending[]): Promise<{ triage: Tr
 export async function triageIndustry(opts: { now?: number; maxBatches?: number } = {}) {
   const now = opts.now ?? Date.now();
   const client = await d1();
+  // One triage at a time: the Mac agent's ingest trigger, the cron fallback and the 立即分拣 button
+  // would otherwise classify (and count duplicates of) the same pending rows twice.
+  const lock = await client.prepare(`INSERT INTO sysConfigs (configKey, configValue, updatedAt) VALUES (?, ?, ?)
+    ON CONFLICT(configKey) DO UPDATE SET configValue = excluded.configValue, updatedAt = excluded.updatedAt
+    WHERE CAST(sysConfigs.configValue AS INTEGER) < ?`).bind(LOCK_KEY, String(now), Math.floor(now / 1000), now - LOCK_TTL_MS).run();
+  if (!lock.meta?.changes) return { at: now, busy: true, pending: 0, dups: 0, kept: 0, skipped: 0, failed: 0, tokens: 0, alertsSent: 0, model: "" };
+  try {
+    return await triageLocked(client, now, opts.maxBatches ?? 8);
+  } finally {
+    await client.prepare("UPDATE sysConfigs SET configValue = '0' WHERE configKey = ?").bind(LOCK_KEY).run();
+  }
+}
+
+async function triageLocked(client: D1Like, now: number, maxBatches: number) {
   const settings = await getIndustrySettings();
   await client.prepare("DELETE FROM industryNews WHERE publishedAt < ?").bind(now - RETENTION_DAYS * DAY).run();
 
+  // Newest first, so fresh news is on the page within minutes even while a backlog is being worked off.
   const pending = (await client.prepare(`SELECT id, source, title, excerpt, publishedAt, attempts FROM industryNews
-    WHERE status = 'new' AND attempts < 3 ORDER BY publishedAt LIMIT ?`).bind(BATCH * (opts.maxBatches ?? 8)).all<Pending>()).results;
+    WHERE status = 'new' AND attempts < 3 ORDER BY publishedAt DESC LIMIT ?`).bind(BATCH * maxBatches).all<Pending>()).results;
   const recent = (await client.prepare(`SELECT id, title, summary FROM industryNews
     WHERE status = 'done' AND dupOf IS NULL AND publishedAt >= ?`).bind(now - 2 * DAY)
     .all<{ id: string; title: string; summary: string | null }>()).results;
@@ -168,7 +185,7 @@ export async function triageIndustry(opts: { now?: number; maxBatches?: number }
 
   let alertsSent = 0;
   if (settings.alertsEnabled && alerts.length) alertsSent = await sendIndustryAlerts(client, alerts);
-  const summary = { at: now, pending: pending.length, dups, kept, skipped, failed, tokens, alertsSent, model: settings.model };
+  const summary = { at: now, busy: false, pending: pending.length, dups, kept, skipped, failed, tokens, alertsSent, model: settings.model };
   await setSysConfig(TRIAGE_STATUS_KEY, JSON.stringify(summary));
   return summary;
 }
@@ -261,13 +278,14 @@ export async function topIndustry(from: number, to: number, limit = 300) {
 export async function getIndustryStatus(now = Date.now()) {
   const client = await d1();
   const parse = (s: string | null) => { try { return s ? JSON.parse(s) : null; } catch { return null; } };
-  const [fetch, triage, settings, pending, day] = await Promise.all([
+  const [fetch, triage, settings, pending, day, latest] = await Promise.all([
     getSysConfig(INDUSTRY_FETCH_KEY).then(parse),
     getSysConfig(TRIAGE_STATUS_KEY).then(parse),
     getIndustrySettings(),
     client.prepare("SELECT COUNT(*) AS n FROM industryNews WHERE status = 'new' AND attempts < 3").first<{ n: number }>(),
     client.prepare(`SELECT COUNT(*) AS raw, SUM(status = 'done') AS kept, SUM(status = 'dup') AS dups
       FROM industryNews WHERE publishedAt >= ?`).bind(now - DAY).first<{ raw: number; kept: number; dups: number }>(),
+    client.prepare("SELECT MAX(publishedAt) AS t FROM industryNews WHERE status = 'done'").first<{ t: number | null }>(),
   ]);
-  return { fetch, triage, settings, pending: pending?.n ?? 0, last24h: day };
+  return { fetch, triage, settings, pending: pending?.n ?? 0, last24h: day, latest: latest?.t ? Number(latest.t) : null };
 }

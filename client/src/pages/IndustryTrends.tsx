@@ -85,7 +85,11 @@ function NewsTab() {
   const { data, isLoading } = trpc.industry.list.useQuery(input, { staleTime: 60_000 });
   const { data: status } = trpc.industry.status.useQuery(undefined, { staleTime: 60_000 });
   const triage = trpc.industry.triageNow.useMutation({
-    onSuccess: r => { toast.success(`已分拣：保留 ${r.kept}，合并重复 ${r.dups}，忽略 ${r.skipped}`); utils.industry.invalidate(); },
+    onSuccess: r => {
+      if (r.busy) toast.info("后台正在分拣，稍后刷新即可");
+      else toast.success(`已分拣：保留 ${r.kept}，合并重复 ${r.dups}，忽略 ${r.skipped}`);
+      utils.industry.invalidate();
+    },
     onError: e => toast.error(e.message),
   });
   const setAlerts = trpc.industry.setAlerts.useMutation({ onSuccess: () => utils.industry.status.invalidate() });
@@ -149,6 +153,7 @@ function NewsTab() {
         <CardContent className="py-3 flex flex-wrap items-center gap-x-6 gap-y-2 text-xs text-muted-foreground">
           <span>采集：{status?.fetch?.at ? `${bjTime(status.fetch.at)}（本次新增 ${status.fetch.inserted}）` : "尚未收到"}</span>
           <span>分拣：{status?.triage?.at ? `${bjTime(status.triage.at)}（保留 ${status.triage.kept}，合并 ${status.triage.dups}）` : "—"}</span>
+          <span>最新一条 {status?.latest ? bjTime(status.latest) : "—"}</span>
           <span>待分拣 {status?.pending ?? "—"} 条</span>
           <span>近 24 小时原始 {status?.last24h?.raw ?? "—"} 条 → 保留 {status?.last24h?.kept ?? "—"} 条</span>
           {isAdmin ? (
