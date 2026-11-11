@@ -45,14 +45,6 @@ export default function ReportsCenter() {
           </CardContent>
         </Card>
       </section>
-
-      <Card>
-        <CardContent className="grid gap-5 p-5 md:grid-cols-3">
-          <ReportRule title="面向决策" text="首页先呈现异常、变化和待办，报告保留完整证据。" />
-          <ReportRule title="双域分离" text="舆情报告与 GEO 报告独立生成，避免指标混淆。" />
-          <ReportRule title="可继续追溯" text="从报告返回原始文章、信源或模型回答完成复核。" />
-        </CardContent>
-      </Card>
     </div>
   );
 }
@@ -67,4 +59,3 @@ function ReportRow({ href, period, generatedAt, kind }: { href: string; period: 
 }
 
 function Empty() { return <p className="py-8 text-center text-sm text-muted-foreground">暂无报告</p>; }
-function ReportRule({ title, text }: { title: string; text: string }) { return <div><p className="text-sm font-medium">{title}</p><p className="mt-1 text-xs leading-5 text-muted-foreground">{text}</p></div>; }
