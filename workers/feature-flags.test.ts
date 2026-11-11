@@ -12,11 +12,11 @@ function envWith(overrides: Record<string, string> = {}) {
   return {
     env: {
       MONITOR_QUEUE: {
-        // Every firing also queues the one-off brief-request check; it is asserted in its own
-        // test, so the schedule assertions below see the batch without it.
+        // Every firing also queues the one-off brief-request check and the 行业动态 triage; they
+        // are asserted in their own tests, so the schedule assertions below see the batch without them.
         sendBatch: async (messages: Array<{ body: QueueTask }>) => {
           allBatches.push(messages);
-          const rest = messages.filter(m => m.body.kind !== "brief_request");
+          const rest = messages.filter(m => m.body.kind !== "brief_request" && m.body.kind !== "industry_triage");
           if (rest.length) await sendBatch(rest);
         },
       },
@@ -157,6 +157,20 @@ describe("Cloudflare migration feature flags", () => {
     const other = envWith(off);
     await enqueueScheduledMonitor(Date.UTC(2026, 10, 9, 3, 15), other.env); // 11:15
     expect(JSON.stringify(other.sendBatch.mock.calls)).not.toContain("daily_brief");
+  });
+
+  it("triages 行业动态 on every firing and queues the 行业周报 on Friday 19:15", async () => {
+    for (const minute of [15, 40]) {
+      const env = envWith();
+      await enqueueScheduledMonitor(Date.UTC(2026, 10, 9, 5, minute), env.env);
+      expect(env.allBatches[0]).toContainEqual({ body: expect.objectContaining({ kind: "industry_triage" }) });
+    }
+    const friday = envWith();
+    await enqueueScheduledMonitor(Date.UTC(2026, 10, 13, 11, 15), friday.env); // Fri 19:15 Beijing
+    expect(friday.allBatches[0]).toContainEqual({ body: expect.objectContaining({ kind: "industry_weekly" }), delaySeconds: 300 });
+    const thursday = envWith();
+    await enqueueScheduledMonitor(Date.UTC(2026, 10, 12, 11, 15), thursday.env);
+    expect(JSON.stringify(thursday.allBatches)).not.toContain("industry_weekly");
   });
 
   it("checks for a one-off brief request on every firing", async () => {

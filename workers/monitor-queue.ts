@@ -10,6 +10,9 @@ import {
 import { sendEmailAlert } from "../server/monitor/email-alert";
 import { dispatchNotification } from "../server/_core/notification";
 import { checkMarketAlerts } from "../server/market";
+import { getIndustrySettings, triageIndustry } from "../server/industry";
+import { checkMacroAlerts } from "../server/industry-metrics";
+import { generateIndustryWeekly } from "../server/industry-weekly";
 import { deliverScheduledBrief, generateBrief, getBriefSettings, runRequestedBrief } from "../server/brief";
 import { boundedJson } from "./bounded-json";
 import { cycleFailureReason } from "./cycle-failure";
@@ -250,6 +253,18 @@ type BriefRequestTask = {
   scheduledTime: number;
 };
 
+/** 行业动态: triage new feed items (and macro big-move alerts) on every firing. */
+type IndustryTriageTask = {
+  kind: "industry_triage";
+  scheduledTime: number;
+};
+
+/** 行业周报, Fridays 19:15 Beijing. */
+type IndustryWeeklyTask = {
+  kind: "industry_weekly";
+  scheduledTime: number;
+};
+
 type FreshnessAuditTask = {
   kind: "freshness_audit";
   auditId: string;
@@ -315,6 +330,8 @@ export type QueueTask =
   | DailyBriefTask
   | BriefSendTask
   | BriefRequestTask
+  | IndustryTriageTask
+  | IndustryWeeklyTask
   | FreshnessAuditTask
   | BinanceProbeTask
   | GeoDailyShardTask
@@ -2895,6 +2912,18 @@ async function processTask(task: QueueTask, env: QueueEnv): Promise<void> {
     console.log(JSON.stringify({ event: "daily_brief", id: brief.id, events: brief.events.length, usage: brief.usage }));
     return;
   }
+  if (task.kind === "industry_triage") {
+    const summary = await triageIndustry();
+    let macroAlerts = 0;
+    if ((await getIndustrySettings()).alertsEnabled) macroAlerts = await checkMacroAlerts();
+    console.log(JSON.stringify({ event: "industry.triage", ...summary, macroAlerts }));
+    return;
+  }
+  if (task.kind === "industry_weekly") {
+    const weekly = await generateIndustryWeekly();
+    console.log(JSON.stringify({ event: "industry.weekly", id: weekly.id, events: weekly.events.length }));
+    return;
+  }
   if (task.kind === "market_prices") {
     // Prices arrive from the Mac collector (exchanges refuse Cloudflare IPs); here we only alert.
     const summary = await checkMarketAlerts();
@@ -3073,5 +3102,9 @@ export async function enqueueScheduledMonitor(
     messages.push({ body: { kind: "brief_send", brief, scheduledTime }, delaySeconds: 900 });
   }
   messages.push({ body: { kind: "brief_request", scheduledTime } });
+  messages.push({ body: { kind: "industry_triage", scheduledTime } });
+  if (local.weekday === 5 && local.hour === 19 && local.minute === 15) {
+    messages.push({ body: { kind: "industry_weekly", scheduledTime }, delaySeconds: 300 });
+  }
   if (messages.length > 0) await env.MONITOR_QUEUE.sendBatch(messages);
 }

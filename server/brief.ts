@@ -228,7 +228,7 @@ async function geoLine(client: D1Like, now: number): Promise<string> {
 async function findAsks(now: number): Promise<string[]> {
   const asks: string[] = [];
   const labels: Record<string, string> = {
-    weibo: "微博", xiaohongshu: "小红书", tieba: "贴吧", bilibili: "B站", percent: "百分点", genoptima: "智推时代", market: "币价",
+    weibo: "微博", xiaohongshu: "小红书", tieba: "贴吧", bilibili: "B站", percent: "百分点", genoptima: "智推时代", market: "币价", industry: "行业动态",
   };
   try {
     const local = JSON.parse((await getSysConfig("cf_local_source_health")) || "{}") as Record<string, { lastRunAt?: number; lastDiscoveredAt?: number; lastError?: string }>;

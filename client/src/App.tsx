@@ -15,6 +15,7 @@ const CitationAnalysis = lazy(() => import("./pages/CitationAnalysis"));
 const ExternalMonitor = lazy(() => import("./pages/ExternalMonitor"));
 const MarketLinkage = lazy(() => import("./pages/MarketLinkage"));
 const DailyBriefs = lazy(() => import("./pages/DailyBriefs"));
+const IndustryTrends = lazy(() => import("./pages/IndustryTrends"));
 const WeeklyReports = lazy(() => import("./pages/WeeklyReports"));
 const AlertCenter = lazy(() => import("./pages/AlertCenter"));
 const ConfigQuestions = lazy(() => import("./pages/ConfigQuestions"));
@@ -46,6 +47,9 @@ function Router() {
           <Route path="/citations" component={CitationAnalysis} />
           <Route path="/external" component={ExternalMonitor} />
           <Route path="/market" component={MarketLinkage} />
+          <Route path="/industry" component={IndustryTrends} />
+          <Route path="/industry/weekly/:id" component={IndustryTrends} />
+          <Route path="/industry/:tab" component={IndustryTrends} />
           <Route path="/briefs" component={DailyBriefs} />
           <Route path="/briefs/:id" component={DailyBriefs} />
           <Route path="/reports" component={WeeklyReports} />

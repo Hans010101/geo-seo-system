@@ -57,6 +57,7 @@ const primaryMenuItems = [
   { icon: Newspaper, label: "早晚报", path: "/briefs", matches: ["/briefs"] },
   { icon: Bot, label: "GEO 洞察", path: "/geo", matches: ["/geo", "/questions", "/citations"] },
   { icon: Telescope, label: "外部监测", path: "/external", matches: ["/external"] },
+  { icon: Globe, label: "行业动态", path: "/industry", matches: ["/industry"] },
   { icon: CandlestickChart, label: "币价联动", path: "/market", matches: ["/market"] },
   { icon: Network, label: "联动分析", path: "/sentiment-monitor/penetration", matches: ["/sentiment-monitor/penetration"] },
   { icon: Bell, label: "预警与处置", path: "/alerts", matches: ["/alerts"] },

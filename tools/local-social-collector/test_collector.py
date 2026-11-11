@@ -133,3 +133,31 @@ if __name__ == "__main__":
         if name.startswith("test_") and callable(fn):
             fn()
     print("ok")
+
+
+def test_industry_feed_parsing():
+    import industry
+    xml = """<rss><channel><item><title><![CDATA[ Tether 冻结 2100 万枚 USDT ]]></title>
+    <link>https://www.chaincatcher.com/article/1</link><pubDate>Wed, 11 Nov 2026 02:47:53 +0100</pubDate>
+    <description><![CDATA[<p>Tether &amp; 执法机构</p>]]></description></item>
+    <item><title>no date</title><link>https://x.test/2</link></item></channel></rss>"""
+    items = industry.parse_feed("chaincatcher", xml)
+    assert items == [{"source": "chaincatcher", "url": "https://www.chaincatcher.com/article/1", "title": "Tether 冻结 2100 万枚 USDT",
+                      "excerpt": "Tether & 执法机构", "publishedAt": 1794361673000}]
+
+
+def test_industry_yahoo_rows_whole_hours():
+    import industry
+    payload = {"chart": {"result": [{"timestamp": [1794321000, 1794324600, 1794328200],
+                                     "indicators": {"quote": [{"close": [4.91, None, 4.95]}]}}]}}
+    rows = industry.yahoo_rows("US10Y", payload)
+    assert [r["ts"] % 3600_000 for r in rows] == [0, 0]
+    assert [r["price"] for r in rows] == [4.91, 4.95]
+
+
+def test_industry_binance_items():
+    import industry
+    payload = {"data": {"catalogs": [{"catalogId": 48, "articles": [{"code": "abc", "title": "Binance Will List X", "releaseDate": 1794300000000}]},
+                                     {"catalogId": 51, "articles": [{"code": "api", "title": "API update", "releaseDate": 1794300000000}]}]}}
+    assert industry.binance_items(payload) == [{"source": "binance", "url": "https://www.binance.com/zh-CN/support/announcement/detail/abc",
+                                                "title": "[币安上币] Binance Will List X", "excerpt": "", "publishedAt": 1794300000000}]

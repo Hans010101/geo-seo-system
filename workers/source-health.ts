@@ -20,6 +20,7 @@ export const SOURCE_LABELS: Record<string, string> = {
   local_bilibili: "B站（本机采集）", local_xiaohongshu: "小红书（本机采集）",
   local_percent: "百分点舆情（本机采集）", local_genoptima: "智推时代 GEO（本机采集）",
   local_market: "币价（本机采集）",
+  local_industry: "行业动态（本机采集）",
 };
 
 /** Diagnostic source name → monitor_articles.sourcePlatform, used once to seed history. */

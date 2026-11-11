@@ -43,7 +43,19 @@ const BJ_OFFSET = 8 * HOUR;
 export type PriceRow = { symbol: string; ts: number; price: number; marketCap: number | null; volume: number | null };
 type ChartPoint = [number, number];
 
-const SYMBOLS = new Set(MARKET_TOKENS.map(t => t.symbol));
+/**
+ * 行业动态 · 宏观仪表: hourly macro series fetched by the Mac collector from Yahoo Finance and stored
+ * next to token prices. US10Y is the yield in percent (^TNX), not a price.
+ */
+export const MACRO_SERIES = [
+  { symbol: "NASDAQ", name: "纳斯达克", yahoo: "^IXIC" },
+  { symbol: "SPX", name: "标普 500", yahoo: "^GSPC" },
+  { symbol: "DXY", name: "美元指数", yahoo: "DX-Y.NYB" },
+  { symbol: "US10Y", name: "10 年期美债收益率", yahoo: "^TNX", unit: "%" },
+  { symbol: "GOLD", name: "黄金", yahoo: "GC=F" },
+] as const;
+
+const SYMBOLS = new Set<string>([...MARKET_TOKENS.map(t => t.symbol), ...MACRO_SERIES.map(m => m.symbol)]);
 
 /**
  * Validate a /market-prices batch from the Mac collector: known symbols, whole-hour timestamps

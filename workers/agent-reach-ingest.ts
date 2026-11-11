@@ -7,6 +7,9 @@ import type { DiscoveredPost } from "../server/monitor/sources/types";
 import type { WorkersAiBinding } from "../server/_core/cloudflare-env";
 import { parseMarketRows } from "../server/market-calc";
 import { storeMarketRows, type D1Like } from "../server/market";
+import { parseIndustryBatch } from "../server/industry-calc";
+import { parseIndustryMetrics, parseIndustrySnapshot } from "../server/industry-metrics";
+import { storeIndustryItems, type D1Like as IndustryD1 } from "../server/industry";
 
 type IngestEnv = Omit<AgentReachEnv, "AI"> & { INGEST_TOKEN: string; AI: WorkersAiBinding };
 
@@ -24,7 +27,7 @@ const LOCAL_ONLY = new Set(["weibo", "tieba", "bilibili"]);
 /** Platforms the Mac collector reports heartbeats for (Xiaohongshu is shared with Agent-Reach). */
 const LOCAL_BROWSER = new Set([...LOCAL_ONLY, "xiaohongshu"]);
 /** Heartbeat names: local platforms plus the two vendor systems read through the Mac browser. */
-const REPORT_SOURCES = new Set([...LOCAL_BROWSER, "percent", "genoptima", "market"]);
+const REPORT_SOURCES = new Set([...LOCAL_BROWSER, "percent", "genoptima", "market", "industry"]);
 /** Gossip-heavy local platforms whose medium alerts stay in the alert center (user choice 11-08). */
 const PUSH_HIGH_ONLY = new Set(["weibo", "tieba"]);
 export const LOCAL_HEALTH_KEY = "cf_local_source_health";
@@ -247,6 +250,38 @@ export default {
       try { rows = parseMarketRows(await readJson(request, MAX_BATCH_BYTES)); }
       catch (e) { return Response.json({ error: String((e as Error).message).slice(0, 160) }, { status: 400 }); }
       return Response.json(await storeMarketRows(env.HYPERDRIVE as unknown as D1Like, rows));
+    }
+    if (path === "/industry-news" && request.method === "POST") {
+      // 行业动态 feeds fetched hourly by the Mac; the cron queue triages them.
+      let body: unknown;
+      let items;
+      try { body = await readJson(request, MAX_BATCH_BYTES); items = parseIndustryBatch(body); }
+      catch (e) { return Response.json({ error: String((e as Error).message).slice(0, 160) }, { status: 400 }); }
+      const sources = (body as { sources?: unknown }).sources;
+      const perSource = sources && typeof sources === "object" && !Array.isArray(sources) && JSON.stringify(sources).length < 4000
+        ? sources as Record<string, unknown> : {};
+      return Response.json(await storeIndustryItems(env.HYPERDRIVE as unknown as IndustryD1, items, perSource));
+    }
+    if (path === "/industry-metrics" && request.method === "POST") {
+      // Daily competitor / macro numbers (DefiLlama, Fear & Greed, Polymarket) from the Mac.
+      let rows;
+      try { rows = parseIndustryMetrics(await readJson(request, MAX_BATCH_BYTES)); }
+      catch (e) { return Response.json({ error: String((e as Error).message).slice(0, 160) }, { status: 400 }); }
+      const db = env.HYPERDRIVE as unknown as IndustryD1;
+      const statements = rows.map(r => db.prepare(`INSERT INTO industryMetrics (day, entity, metric, value, updatedAt) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(day, entity, metric) DO UPDATE SET value = excluded.value, updatedAt = excluded.updatedAt`)
+        .bind(r.day, r.entity, r.metric, r.value, Date.now()));
+      for (let i = 0; i < statements.length; i += 50) await db.batch(statements.slice(i, i + 50));
+      return Response.json({ stored: rows.length });
+    }
+    if (path === "/industry-snapshot" && request.method === "POST") {
+      let snap;
+      try { snap = parseIndustrySnapshot(await readJson(request, 200_000)); }
+      catch (e) { return Response.json({ error: String((e as Error).message).slice(0, 160) }, { status: 400 }); }
+      await env.HYPERDRIVE.prepare(`INSERT INTO sysConfigs (configKey, configValue, updatedAt) VALUES (?, ?, ?)
+        ON CONFLICT(configKey) DO UPDATE SET configValue = excluded.configValue, updatedAt = excluded.updatedAt`)
+        .bind(`industry_snapshot_${snap.kind}`, snap.data, Math.floor(Date.now() / 1000)).run();
+      return Response.json({ ok: true });
     }
     if (path === "/external-stats" && request.method === "POST") {
       let row: { source: string; day: string; stats: string };

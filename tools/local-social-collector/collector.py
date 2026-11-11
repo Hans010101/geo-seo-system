@@ -57,6 +57,8 @@ BILI_MAX_PAGES = 2
 STATE = ROOT / "state.json"
 BJ = dt.timezone(dt.timedelta(hours=8))
 SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import industry  # noqa: E402  (lives next to this file)
 WEIBO_LOGIN_URL = "https://passport.weibo.com/sso/signin?entry=miniblog&source=miniblog&url=https%3A%2F%2Fweibo.com%2F"
 
 
@@ -922,6 +924,16 @@ def run(args):
                 stats = {"found": 0, "errors": [f"{type(error).__name__}: {str(error)[:160]}"]}
             report["market"] = {"discovered": stats["found"], **({"error": stats["errors"][0]} if stats["errors"] else {})}
             log("platform", platform="market", **stats)
+        if not selected or "industry" in selected:
+            # 行业动态 feeds, macro prices and daily competitor numbers (industry.py); all public, keyless.
+            try:
+                stats = industry.collect(cfg, state, args.dry_run, post_json, SSL_CONTEXT)
+            except Exception as error:
+                stats = {"found": 0, "errors": [f"{type(error).__name__}: {str(error)[:160]}"]}
+            # One flaky feed is normal; only a failed upload or no items at all count as an error.
+            fatal = next((e for e in stats["errors"] if "上传失败" in e), None) or (stats["errors"][0] if stats["errors"] and not stats["found"] else None)
+            report["industry"] = {"discovered": stats["found"], **({"error": fatal[:200]} if fatal else {})}
+            log("platform", platform="industry", **stats)
         searches = (
             ("weibo", KEYWORDS, lambda kw: search_weibo(page, context, kw, since["weibo"])),
             ("tieba", TIEBA_KEYWORDS, lambda kw: search_tieba(page, kw)),

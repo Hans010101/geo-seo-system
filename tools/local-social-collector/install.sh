@@ -10,6 +10,7 @@ mkdir -p "$ROOT"
 [ -x "$ROOT/venv/bin/python" ] || python3 -m venv "$ROOT/venv"
 "$ROOT/venv/bin/pip" install -q --disable-pip-version-check playwright certifi
 cp "$HERE/collector.py" "$ROOT/collector.py"
+cp "$HERE/industry.py" "$ROOT/industry.py"
 if [ ! -f "$ROOT/config.json" ]; then
   echo "缺少 $ROOT/config.json（需要 endpoint 与 token，见 README）" >&2
   exit 1

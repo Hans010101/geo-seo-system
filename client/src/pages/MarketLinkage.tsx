@@ -6,7 +6,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { Link } from "wouter";
 import { toast } from "sonner";
 import {
   Bar, CartesianGrid, ComposedChart, Legend, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis,
@@ -127,6 +128,18 @@ function Linkage() {
   const events = [...(data?.events || [])].sort((a, b) => b.publishedAt - a.publishedAt);
   const step = data?.step ?? 3_600_000;
   const chart = (data?.chart || []).map(row => ({ ...row, label: bjTime(row.t, step < 86_400_000) }));
+  // 行业大事 markers (行业动态 module): pinned to the chart bucket they fall in, numbered in time order.
+  const { data: markerData } = trpc.industry.markers.useQuery({ days }, { staleTime: 300_000 });
+  const markers = useMemo(() => {
+    if (!chart.length) return [];
+    const picked = [...(markerData || [])].sort((a, b) => b.importance - a.importance || b.t - a.t).slice(0, 12)
+      .sort((a, b) => a.t - b.t);
+    return picked.map((m, i) => {
+      let row = chart[0];
+      for (const r of chart) if (r.t <= m.t) row = r;
+      return { ...m, n: i + 1, x: row.label, inRange: m.t >= chart[0].t };
+    }).filter(m => m.inRange);
+  }, [markerData, chart]);
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -161,11 +174,30 @@ function Linkage() {
                 <Line yAxisId="level" type="monotone" dataKey="tronIndex" name="TRON 生态指数" stroke="#f59e0b" dot={false} connectNulls />
                 <Line yAxisId="level" type="monotone" dataKey="benchmark" name="大盘" stroke="#64748b" dot={false} connectNulls />
                 <Line yAxisId="level" type="monotone" dataKey="relative" name="TRX 相对大盘" stroke="#2563eb" dot={false} strokeDasharray="4 3" connectNulls />
+                {markers.map(m => (
+                  <ReferenceLine key={m.n} yAxisId="level" x={m.x} stroke={m.importance >= 5 ? "#7c3aed" : "#a78bfa"} strokeDasharray="2 3"
+                    label={{ value: String(m.n), position: "insideTopLeft", fontSize: 10, fill: "#7c3aed" }} />
+                ))}
               </ComposedChart>
             </ResponsiveContainer>
           )}
         </CardContent>
       </Card>
+      {markers.length ? (
+        <Card>
+          <CardContent className="py-3 text-xs space-y-1">
+            <div className="font-medium text-sm mb-1">图中紫色竖线：行业大事 <Link href="/industry" className="text-muted-foreground font-normal underline">行业动态</Link></div>
+            {markers.map(m => (
+              <div key={m.n} className="flex gap-2">
+                <span className="text-violet-700 w-4 shrink-0">{m.n}</span>
+                <span className="text-muted-foreground w-[78px] shrink-0">{bjTime(m.t)}</span>
+                <a href={m.url} target="_blank" rel="noreferrer" className="hover:underline">{m.label}</a>
+                <span className="text-muted-foreground shrink-0 ml-auto">{m.category}</span>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      ) : null}
       {days > 30 ? <p className="text-xs text-muted-foreground -mt-2">舆情文章保留 30 天，更早的时段只有币价。</p> : null}
 
       <div className="grid gap-4 lg:grid-cols-2">

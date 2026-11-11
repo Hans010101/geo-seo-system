@@ -1,4 +1,7 @@
 import { COOKIE_NAME } from "@shared/const";
+import { getIndustryStatus, listIndustry, setIndustryAlerts, triageIndustry } from "./industry";
+import { getCompetitorDashboard, getIndustryMarkers, getMacroDashboard } from "./industry-metrics";
+import { generateIndustryWeekly, getIndustryWeekly, listIndustryWeekly } from "./industry-weekly";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, protectedProcedure, adminProcedure, developerProcedure, geoBatchProcedure, router } from "./_core/trpc";
@@ -2937,6 +2940,42 @@ const marketRouter = router({
     }),
 });
 
+const industryRouter = router({
+  list: protectedProcedure
+    .input(z.object({
+      days: z.number().int().min(1).max(120),
+      category: z.string().max(20).optional(),
+      entity: z.string().max(20).optional(),
+      minImportance: z.number().int().min(1).max(5).optional(),
+      tronOnly: z.boolean().optional(),
+      q: z.string().max(60).optional(),
+      limit: z.number().int().min(1).max(200).optional(),
+      offset: z.number().int().min(0).max(10000).optional(),
+    }))
+    .query(async ({ input }) => listIndustry(input)),
+  status: protectedProcedure.query(async () => getIndustryStatus()),
+  macro: protectedProcedure.query(async () => getMacroDashboard()),
+  competitors: protectedProcedure.query(async () => getCompetitorDashboard()),
+  markers: protectedProcedure
+    .input(z.object({ days: z.number().int().min(1).max(90) }))
+    .query(async ({ input }) => getIndustryMarkers(input.days)),
+  weeklyList: protectedProcedure.query(async () => listIndustryWeekly()),
+  weekly: protectedProcedure
+    .input(z.object({ id: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) }))
+    .query(async ({ input }) => getIndustryWeekly(input.id)),
+  generateWeekly: adminProcedure.mutation(async () => {
+    const weekly = await generateIndustryWeekly();
+    return { id: weekly.id };
+  }),
+  triageNow: adminProcedure.mutation(async () => triageIndustry({ maxBatches: 3 })),
+  setAlerts: adminProcedure
+    .input(z.object({ enabled: z.boolean() }))
+    .mutation(async ({ input }) => {
+      await setIndustryAlerts(input.enabled);
+      return { success: true };
+    }),
+});
+
 // ==================== App Router ====================
 export const appRouter = router({
   system: systemRouter,
@@ -2974,6 +3013,7 @@ export const appRouter = router({
   monitor: monitorRouter,
   external: externalRouter,
   market: marketRouter,
+  industry: industryRouter,
   briefs: briefsRouter,
 });
 
