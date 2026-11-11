@@ -193,8 +193,6 @@ function BriefView({ brief }: { brief: Brief }) {
             <div key={i} className={`px-3.5 py-2 text-sm ${i ? "border-t" : ""} ${it.tron ? "bg-yellow-50 dark:bg-yellow-950/30" : ""}`}>
               <span className="text-[11px] text-muted-foreground border px-1 mr-1.5 whitespace-nowrap">{it.categoryLabel}</span>
               <a href={it.url} target="_blank" rel="noreferrer" className="hover:underline">{it.summary}</a>
-              <span className="text-xs text-muted-foreground ml-2 whitespace-nowrap">{it.source}{it.sourceCount > 1 ? ` 等 ${it.sourceCount} 家` : ""}</span>
-              {it.tronNote ? <div className="text-xs text-amber-800 mt-0.5">与 TRON：{it.tronNote}</div> : null}
             </div>
           ))}
         </section>

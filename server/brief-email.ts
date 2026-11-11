@@ -160,9 +160,7 @@ export function buildBriefEmail(b: BriefData, link: string): { subject: string; 
   const ind = b.industry;
   const macroStrip = ind?.macro.map(x => `<span style="white-space:nowrap;margin-right:14px"><span style="color:${MUTED}">${esc(x.label)}</span> <b style="font-family:${MONO}">${esc(x.value)}</b>${x.change ? ` <span style="font-family:${MONO};color:${x.dir === "up" ? GOOD : x.dir === "down" ? RED : MUTED}">${esc(x.change)}</span>` : ""}</span>`).join("") || "";
   const industryRows = (ind?.items || []).map((it, i) => `<tr><td style="padding:8px 14px;${i ? `border-top:1px solid ${LINE};` : ""}${it.tron ? "background:#fff7d6;" : ""}font-size:14px">
-      <span style="color:${MUTED};font-size:11.5px;border:1px solid ${LINE};padding:0 5px;margin-right:6px;white-space:nowrap">${esc(it.categoryLabel)}</span>${safeUrl(it.url) ? `<a href="${esc(it.url)}" style="color:${INK};text-decoration:none">${esc(it.summary)}</a>` : esc(it.summary)}
-      <span style="color:${MUTED};font-size:12px;white-space:nowrap">　${esc(it.source)}${it.sourceCount > 1 ? ` 等 ${it.sourceCount} 家` : ""} · ${hhmm(it.publishedAt)}</span>
-      ${it.tronNote ? `<div style="font-size:12.5px;color:#92400e;margin-top:2px">与 TRON：${esc(it.tronNote)}</div>` : ""}</td></tr>`).join("");
+      <span style="color:${MUTED};font-size:11.5px;border:1px solid ${LINE};padding:0 5px;margin-right:6px;white-space:nowrap">${esc(it.categoryLabel)}</span>${safeUrl(it.url) ? `<a href="${esc(it.url)}" style="color:${INK};text-decoration:none">${esc(it.summary)}</a>` : esc(it.summary)}</td></tr>`).join("");
   const industry = ind && ind.items.length ? `${heading("行业动态")}
   <tr><td>${card(`${macroStrip ? `<tr><td style="padding:9px 14px;font-size:13px;background:#f8f6f1;border-bottom:1px solid ${LINE}">${macroStrip}</td></tr>` : ""}${industryRows}`)}
     <div style="font-size:12px;color:${MUTED};margin-top:4px">本时段行业快讯 ${ind.total} 条（已去重），按重要性选 ${ind.items.length} 条；黄色为与 TRON 相关。</div></td></tr>` : "";
@@ -229,7 +227,7 @@ export function buildBriefEmail(b: BriefData, link: string): { subject: string; 
     "【数据】", ...figures.map(x => `- ${x}`), "",
     ...(ind && ind.items.length ? [
       "【行业动态】", ind.macro.map(x => `${x.label} ${x.value}${x.change ? ` ${x.change}` : ""}`).join("　"),
-      ...ind.items.map(it => `- [${it.categoryLabel}] ${it.summary}${it.tronNote ? `（与 TRON：${it.tronNote}）` : ""}`), "",
+      ...ind.items.map(it => `- [${it.categoryLabel}] ${it.summary}`), "",
     ] : []),
     "【事件追踪】",
     ...b.events.flatMap(e => [
