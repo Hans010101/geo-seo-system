@@ -61,6 +61,47 @@ export async function sendEmailAlert(subject: string, html: string, text?: strin
   }
 }
 
+/**
+ * Send one message per recipient (no shared To/Cc, so addresses stay private and each mail reads as
+ * a personal message). Used by the daily briefs, whose recipients the developer picks in 用户管理;
+ * requires a verified sending domain (resend_from), unlike the test sender. Never throws.
+ */
+export async function sendEmailToEach(
+  recipients: string[], subject: string, html: string, text?: string,
+): Promise<{ sent: string[]; failed: { to: string; error: string }[] }> {
+  const sent: string[] = [];
+  const failed: { to: string; error: string }[] = [];
+  let apiKey: string | null = null;
+  let from = DEFAULT_FROM;
+  try {
+    ({ apiKey, from } = await getEmailAlertConfig());
+  } catch (e: any) {
+    return { sent, failed: recipients.map(to => ({ to, error: String(e?.message || e).slice(0, 200) })) };
+  }
+  if (!apiKey) return { sent, failed: recipients.map(to => ({ to, error: "Resend 未配置" })) };
+  for (const to of recipients) {
+    try {
+      const response = await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+          "User-Agent": "geo-seo-system/1.0",
+          "Idempotency-Key": `geo-brief-${sha256(`${to}\n${subject}\n${html}`).slice(0, 48)}`,
+        },
+        body: JSON.stringify({ from, to: [to], subject, html, ...(text ? { text } : {}) }),
+      });
+      const result = await response.json().catch(() => ({})) as Record<string, unknown>;
+      if (response.ok) sent.push(to);
+      else failed.push({ to, error: String(result.message || result.name || `HTTP ${response.status}`).slice(0, 200) });
+    } catch (e: any) {
+      failed.push({ to, error: String(e?.message || e).slice(0, 200) });
+    }
+  }
+  if (failed.length) log.warn(`brief email failed for ${failed.length} recipient(s): ${failed.map(f => f.error).join("; ").slice(0, 200)}`);
+  return { sent, failed };
+}
+
 // Escapes for BOTH text and double-quoted-attribute contexts: & < > " ' (url goes in an href="…").
 const esc = (s: string | null | undefined) =>
   String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");

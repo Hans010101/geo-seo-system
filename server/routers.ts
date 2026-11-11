@@ -45,7 +45,7 @@ import {
 } from "./monitor/telegram-connect";
 import { isCloudflareRuntime } from "./runtime";
 import { getMarketLinkage, getMarketOverview, setMarketAlertSettings } from "./market";
-import { generateBrief, getBrief, getBriefSettings, listBriefs, setBriefSettings } from "./brief";
+import { generateBrief, getBrief, getBriefRecipientIds, getBriefSettings, listBriefs, resolveBriefRecipients, setBriefRecipient, setBriefSettings } from "./brief";
 import { getExternalGeoAnswer, getExternalGeoOverview, listExternalGeoAnswers, listPercentDailyStats } from "./external";
 import { emptyAnswerError, shouldLimitReasoning } from "./llm-answer";
 import { dateRangePeriod, geoReportKey, parsePeriod, reportDateRangeSchema } from "../shared/report-period";
@@ -2899,6 +2899,13 @@ const briefsRouter = router({
   list: protectedProcedure.query(async () => listBriefs(40)),
   get: protectedProcedure.input(z.object({ id: z.string().max(20) })).query(async ({ input }) => getBrief(input.id)),
   settings: protectedProcedure.query(async () => getBriefSettings()),
+  // 早晚报邮件收件人：只有开发者（007）在用户管理里勾选。
+  recipients: developerProcedure.query(async () => ({
+    ids: await getBriefRecipientIds(), emails: await resolveBriefRecipients(),
+  })),
+  setRecipient: developerProcedure
+    .input(z.object({ userId: z.number().int().positive(), enabled: z.boolean() }))
+    .mutation(async ({ input }) => ({ ids: await setBriefRecipient(input.userId, input.enabled) })),
   setSettings: adminProcedure
     .input(z.object({ enabled: z.boolean(), push: z.boolean(), email: z.boolean() }))
     .mutation(async ({ input }) => { await setBriefSettings(input); return { success: true }; }),

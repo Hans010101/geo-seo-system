@@ -6,7 +6,8 @@ import { getCloudflareEnv } from "./_core/cloudflare-env";
 import { ENV } from "./_core/env";
 import { invokeLLM } from "./_core/llm";
 import { dispatchNotification } from "./_core/notification";
-import { sendEmailAlert } from "./monitor/email-alert";
+import { getEmailAlertConfig, sendEmailToEach } from "./monitor/email-alert";
+import { listUsers } from "./db";
 import { buildBriefEmail } from "./brief-email";
 import { excessReturn, priceAt, toSeries } from "./market-calc";
 import {
@@ -21,7 +22,7 @@ const POS = "relevance IN ('high','medium') AND sentimentScore >= 4";
 const SITE = "https://trongeo.asia";
 const KEYS = {
   enabled: "daily_brief_enabled", push: "daily_brief_push_enabled", email: "daily_brief_email_enabled",
-  model: "daily_brief_model", request: "daily_brief_request",
+  model: "daily_brief_model", request: "daily_brief_request", recipients: "daily_brief_recipients",
 } as const;
 const DEFAULT_MODEL = "anthropic/claude-sonnet-5.5";
 const COINS: [string, string][] = [["JST", "JUST"], ["BTT", "BitTorrent"], ["NFT", "APENFT"], ["WIN", "WINkLink"]];
@@ -74,6 +75,50 @@ export async function setBriefSettings(s: { enabled: boolean; push: boolean; ema
   await setSysConfig(KEYS.enabled, String(s.enabled));
   await setSysConfig(KEYS.push, String(s.push));
   await setSysConfig(KEYS.email, String(s.email));
+}
+
+/** User ids picked in 用户管理 to receive the briefs; null = never configured (fall back to the owner). */
+export async function getBriefRecipientIds(): Promise<number[] | null> {
+  const raw = await getSysConfig(KEYS.recipients);
+  if (raw === null || raw === undefined || raw === "") return null;
+  try {
+    const ids = JSON.parse(raw);
+    return Array.isArray(ids) ? ids.map(Number).filter(n => Number.isInteger(n) && n > 0) : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function setBriefRecipient(userId: number, enabled: boolean): Promise<number[]> {
+  // First change seeds the list with whoever receives today (the owner), so nobody drops off silently.
+  const current = (await getBriefRecipientIds()) ?? (await ownerIds());
+  const next = enabled ? Array.from(new Set([...current, userId])) : current.filter(id => id !== userId);
+  await setSysConfig(KEYS.recipients, JSON.stringify(next.sort((a, b) => a - b)));
+  return next;
+}
+
+/** Users whose address is the current owner recipient (alert_email_recipient / AUTH_ALLOWED_EMAIL). */
+async function ownerIds(): Promise<number[]> {
+  const { recipient } = await getEmailAlertConfig();
+  if (!recipient) return [];
+  const users = await listUsers();
+  return users.filter(u => (u.email || "").toLowerCase() === recipient.toLowerCase()).map(u => u.id);
+}
+
+/** Distinct, valid addresses of the selected, non-banned users (owner address when never configured). */
+export async function resolveBriefRecipients(): Promise<string[]> {
+  const ids = await getBriefRecipientIds();
+  if (ids === null) {
+    const { recipient } = await getEmailAlertConfig();
+    return recipient ? [recipient.toLowerCase()] : [];
+  }
+  const wanted = new Set(ids);
+  const users = await listUsers();
+  const emails = users
+    .filter(u => wanted.has(u.id) && !(u as { isBanned?: boolean }).isBanned)
+    .map(u => (u.email || "").trim().toLowerCase())
+    .filter(e => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e));
+  return Array.from(new Set(emails));
 }
 
 /**
@@ -223,7 +268,7 @@ export async function getBrief(id: string) {
 }
 
 /** Build, store and (optionally) push one brief. `kind` defaults from the Beijing hour. */
-export async function generateBrief(opts: { kind?: BriefKind; now?: number; push?: boolean; email?: boolean } = {}): Promise<BriefData & { emailed?: boolean; emailError?: string }> {
+export async function generateBrief(opts: { kind?: BriefKind; now?: number; push?: boolean; email?: boolean } = {}): Promise<BriefData & { emailed?: boolean; emailError?: string; emailedTo?: string[] }> {
   const now = opts.now ?? Date.now();
   const kind: BriefKind = opts.kind ?? (new Date(now + 8 * HOUR).getUTCHours() < 13 ? "am" : "pm");
   const client = await d1();
@@ -314,10 +359,15 @@ export async function generateBrief(opts: { kind?: BriefKind; now?: number; push
     await dispatchNotification({ messageType: "batch_summary", title: msg.title, content: msg.content });
   }
   if (opts.email ?? settings.email) {
-    // Locked recipient (alert_email_recipient, else the login allow-list address); never throws.
+    // One message per selected user (用户管理 → 早晚报邮件); never throws.
     const mail = buildBriefEmail(data, `${SITE}/briefs/${data.id}`);
-    const sent = await sendEmailAlert(mail.subject, mail.html, mail.text);
-    return { ...data, emailed: sent.sent, emailError: sent.error };
+    const recipients = await resolveBriefRecipients();
+    const result = await sendEmailToEach(recipients, mail.subject, mail.html, mail.text);
+    return {
+      ...data, emailed: result.sent.length > 0, emailedTo: result.sent,
+      emailError: result.failed.length ? result.failed.map(f => `${f.to}: ${f.error}`).join("; ").slice(0, 300)
+        : recipients.length ? undefined : "没有选定收件人",
+    };
   }
   return data;
 }

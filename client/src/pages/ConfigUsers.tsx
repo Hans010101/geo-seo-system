@@ -2,6 +2,7 @@ import { trpc } from "@/lib/trpc";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Switch } from "@/components/ui/switch";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -33,6 +34,18 @@ export default function ConfigUsers() {
   const { data: usersList, isLoading } = trpc.users.list.useQuery(undefined, { staleTime: 10000 });
   const { data: me } = trpc.auth.me.useQuery();
   const utils = trpc.useUtils();
+  // 早晚报邮件收件人（开发者勾选）。ids === null：还没设置过，默认只发给系统所有者邮箱。
+  const { data: recipients } = trpc.briefs.recipients.useQuery(undefined, { staleTime: 10000 });
+  const recipientEmails = new Set(recipients?.emails || []);
+  const isRecipient = (u: { id: number; email: string | null }) =>
+    recipients?.ids ? recipients.ids.includes(u.id) : recipientEmails.has((u.email || "").toLowerCase());
+  const setRecipient = trpc.briefs.setRecipient.useMutation({
+    onSuccess: (_r, v) => {
+      toast.success(v.enabled ? "已加入早晚报邮件" : "已移出早晚报邮件");
+      utils.briefs.recipients.invalidate();
+    },
+    onError: (e) => toast.error(e.message),
+  });
 
   const [confirmDialog, setConfirmDialog] = useState<{
     open: boolean;
@@ -72,7 +85,7 @@ export default function ConfigUsers() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight">用户管理</h1>
           <p className="text-muted-foreground text-sm mt-1">
-            管理系统用户和角色权限，共 {usersList?.length || 0} 个用户
+            管理系统用户和角色权限，共 {usersList?.length || 0} 个用户；打开“早晚报邮件”的用户每天 09:20 / 17:45 会收到早晚报（无需登录后台）
           </p>
         </div>
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -94,12 +107,13 @@ export default function ConfigUsers() {
                   <th className="text-left p-3 font-medium">登录方式</th>
                   <th className="text-left p-3 font-medium">注册时间</th>
                   <th className="text-left p-3 font-medium">最后登录</th>
+                  <th className="text-center p-3 font-medium whitespace-nowrap">早晚报邮件</th>
                   <th className="text-center p-3 font-medium">操作</th>
                 </tr>
               </thead>
               <tbody>
                 {isLoading ? (
-                  <tr><td colSpan={8} className="p-8 text-center text-muted-foreground">加载中...</td></tr>
+                  <tr><td colSpan={9} className="p-8 text-center text-muted-foreground">加载中...</td></tr>
                 ) : usersList?.map((u) => {
                   const rc = ROLE_CONFIG[u.role as keyof typeof ROLE_CONFIG] || ROLE_CONFIG.user;
                   const isSelf = u.id === me?.id;
@@ -130,6 +144,14 @@ export default function ConfigUsers() {
                       </td>
                       <td className="p-3 text-muted-foreground text-xs">
                         {u.lastSignedIn ? new Date(u.lastSignedIn).toLocaleDateString("zh-CN") : "-"}
+                      </td>
+                      <td className="p-3 text-center">
+                        <Switch
+                          checked={isRecipient(u)}
+                          disabled={!u.email || isBanned || setRecipient.isPending}
+                          onCheckedChange={(enabled) => setRecipient.mutate({ userId: u.id, enabled })}
+                          aria-label={`早晚报邮件：${u.email || u.name || u.id}`}
+                        />
                       </td>
                       <td className="p-3 text-center">
                         {!isDev && (
