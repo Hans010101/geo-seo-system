@@ -7,31 +7,15 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { useMemo, useState } from "react";
-import { useLocation, useRoute } from "wouter";
+import { useState } from "react";
+import { Redirect, useLocation, useRoute } from "wouter";
 import { toast } from "sonner";
+import { CATEGORY_TONE, bjDay, bjTime } from "@/lib/industryFormat";
 import { CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
-const CATEGORY_TONE: Record<string, string> = {
-  regulation: "bg-violet-50 text-violet-700 border-violet-200",
-  macro: "bg-amber-50 text-amber-700 border-amber-200",
-  stablecoin: "bg-emerald-50 text-emerald-700 border-emerald-200",
-  exchange: "bg-sky-50 text-sky-700 border-sky-200",
-  chain: "bg-indigo-50 text-indigo-700 border-indigo-200",
-  institution: "bg-teal-50 text-teal-700 border-teal-200",
-  tokenization: "bg-fuchsia-50 text-fuchsia-700 border-fuchsia-200",
-  security: "bg-red-50 text-red-700 border-red-200",
-  market: "bg-slate-50 text-slate-700 border-slate-200",
-  other: "bg-zinc-50 text-zinc-600 border-zinc-200",
-};
 const ENTITY_LABEL: Record<string, string> = { tron: "TRON", binance: "Binance", solana: "Solana", tether: "Tether", circle: "Circle", ethereum: "以太坊" };
 const CHAIN_COLORS: Record<string, string> = { tron: "#dc2626", ethereum: "#6366f1", solana: "#14b8a6", bsc: "#eab308", plasma: "#0ea5e9", stable: "#64748b", arc: "#a855f7" };
 
-const bjTime = (ms: number, withDate = true) => {
-  const text = new Date(ms + 8 * 3_600_000).toISOString();
-  return withDate ? `${text.slice(5, 10)} ${text.slice(11, 16)}` : text.slice(11, 16);
-};
-const bjDay = (ms: number) => new Date(ms + 8 * 3_600_000).toISOString().slice(0, 10);
 const signed = (v: number | null | undefined, unit = "%", digits = 2) =>
   v === null || v === undefined ? "—" : `${v > 0 ? "+" : ""}${v.toFixed(digits)}${unit}`;
 const tone = (v: number | null | undefined) => (v === null || v === undefined ? "text-muted-foreground" : v > 0 ? "text-green-600" : v < 0 ? "text-red-600" : "");
@@ -339,96 +323,15 @@ function CompetitorsTab() {
   );
 }
 
-// ---------------------------------------------------------------- 周报
-function WeeklyTab({ id }: { id?: string }) {
-  const { isAdmin } = useRole();
-  const [, navigate] = useLocation();
-  const utils = trpc.useUtils();
-  const { data: list } = trpc.industry.weeklyList.useQuery(undefined, { staleTime: 120_000 });
-  const current = id || list?.[0]?.id;
-  const { data } = trpc.industry.weekly.useQuery({ id: current || "0000-00-00" }, { enabled: !!current });
-  const gen = trpc.industry.generateWeekly.useMutation({
-    onSuccess: r => { toast.success("行业周报已生成"); utils.industry.weeklyList.invalidate(); navigate(`/industry/weekly/${r.id}`); },
-    onError: e => toast.error(e.message),
-  });
-  return (
-    <div className="grid gap-4 lg:grid-cols-[220px_1fr]">
-      <Card className="h-fit">
-        <CardContent className="p-2 space-y-1">
-          {isAdmin ? <Button size="sm" className="w-full mb-2" disabled={gen.isPending} onClick={() => gen.mutate()}>{gen.isPending ? "生成中（约 1 分钟）…" : "生成本周周报"}</Button> : null}
-          {!list?.length ? <div className="text-sm text-muted-foreground p-2">每周五 19:15 自动生成</div> : list.map(w => (
-            <button key={w.id} onClick={() => navigate(`/industry/weekly/${w.id}`)}
-              className={`w-full text-left rounded p-2 text-sm ${w.id === current ? "bg-muted font-medium" : "hover:bg-muted/50"}`}>
-              <div>{bjDay(w.from).slice(5)} — {bjDay(w.to).slice(5)}</div>
-              <div className="text-xs text-muted-foreground line-clamp-2">{w.headline}</div>
-            </button>
-          ))}
-        </CardContent>
-      </Card>
-      {!data ? <Card><CardContent className="py-16 text-center text-sm text-muted-foreground">暂无周报</CardContent></Card> : (
-        <Card>
-          <CardContent className="p-6 space-y-5">
-            <div>
-              <div className="text-xs text-muted-foreground">行业周报 · {bjDay(data.from)} 至 {bjDay(data.to)}</div>
-              <h2 className="text-xl font-bold mt-1">{data.headline}</h2>
-              <p className="text-sm leading-relaxed mt-2">{data.overview}</p>
-            </div>
-            <div className="grid gap-2 grid-cols-2 md:grid-cols-4">
-              {data.numbers.map(n => (
-                <div key={n.label} className="rounded border p-2">
-                  <div className="text-[11px] text-muted-foreground">{n.label}</div>
-                  <div className="text-sm font-semibold">{n.value} <span className={`text-xs font-normal ${n.change.startsWith("+") ? "text-green-600" : n.change.startsWith("-") ? "text-red-600" : "text-muted-foreground"}`}>{n.change}</span></div>
-                </div>
-              ))}
-            </div>
-            {data.sections.map(s => (
-              <div key={s.category}>
-                <div className="text-sm font-semibold mb-1"><Badge variant="outline" className={CATEGORY_TONE[s.category] || ""}>{s.label}</Badge></div>
-                <ul className="list-disc pl-5 text-sm space-y-0.5">{s.points.map((p, i) => <li key={i}>{p}</li>)}</ul>
-              </div>
-            ))}
-            {data.competitors.length ? (
-              <div>
-                <div className="text-sm font-semibold mb-1">竞品动向</div>
-                <div className="space-y-1 text-sm">{data.competitors.map(c => <div key={c.key}><span className="font-medium">{c.label}：</span>{c.text}</div>)}</div>
-              </div>
-            ) : null}
-            <div className="grid gap-4 md:grid-cols-2">
-              <div className="rounded bg-yellow-50 p-3">
-                <div className="text-sm font-semibold mb-1">对 TRON 的影响</div>
-                <ul className="list-disc pl-5 text-sm space-y-0.5">{data.tron.map((p, i) => <li key={i}>{p}</li>)}</ul>
-              </div>
-              <div className="rounded bg-muted/60 p-3">
-                <div className="text-sm font-semibold mb-1">下周关注</div>
-                <ul className="list-disc pl-5 text-sm space-y-0.5">{data.watch.map((p, i) => <li key={i}>{p}</li>)}</ul>
-              </div>
-            </div>
-            <div>
-              <div className="text-sm font-semibold mb-1">本周重要事件</div>
-              {data.events.map(e => (
-                <div key={e.id} className="text-sm py-1 border-b last:border-0 flex gap-2">
-                  <span className="text-xs text-muted-foreground w-[78px] shrink-0 pt-0.5">{bjTime(e.publishedAt)}</span>
-                  <a href={e.url} target="_blank" rel="noreferrer" className="hover:underline">{e.summary}</a>
-                  <span className="text-xs text-muted-foreground shrink-0 ml-auto">{e.category}</span>
-                </div>
-              ))}
-            </div>
-            <div className="text-[11px] text-muted-foreground">生成于 {bjTime(data.generatedAt)} · {data.model}</div>
-          </CardContent>
-        </Card>
-      )}
-    </div>
-  );
-}
-
-const TABS = ["news", "macro", "competitors", "weekly"] as const;
+const TABS = ["news", "macro", "competitors"] as const;
 
 export default function IndustryTrends() {
   const [, navigate] = useLocation();
   const [, tabParams] = useRoute("/industry/:tab");
   const [, weeklyParams] = useRoute("/industry/weekly/:id");
-  const tab = weeklyParams ? "weekly" : (TABS as readonly string[]).includes(tabParams?.tab || "") ? tabParams!.tab : "news";
-  const weeklyId = useMemo(() => weeklyParams?.id, [weeklyParams?.id]);
+  // 行业周报 moved to 报告中心; old links land there.
+  if (weeklyParams || tabParams?.tab === "weekly") return <Redirect to="/industry-reports" />;
+  const tab = (TABS as readonly string[]).includes(tabParams?.tab || "") ? tabParams!.tab : "news";
   return (
     <div className="space-y-4">
       <div>
@@ -440,12 +343,10 @@ export default function IndustryTrends() {
           <TabsTrigger value="news">行业快讯</TabsTrigger>
           <TabsTrigger value="macro">宏观仪表</TabsTrigger>
           <TabsTrigger value="competitors">竞品看板</TabsTrigger>
-          <TabsTrigger value="weekly">行业周报</TabsTrigger>
         </TabsList>
         <TabsContent value="news" className="mt-4"><NewsTab /></TabsContent>
         <TabsContent value="macro" className="mt-4"><MacroTab /></TabsContent>
         <TabsContent value="competitors" className="mt-4"><CompetitorsTab /></TabsContent>
-        <TabsContent value="weekly" className="mt-4"><WeeklyTab id={weeklyId} /></TabsContent>
       </Tabs>
     </div>
   );

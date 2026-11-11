@@ -12,7 +12,7 @@ import { dispatchNotification } from "../server/_core/notification";
 import { checkMarketAlerts } from "../server/market";
 import { getIndustrySettings, triageIndustry } from "../server/industry";
 import { checkMacroAlerts } from "../server/industry-metrics";
-import { generateIndustryWeekly } from "../server/industry-weekly";
+import { generateIndustryReport } from "../server/industry-weekly";
 import { deliverScheduledBrief, generateBrief, getBriefSettings, runRequestedBrief } from "../server/brief";
 import { boundedJson } from "./bounded-json";
 import { cycleFailureReason } from "./cycle-failure";
@@ -263,6 +263,7 @@ type IndustryTriageTask = {
 type IndustryWeeklyTask = {
   kind: "industry_weekly";
   scheduledTime: number;
+  report?: "weekly" | "monthly"; // absent on messages queued before monthly reports existed
 };
 
 type FreshnessAuditTask = {
@@ -2932,8 +2933,12 @@ async function processTask(task: QueueTask, env: QueueEnv): Promise<void> {
     return;
   }
   if (task.kind === "industry_weekly") {
-    const weekly = await generateIndustryWeekly();
-    console.log(JSON.stringify({ event: "industry.weekly", id: weekly.id, events: weekly.events.length }));
+    // The period that just closed: last Friday–Thursday week, or last calendar month.
+    const period = task.report === "monthly"
+      ? monthlyPeriodOf(monthlyPeriodOf(task.scheduledTime).startMs - 1)
+      : weeklyPeriodOf(weeklyPeriodOf(task.scheduledTime).startMs - 1);
+    const report = await generateIndustryReport(period);
+    console.log(JSON.stringify({ event: "industry.report", id: report.id, period: report.reportPeriod, events: report.events.length }));
     return;
   }
   if (task.kind === "market_prices") {
@@ -3104,6 +3109,13 @@ export async function enqueueScheduledMonitor(
     if (local.day === 1 && flags.monthlyReport) {
       messages.push({ body: { kind: "maintenance", task: "monthly_report", scheduledTime } });
     }
+    // 行业报告 follow the same calendar as the 舆情 reports (independent of their switches).
+    if (local.weekday === 5) {
+      messages.push({ body: { kind: "industry_weekly", report: "weekly", scheduledTime }, delaySeconds: 300 });
+    }
+    if (local.day === 1) {
+      messages.push({ body: { kind: "industry_weekly", report: "monthly", scheduledTime }, delaySeconds: 420 });
+    }
   }
   if (local.minute === 15) messages.push({ body: { kind: "market_prices", scheduledTime } });
   // Daily briefs: prepared at 09:18 / 17:18 (after the Mac's :05 run and this :15 batch start),
@@ -3115,8 +3127,5 @@ export async function enqueueScheduledMonitor(
   }
   messages.push({ body: { kind: "brief_request", scheduledTime } });
   messages.push({ body: { kind: "industry_triage", scheduledTime } });
-  if (local.weekday === 5 && local.hour === 19 && local.minute === 15) {
-    messages.push({ body: { kind: "industry_weekly", scheduledTime }, delaySeconds: 300 });
-  }
   if (messages.length > 0) await env.MONITOR_QUEUE.sendBatch(messages);
 }

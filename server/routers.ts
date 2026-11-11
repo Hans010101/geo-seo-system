@@ -1,7 +1,7 @@
 import { COOKIE_NAME } from "@shared/const";
 import { getIndustryStatus, listIndustry, setIndustryAlerts, triageIndustry } from "./industry";
 import { getCompetitorDashboard, getIndustryMarkers, getMacroDashboard } from "./industry-metrics";
-import { generateIndustryWeekly, getIndustryWeekly, listIndustryWeekly } from "./industry-weekly";
+import { generateIndustryReport, getIndustryWeekly, listIndustryWeekly } from "./industry-weekly";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, protectedProcedure, adminProcedure, developerProcedure, geoBatchProcedure, router } from "./_core/trpc";
@@ -2974,14 +2974,24 @@ const industryRouter = router({
   markers: protectedProcedure
     .input(z.object({ days: z.number().int().min(1).max(90) }))
     .query(async ({ input }) => getIndustryMarkers(input.days)),
-  weeklyList: protectedProcedure.query(async () => listIndustryWeekly()),
-  weekly: protectedProcedure
-    .input(z.object({ id: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) }))
+  reportList: protectedProcedure.query(async () => listIndustryWeekly()),
+  report: protectedProcedure
+    .input(z.object({ id: z.string().regex(/^\d{6,16}$/) }))
     .query(async ({ input }) => getIndustryWeekly(input.id)),
-  generateWeekly: adminProcedure.mutation(async () => {
-    const weekly = await generateIndustryWeekly();
-    return { id: weekly.id };
-  }),
+  // 周期与舆情 / GEO 报告一致：周五–周四周报、自然月月报或自选起止日期（北京时间）。
+  generateReport: adminProcedure
+    .input(z.object({
+      reportType: z.enum(["weekly", "monthly"]).optional(),
+      month: z.string().regex(/^\d{4}-\d{2}$/).optional(),
+      dateRange: reportDateRangeSchema.optional(),
+    }))
+    .mutation(async ({ input }) => {
+      const period = input.reportType === "monthly"
+        ? (input.month ? parsePeriod("monthly", input.month) : monthlyPeriodOf(Date.now()))
+        : input.dateRange ? dateRangePeriod(input.dateRange) : weeklyPeriodOf(Date.now());
+      const report = await generateIndustryReport(period);
+      return { id: report.id, reportPeriod: period.reportPeriod };
+    }),
   triageNow: adminProcedure.mutation(async () => triageIndustry({ maxBatches: 3 })),
   setAlerts: adminProcedure
     .input(z.object({ enabled: z.boolean() }))

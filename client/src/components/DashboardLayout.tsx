@@ -58,7 +58,7 @@ const primaryGroups: NavGroup[] = [
   {
     icon: Newspaper, label: "早晚报与报告", tabs: [
       { label: "早晚报", path: "/briefs", prefixes: ["/briefs/"] },
-      { label: "报告中心", path: "/report-center", prefixes: ["/reports", "/sentiment-monitor/reports"] },
+      { label: "报告中心", path: "/report-center", prefixes: ["/reports", "/sentiment-monitor/reports", "/industry-reports"] },
     ],
   },
   {

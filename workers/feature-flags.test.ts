@@ -121,6 +121,7 @@ describe("Cloudflare migration feature flags", () => {
     await enqueueScheduledMonitor(Date.UTC(2026, 9, 1, 19, 40), friday.env);
     expect(friday.sendBatch).toHaveBeenCalledWith([
       { body: expect.objectContaining({ kind: "maintenance", task: "weekly_report" }) },
+      { body: expect.objectContaining({ kind: "industry_weekly", report: "weekly" }), delaySeconds: 300 },
     ]);
     const monday = envWith({ CLOUDFLARE_MONITOR_SOCIAL_ENABLED: "false", CLOUDFLARE_CLEANUP_ENABLED: "false" });
     await enqueueScheduledMonitor(Date.UTC(2026, 9, 4, 19, 40), monday.env);
@@ -159,18 +160,23 @@ describe("Cloudflare migration feature flags", () => {
     expect(JSON.stringify(other.sendBatch.mock.calls)).not.toContain("daily_brief");
   });
 
-  it("triages 行业动态 on every firing and queues the 行业周报 on Friday 19:15", async () => {
+  it("triages 行业动态 on every firing and queues 行业报告 on the 舆情 report calendar", async () => {
     for (const minute of [15, 40]) {
       const env = envWith();
       await enqueueScheduledMonitor(Date.UTC(2026, 10, 9, 5, minute), env.env);
       expect(env.allBatches[0]).toContainEqual({ body: expect.objectContaining({ kind: "industry_triage" }) });
     }
     const friday = envWith();
-    await enqueueScheduledMonitor(Date.UTC(2026, 10, 13, 11, 15), friday.env); // Fri 19:15 Beijing
-    expect(friday.allBatches[0]).toContainEqual({ body: expect.objectContaining({ kind: "industry_weekly" }), delaySeconds: 300 });
-    const thursday = envWith();
-    await enqueueScheduledMonitor(Date.UTC(2026, 10, 12, 11, 15), thursday.env);
-    expect(JSON.stringify(thursday.allBatches)).not.toContain("industry_weekly");
+    await enqueueScheduledMonitor(Date.UTC(2026, 10, 12, 19, 40), friday.env); // Fri 11-13 03:40 Beijing
+    expect(friday.allBatches[0]).toContainEqual({ body: expect.objectContaining({ kind: "industry_weekly", report: "weekly" }), delaySeconds: 300 });
+    expect(JSON.stringify(friday.allBatches)).not.toContain('"monthly"');
+    const fridayEvening = envWith();
+    await enqueueScheduledMonitor(Date.UTC(2026, 10, 13, 11, 15), fridayEvening.env); // Fri 19:15, the old slot
+    expect(JSON.stringify(fridayEvening.allBatches)).not.toContain("industry_weekly");
+    const firstOfMonth = envWith();
+    await enqueueScheduledMonitor(Date.UTC(2026, 10, 30, 19, 40), firstOfMonth.env); // Tue 12-01 03:40 Beijing
+    expect(firstOfMonth.allBatches[0]).toContainEqual({ body: expect.objectContaining({ kind: "industry_weekly", report: "monthly" }), delaySeconds: 420 });
+    expect(JSON.stringify(firstOfMonth.allBatches)).not.toContain('"report":"weekly"');
   });
 
   it("checks for a one-off brief request on every firing", async () => {

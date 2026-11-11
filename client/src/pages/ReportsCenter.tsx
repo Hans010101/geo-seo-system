@@ -3,7 +3,7 @@ import { trpc } from "@/lib/trpc";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { ArrowRight, BarChart3, ClipboardList, FileSpreadsheet, FileText } from "lucide-react";
+import { ArrowRight, BarChart3, ClipboardList, FileSpreadsheet, FileText, Globe2 } from "lucide-react";
 import { reportKindLabel } from "@shared/report-period";
 
 function dateTime(value?: number | Date | string | null) {
@@ -14,15 +14,16 @@ function dateTime(value?: number | Date | string | null) {
 export default function ReportsCenter() {
   const { data: sentimentReports } = trpc.monitor.listReports.useQuery({ limit: 5 });
   const { data: geoReports } = trpc.weeklyReports.list.useQuery({ limit: 5 });
+  const { data: industryReports } = trpc.industry.reportList.useQuery(undefined, { staleTime: 60_000 });
 
   return (
     <div className="space-y-6">
       <header>
         <h1 className="text-2xl font-semibold tracking-tight">报告中心</h1>
-        <p className="mt-1 text-sm text-muted-foreground">统一查看舆情与 GEO 的周报/月报；导出功能保留在各报告详情页。</p>
+        <p className="mt-1 text-sm text-muted-foreground">舆情、GEO、行业三类周报/月报，周期一致（周五至周四、自然月）；导出在各报告详情页。</p>
       </header>
 
-      <section className="grid gap-4 xl:grid-cols-2">
+      <section className="grid gap-4 lg:grid-cols-2 2xl:grid-cols-3">
         <Card>
           <CardHeader className="flex-row items-center justify-between space-y-0">
             <div className="flex items-center gap-3"><div className="rounded-lg bg-primary/10 p-2 text-primary"><ClipboardList className="h-5 w-5" /></div><div><CardTitle className="text-base">舆情报告</CardTitle><p className="mt-1 text-xs text-muted-foreground">趋势、信源、威胁、成本与 GEO 穿透</p></div></div>
@@ -42,6 +43,17 @@ export default function ReportsCenter() {
           <CardContent>
             <div className="mb-4 flex gap-2"><Badge variant="secondary" className="font-normal">CSV</Badge><Badge variant="secondary" className="font-normal">JSON</Badge></div>
             <div className="divide-y">{geoReports?.length ? geoReports.map(report => <ReportRow key={report.reportWeek} href={`/reports?week=${encodeURIComponent(report.reportWeek)}`} period={report.reportPeriod || report.reportWeek} generatedAt={report.generatedAt} kind={reportKindLabel("weekly", report.reportPeriod || report.reportWeek)} />) : <Empty />}</div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex-row items-center justify-between space-y-0">
+            <div className="flex items-center gap-3"><div className="rounded-lg bg-primary/10 p-2 text-primary"><Globe2 className="h-5 w-5" /></div><div><CardTitle className="text-base">行业报告</CardTitle><p className="mt-1 text-xs text-muted-foreground">行业大事、宏观与竞品、对 TRON 的影响</p></div></div>
+            <Button variant="outline" size="sm" asChild><Link href="/industry-reports">打开 <ArrowRight className="ml-1 h-3.5 w-3.5" /></Link></Button>
+          </CardHeader>
+          <CardContent>
+            <div className="mb-4 flex gap-2"><Badge variant="secondary" className="font-normal">Markdown</Badge></div>
+            <div className="divide-y">{industryReports?.length ? industryReports.slice(0, 5).map(report => <ReportRow key={report.id} href={`/industry-reports?id=${report.id}`} period={report.reportPeriod} generatedAt={report.generatedAt} kind={report.kind} />) : <Empty />}</div>
           </CardContent>
         </Card>
       </section>
