@@ -65,11 +65,11 @@ export async function setIndustryAlerts(enabled: boolean) {
 type Pending = { id: string; source: string; title: string; excerpt: string | null; publishedAt: number; attempts: number };
 type Primary = { id: string; grams: Fingerprint[] };
 
-async function callTriage(model: string, items: Pending[]): Promise<{ triage: Triage[]; tokens: number }> {
+async function callTriage(model: string, items: Pending[], knownEvents: string[]): Promise<{ triage: Triage[]; tokens: number }> {
   const env = getCloudflareEnv();
   const apiKey = env?.OPENROUTER_API_KEY?.trim() || ENV.openrouterApiKey;
   const input = items.map((it, i) => ({ i, source: INDUSTRY_SOURCES[it.source]?.label || it.source, title: it.title, excerpt: it.excerpt || "" }));
-  const prompt = triagePrompt(input);
+  const prompt = triagePrompt(input, knownEvents);
   const result = await invokeLLM({
     apiKey, baseUrl: "https://openrouter.ai/api/v1", model, maxTokens: 9000, timeoutMs: 120_000,
     messages: [{ role: "system", content: prompt.system }, { role: "user", content: prompt.user }],
@@ -109,9 +109,12 @@ async function triageLocked(client: D1Like, now: number, maxBatches: number) {
   // Newest first, so fresh news is on the page within minutes even while a backlog is being worked off.
   const pending = (await client.prepare(`SELECT id, source, title, excerpt, publishedAt, attempts FROM industryNews
     WHERE status = 'new' AND attempts < 3 ORDER BY publishedAt DESC LIMIT ?`).bind(BATCH * maxBatches).all<Pending>()).results;
-  const recent = (await client.prepare(`SELECT id, title, summary FROM industryNews
-    WHERE status = 'done' AND dupOf IS NULL AND publishedAt >= ?`).bind(now - 2 * DAY)
-    .all<{ id: string; title: string; summary: string | null }>()).results;
+  const recent = (await client.prepare(`SELECT id, title, summary, eventKey FROM industryNews
+    WHERE status = 'done' AND dupOf IS NULL AND publishedAt >= ? ORDER BY publishedAt`).bind(now - 2 * DAY)
+    .all<{ id: string; title: string; summary: string | null; eventKey: string | null }>()).results;
+  // Event slug → primary id; the LLM reuses slugs of the last 36 hours for the same story.
+  const eventOwner = new Map<string, string>();
+  for (const r of recent) if (r.eventKey && !eventOwner.has(r.eventKey)) eventOwner.set(r.eventKey, r.id);
   const primaries: Primary[] = recent.map(r => ({ id: r.id, grams: [fingerprint(r.title), ...(r.summary ? [fingerprint(r.summary)] : [])] }));
   const flat = () => primaries.flatMap(p => p.grams.map(g => ({ id: p.id, g })));
 
@@ -147,7 +150,7 @@ async function triageLocked(client: D1Like, now: number, maxBatches: number) {
     let triage: Triage[] = [];
     for (let attempt = 0; attempt < 2 && !triage.length; attempt++) {
       try {
-        const res = await callTriage(settings.model, chunk);
+        const res = await callTriage(settings.model, chunk, Array.from(eventOwner.keys()).slice(-200));
         triage = res.triage;
         tokens += res.tokens;
       } catch (error) {
@@ -167,15 +170,19 @@ async function triageLocked(client: D1Like, now: number, maxBatches: number) {
         writes.push(client.prepare("UPDATE industryNews SET status = 'skip', category = ?, importance = ? WHERE id = ?").bind(t.category, t.importance, it.id));
         return;
       }
-      // 3) Cross-language duplicates: compare the Chinese summary with known primaries.
+      // 3) Same event slug as a known story (paraphrases, other languages).
+      const owner = t.event ? eventOwner.get(t.event) : undefined;
+      if (owner && owner !== it.id) { markDup(it, owner); dups++; return; }
+      // 4) Cross-language duplicates: compare the Chinese summary with known primaries.
       const candidates = flat();
       const hit = t.summary ? findDuplicate(t.summary, candidates.map(c => c.g)) : -1;
       if (hit >= 0 && candidates[hit].id !== it.id) { markDup(it, candidates[hit].id); dups++; return; }
       kept++;
+      if (t.event) eventOwner.set(t.event, it.id);
       primaries.push({ id: it.id, grams: [fingerprint(it.title), ...(t.summary ? [fingerprint(t.summary)] : [])] });
       writes.push(client.prepare(`UPDATE industryNews SET status = 'done', category = ?, importance = ?, entities = ?, tron = ?,
-        tronNote = ?, summary = ? WHERE id = ?`)
-        .bind(t.category, t.importance, JSON.stringify(t.entities), t.tron, t.tronNote || null, t.summary || it.title, it.id));
+        tronNote = ?, summary = ?, eventKey = ? WHERE id = ?`)
+        .bind(t.category, t.importance, JSON.stringify(t.entities), t.tron, t.tronNote || null, t.summary || it.title, t.event || null, it.id));
       if (t.importance >= 5 && it.publishedAt >= now - 6 * HOUR) {
         alerts.push(it.id);
       }

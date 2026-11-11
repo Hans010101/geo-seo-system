@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS industryNews (
   tronNote TEXT,
   summary TEXT,
   dupOf TEXT,
+  eventKey TEXT,
   sourceCount INTEGER NOT NULL DEFAULT 1,
   sources TEXT,
   alertedAt INTEGER
@@ -38,3 +39,5 @@ CREATE TABLE IF NOT EXISTS industryWeekly (
   generatedAt INTEGER NOT NULL,
   data TEXT NOT NULL
 );
+-- 2026-11-11: LLM event slug for paraphrase de-duplication. (Run once on an existing table:)
+-- ALTER TABLE industryNews ADD COLUMN eventKey TEXT;

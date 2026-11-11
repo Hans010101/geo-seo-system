@@ -121,3 +121,41 @@ describe("早晚报行业动态板块", () => {
     expect(s.total).toBe(3);
   });
 });
+
+describe("paraphrase merge in selections", () => {
+  it("treats rewordings of one story as the same and keeps different stories apart", async () => {
+    const { sameStory, parseTriage, triagePrompt } = await import("./industry-calc");
+    const faro = [
+      "高盛、花旗、BBVA 支持的 Project Faro 获 2.7 亿美元融资，计划 2027 年上半年推出美元稳定币",
+      "高盛、花旗等全球银行投入2.7亿美元支持美国稳定币发行方“Project Faro”，挑战Tether和Circle。",
+      "据彭博，高盛、花旗、桑坦德、德银等为联合稳定币项目承诺约2.7亿美元。",
+    ];
+    expect(sameStory(faro[0], faro[1])).toBe(true);
+    expect(sameStory(faro[0], faro[2])).toBe(true);
+    expect(sameStory(faro[1], faro[2])).toBe(true);
+    expect(sameStory("10 月 CPI 环比升 0.4% 超预期，美股三大指数收跌", "10 月非农新增 16.5 万、失业率 4.1%；12 月加息概率升至约 80%")).toBe(false);
+    const kalshi = [
+      "Politico：CFTC 警告 Kalshi 合约通知程序问题可能面临指控，Kalshi 称涉及少数程序性错误",
+      "据 POLITICO：CFTC 警告 Kalshi 或面临指控，涉及数十种拟上线合约未按规定履行通知程序，Kalshi 称为程序性错误",
+    ];
+    expect(sameStory(kalshi[0], kalshi[1])).toBe(true);
+    expect(sameStory("Binance 恢复 HYPE 和 APT 提现，此前已恢复部分以太坊及 Solana 资产提现", "Binance 回应 3.359 亿条用户数据泄露传闻，称可能是骗局")).toBe(false);
+    expect(sameStory(faro[0], kalshi[0])).toBe(false);
+
+    const t = parseTriage('[{"i":0,"keep":true,"category":"stablecoin","importance":4,"entities":[],"tron":0,"tronNote":"","summary":"x","event":"Project Faro / Bank Stablecoin!"}]', new Set([0]));
+    expect(t[0].event).toBe("project-faro-bank-stablecoin");
+    expect(triagePrompt([{ i: 0, source: "x", title: "t", excerpt: "" }], ["cftc-warns-kalshi"]).system).toContain("cftc-warns-kalshi");
+  });
+
+  it("folds paraphrases into one picked item", () => {
+    const base = { source: "odaily", url: "https://a.test", title: "", publishedAt: NOW, entities: "[]", tron: 0, tronNote: null };
+    const rows: IndustryRow[] = [
+      { ...base, id: "a", summary: "高盛、花旗、BBVA 支持的 Project Faro 获 2.7 亿美元融资，计划 2027 年上半年推出美元稳定币", category: "stablecoin", importance: 4, sourceCount: 1 },
+      { ...base, id: "b", summary: "高盛、花旗等全球银行投入2.7亿美元支持美国稳定币发行方“Project Faro”，挑战Tether和Circle。", category: "stablecoin", importance: 4, sourceCount: 2 },
+      { ...base, id: "c", summary: "10 月 CPI 环比升 0.4% 超预期，美股三大指数收跌", category: "macro", importance: 4, sourceCount: 1 },
+    ];
+    const top = pickTop(rows, 5);
+    expect(top.map(r => r.id)).toEqual(["b", "c"]);
+    expect(top[0].sourceCount).toBe(3);
+  });
+});

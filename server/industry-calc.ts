@@ -136,9 +136,11 @@ export type TriageInput = { i: number; source: string; title: string; excerpt: s
 export type Triage = {
   i: number; keep: boolean; category: CategoryKey; importance: number;
   entities: EntityKey[]; tron: 0 | 1 | 2; tronNote: string; summary: string;
+  /** Short English slug naming the underlying event; equal slugs = the same story. */
+  event: string;
 };
 
-export function triagePrompt(items: TriageInput[]) {
+export function triagePrompt(items: TriageInput[], knownEvents: string[] = []) {
   const system = `你是加密行业情报编辑，为 TRON（波场）团队筛选每日「行业动态」。关注：加密/web3 行业大事，以及会影响加密市场的重大全球金融事件（美联储利率、非农/CPI、美股科技股暴跌、美债收益率、重大地缘事件），并重点跟踪 Binance、Solana、Tether、Circle、以太坊等竞品动向。
 逐条判断，只输出 JSON 数组，每条一个对象，字段：
 - i：原编号
@@ -148,7 +150,10 @@ export function triagePrompt(items: TriageInput[]) {
 - entities：从 ${ENTITIES.map(e => e.key).join("/")} 中选涉及的（可为空数组；Binance 含币安、CZ/赵长鹏、BNB Chain；Tether 含 USDT；Circle 含 USDC、Arc）
 - tron：2=直接涉及 TRON/TRX/孙宇晨/波场/JUST/USDD/HTX；1=间接影响 TRON（稳定币监管、USDT/Tether 动向、竞品稳定币链、交易所对 TRX 的动作）；0=无关
 - tronNote：tron≥1 时用一句话（≤30 字）说明与 TRON 的关系，否则为空字符串
-- summary：一句话中文快讯（≤60 字），保留关键数字、主体和动作，不加评论；英文原文请翻译`;
+- summary：一句话中文快讯（≤60 字），保留关键数字、主体和动作，不加评论；英文原文请翻译
+- event：事件标识，小写英文短横线连接（≤6 个词，主体+动作，如 project-faro-bank-stablecoin-funding、cftc-warns-kalshi）。同一件事的不同报道、不同语言、不同措辞必须用同一个标识；本批内也要一致。若与下方「已有事件」中某个是同一件事，直接复用该标识${knownEvents.length ? `
+
+已有事件（近 36 小时）：${knownEvents.join("、")}` : ""}`;
   const user = items.map(it => `[${it.i}] (${it.source}) ${it.title}${it.excerpt && it.excerpt !== it.title ? ` —— ${it.excerpt.slice(0, 220)}` : ""}`).join("\n");
   return { system, user };
 }
@@ -178,6 +183,7 @@ export function parseTriage(text: string, ids: Set<number>): Triage[] {
       i, keep: r.keep !== false, category, importance, entities, tron,
       tronNote: tron ? clean(r.tronNote, 80) : "",
       summary: clean(r.summary, 160),
+      event: String(r.event || "").toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60),
     });
   }
   return out;
@@ -195,15 +201,46 @@ export const rankScore = (r: Pick<IndustryRow, "importance" | "sourceCount" | "t
   (r.importance ?? 1) * 10 + Math.min(4, (r.sourceCount || 1) - 1) * 1.5 + (r.tron ?? 0) * 2 + r.publishedAt / 1e13;
 
 /** Top N with at most `perCategory` per category, so one hot topic cannot take the whole section. */
+const LATIN = /[A-Za-z][A-Za-z0-9]{2,}/g;
+const COMMON = new Set(["usdt", "usdc", "btc", "eth", "bnb", "sol", "trx", "the", "and", "etf", "sec", "cftc", "ceo", "ipo", "ai"]);
+/**
+ * Second-line duplicate check for selections: paraphrased reports of one story ("高盛、花旗… Project Faro
+ * 获 2.7 亿美元" vs "全球银行投入 2.7 亿美元支持 Project Faro") — similar wording plus a shared name or number.
+ */
+export function sameStory(a: string, b: string) {
+  const fa = fingerprint(a), fb = fingerprint(b);
+  const sim = similarity(fa.grams, fb.grams);
+  if (sim >= 0.45) return true;
+  // A distinctive figure (2.7 亿, 5320 枚 — not a month, a year or a small count) in both texts.
+  const distinctive = (x: string) => x.includes(".") || (Number(x) >= 100 && !(Number(x) >= 2000 && Number(x) <= 2100));
+  let sharedFigure = false;
+  fa.nums.forEach(x => { if (distinctive(x) && fb.nums.has(x)) sharedFigure = true; });
+  if (sharedFigure && sim >= 0.1 && (!fa.dir || !fb.dir || fa.dir === fb.dir)) return true;
+  if (sim < 0.2) return false;
+  const names = (s: string) => new Set((s.match(LATIN) || []).map(w => w.toLowerCase()).filter(w => !COMMON.has(w)));
+  const na = names(a), nb = names(b);
+  let sharedName = false;
+  na.forEach(w => { if (nb.has(w)) sharedName = true; });
+  let sharedNum = false;
+  fa.nums.forEach(x => { if (fb.nums.has(x) && Number(x) >= 2) sharedNum = true; });
+  return sharedName && (sharedNum || sim >= 0.3);
+}
+
 export function pickTop(rows: IndustryRow[], n: number, perCategory = 3, minImportance = 3) {
   const sorted = rows.filter(r => (r.importance ?? 0) >= minImportance).sort((a, b) => rankScore(b) - rankScore(a));
   const used = new Map<string, number>();
   const out: IndustryRow[] = [];
   for (const r of sorted) {
+    const text = r.summary || r.title;
+    const twin = out.findIndex(o => sameStory(o.summary || o.title, text));
+    if (twin >= 0) { // fold the paraphrase into the kept item's report count
+      out[twin] = { ...out[twin], sourceCount: (out[twin].sourceCount || 1) + (r.sourceCount || 1) };
+      continue;
+    }
     const c = r.category || "other";
     if ((used.get(c) || 0) >= perCategory) continue;
     used.set(c, (used.get(c) || 0) + 1);
-    out.push(r);
+    out.push({ ...r });
     if (out.length >= n) break;
   }
   return out;
