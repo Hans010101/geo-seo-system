@@ -47,6 +47,7 @@ function Router() {
           <Route path="/questions/:questionId" component={QuestionDetail} />
           <Route path="/citations" component={CitationAnalysis} />
           <Route path="/external" component={ExternalMonitor} />
+          <Route path="/external/percent" component={ExternalMonitor} />
           <Route path="/market" component={MarketLinkage} />
           <Route path="/industry-reports" component={IndustryReports} />
           <Route path="/industry" component={IndustryTrends} />

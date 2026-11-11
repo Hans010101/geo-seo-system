@@ -14,10 +14,16 @@ export default function AlertCenter() {
   const pageSize = 50;
   const [page, setPage] = useState(0);
   const [severityFilter, setSeverityFilter] = useState<string>("all");
+  // ?domain=geo|sentiment deep-links from the GEO 总览 / 舆情 pages.
+  const [domainFilter, setDomainFilter] = useState<string>(() => {
+    const d = typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("domain");
+    return d === "geo" || d === "sentiment" ? d : "all";
+  });
   const [statusFilter, setStatusFilter] = useState<"active" | "resolved" | "dismissed">("active");
 
   const { data: alertsResult, isLoading } = trpc.alerts.list.useQuery({
     severity: severityFilter === "all" ? undefined : severityFilter,
+    domain: domainFilter === "all" ? undefined : (domainFilter as "geo" | "sentiment"),
     status: statusFilter,
     limit: pageSize,
     offset: page * pageSize,
@@ -86,6 +92,16 @@ export default function AlertCenter() {
       </div>
 
       <div className="flex gap-3">
+        <Select value={domainFilter} onValueChange={(value) => { setDomainFilter(value); setPage(0); }}>
+          <SelectTrigger className="w-[130px]">
+            <SelectValue placeholder="预警类别" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">全部类别</SelectItem>
+            <SelectItem value="sentiment">舆情预警</SelectItem>
+            <SelectItem value="geo">GEO 预警</SelectItem>
+          </SelectContent>
+        </Select>
         <Select value={severityFilter} onValueChange={(value) => { setSeverityFilter(value); setPage(0); }}>
           <SelectTrigger className="w-[130px]">
             <SelectValue placeholder="严重程度" />

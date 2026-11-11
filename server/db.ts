@@ -1,4 +1,4 @@
-import { eq, desc, asc, and, or, gte, lte, sql, inArray, like, count, avg } from "drizzle-orm";
+import { eq, ne, desc, asc, and, or, gte, lte, sql, inArray, like, count, avg } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import { AsyncLocalStorage } from "node:async_hooks";
 import {
@@ -459,13 +459,14 @@ export async function getDashboardSummary(startTime?: number, endTime?: number) 
   const ourContentRate = totalCitations > 0 ? ourContentCount / totalCitations : 0;
 
   // 4. Alerts count
-  const alertConditions = [];
+  // GEO metrics count GEO alerts only; 舆情 negative_article alerts have their own reports.
+  const alertConditions = [ne(alerts.alertType, "negative_article")];
   if (startTime) alertConditions.push(gte(alerts.createdAt, new Date(startTime)));
   if (endTime) alertConditions.push(lte(alerts.createdAt, new Date(endTime)));
   const alertResult = await db
     .select({ count: count() })
     .from(alerts)
-    .where(alertConditions.length > 0 ? and(...alertConditions) : undefined);
+    .where(and(...alertConditions));
 
   // 5. Target facts coverage — still needs in-memory (JSON column)
   let targetFactsCoverage = 0;
@@ -623,13 +624,15 @@ export async function deleteTargetFact(id: number) {
 }
 
 // ==================== Alerts Helpers ====================
-export async function listAlerts(filters?: { severity?: string; isRead?: boolean; status?: "active" | "resolved" | "dismissed"; limit?: number; offset?: number }) {
+export async function listAlerts(filters?: { severity?: string; isRead?: boolean; status?: "active" | "resolved" | "dismissed"; domain?: "sentiment" | "geo"; limit?: number; offset?: number }) {
   const db = await getDb();
   if (!db) return { data: [], total: 0 };
   const conditions = [];
   const targetStatus = filters?.status ?? "active";
   if (filters?.severity) conditions.push(eq(alerts.severity, filters.severity as any));
   if (filters?.isRead !== undefined) conditions.push(eq(alerts.isRead, filters.isRead));
+  if (filters?.domain === "sentiment") conditions.push(eq(alerts.alertType, "negative_article"));
+  if (filters?.domain === "geo") conditions.push(ne(alerts.alertType, "negative_article"));
   conditions.push(eq(alerts.status, targetStatus as any));
   // A dedup key represents one event. Older occurrences remain auditable, but only
   // the latest row is shown and counted in the action queue.
@@ -876,7 +879,11 @@ export async function getReportAlerts(startTime: number, endTime: number) {
   const db = await getDb();
   if (!db) return [];
   return db.select().from(alerts)
-    .where(and(gte(alerts.createdAt, new Date(startTime)), lte(alerts.createdAt, new Date(endTime))))
+    .where(and(
+      ne(alerts.alertType, "negative_article"),
+      gte(alerts.createdAt, new Date(startTime)),
+      lte(alerts.createdAt, new Date(endTime)),
+    ))
     .orderBy(desc(alerts.createdAt)).limit(10);
 }
 

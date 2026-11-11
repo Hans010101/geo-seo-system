@@ -28,7 +28,6 @@ import {
   Globe,
   Activity,
   Radar,
-  ScanSearch,
   Mail,
   Bot,
   Newspaper,
@@ -41,8 +40,8 @@ import { Input } from "./ui/input";
 import { trpc } from "@/lib/trpc";
 import { Separator } from "./ui/separator";
 
-// Sidebar = 8 groups (was 20 entries, 11-11); pages inside a group are switched with the tab bar
-// above the content. Every URL stays the same.
+// Sidebar = 7 groups by domain (11-11); pages inside a group are switched with the tab bar above the
+// content. URLs are unchanged except /external/percent (百分点日报, split out of 外部监测).
 type NavTab = { label: string; path: string; prefixes?: string[]; developerOnly?: boolean };
 type NavGroup = { icon: typeof LayoutDashboard; label: string; tabs: NavTab[] };
 
@@ -53,6 +52,8 @@ const primaryGroups: NavGroup[] = [
       { label: "舆情列表", path: "/sentiment-monitor" },
       { label: "联动分析", path: "/sentiment-monitor/penetration" },
       { label: "预警与处置", path: "/alerts" },
+      { label: "百分点日报", path: "/external/percent" },
+      { label: "监控关键词", path: "/config/monitor-keywords" },
     ],
   },
   {
@@ -69,25 +70,23 @@ const primaryGroups: NavGroup[] = [
   },
   {
     icon: Bot, label: "GEO 洞察", tabs: [
-      { label: "GEO 洞察", path: "/geo", prefixes: ["/questions", "/citations"] },
-      { label: "外部监测", path: "/external" },
+      { label: "GEO 总览", path: "/geo" },
+      { label: "问题与回答", path: "/questions", prefixes: ["/questions/"] },
+      { label: "引用源分析", path: "/citations" },
+      { label: "智推时代", path: "/external" },
     ],
   },
 ];
 
+// Everything that configures GEO collection lives in one place; 舆情 keywords sit with 舆情.
 const configGroups: NavGroup[] = [
   {
-    icon: Database, label: "GEO 知识库", tabs: [
-      { label: "问题库管理", path: "/config/questions" },
+    icon: Database, label: "GEO 配置", tabs: [
+      { label: "问题库", path: "/config/questions" },
       { label: "目标事实", path: "/config/target-facts" },
-      { label: "己方 URL 库", path: "/config/our-content" },
-    ],
-  },
-  {
-    icon: ScanSearch, label: "采集配置", tabs: [
-      { label: "监控关键词", path: "/config/monitor-keywords" },
-      { label: "平台配置", path: "/config/platforms" },
-      { label: "采集管理", path: "/config/collection" },
+      { label: "己方 URL", path: "/config/our-content" },
+      { label: "AI 平台", path: "/config/platforms" },
+      { label: "采集任务", path: "/config/collection" },
       { label: "定时采集", path: "/config/scheduler" },
     ],
   },

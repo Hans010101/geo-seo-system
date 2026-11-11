@@ -62,7 +62,7 @@ export default function Home() {
   const { data: summary, isLoading: summaryLoading } = trpc.dashboard.summary.useQuery(range, { staleTime: 30000 });
   const { data: heatmapData } = trpc.dashboard.heatmap.useQuery(range, { staleTime: 30000 });
   const { data: alertsResult } = trpc.alerts.list.useQuery(
-    { limit: ALERTS_PAGE_SIZE, offset: alertPage * ALERTS_PAGE_SIZE },
+    { domain: "geo", limit: ALERTS_PAGE_SIZE, offset: alertPage * ALERTS_PAGE_SIZE },
     { staleTime: 10000, placeholderData: keepPreviousData }
   );
   const alertsList = alertsResult?.data;
@@ -144,12 +144,10 @@ export default function Home() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">TRON GEO 系统总览</h1>
-          <p className="text-muted-foreground text-sm mt-1">TRON 生成式引擎优化监测系统</p>
+          <h1 className="text-2xl font-bold tracking-tight">GEO 总览</h1>
+          <p className="text-muted-foreground text-sm mt-1">各 AI 平台回答中 TRON 的情感、来源、事实覆盖与己方引用</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button variant="outline" asChild><Link href="/questions">问题详情</Link></Button>
-          <Button variant="outline" asChild><Link href="/citations">引用源分析</Link></Button>
           <Select value={timeRange} onValueChange={(v) => setTimeRange(v as TimeRange)}>
             <SelectTrigger className="w-[140px]">
               <SelectValue />
@@ -217,7 +215,7 @@ export default function Home() {
         <Card>
           <CardHeader className="pb-3">
             <div className="flex items-center justify-between">
-              <CardTitle className="text-base font-semibold">最新预警</CardTitle>
+              <CardTitle className="text-base font-semibold">GEO 预警</CardTitle>
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
                 <Button variant="ghost" size="sm" className="h-6 w-6 p-0" disabled={alertPage === 0} onClick={() => setAlertPage(p => p - 1)}>
                   <ChevronLeft className="h-3.5 w-3.5" />

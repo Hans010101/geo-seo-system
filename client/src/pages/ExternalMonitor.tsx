@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useRoute } from "wouter";
 import { useState } from "react";
 import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
@@ -298,20 +298,16 @@ function PercentTab() {
 }
 
 export default function ExternalMonitor() {
+  const [isPercent] = useRoute("/external/percent");
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold tracking-tight">外部监测</h1>
-        <p className="text-muted-foreground text-sm mt-1">服务商系统数据汇总：智推时代 GEO 与百分点舆情</p>
+        <h1 className="text-2xl font-bold tracking-tight">{isPercent ? "百分点日报" : "智推时代 GEO"}</h1>
+        <p className="text-muted-foreground text-sm mt-1">
+          {isPercent ? "百分点 Mediaforce 舆情服务的每日总量快照" : "服务商智推时代的 AI 平台回答监测，与本系统 GEO 采集互为对照"}
+        </p>
       </div>
-      <Tabs defaultValue="geo" className="space-y-4">
-        <TabsList>
-          <TabsTrigger value="geo">智推时代 GEO</TabsTrigger>
-          <TabsTrigger value="percent">百分点舆情</TabsTrigger>
-        </TabsList>
-        <TabsContent value="geo"><GeoTab /></TabsContent>
-        <TabsContent value="percent"><PercentTab /></TabsContent>
-      </Tabs>
+      {isPercent ? <PercentTab /> : <GeoTab />}
     </div>
   );
 }

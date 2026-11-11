@@ -1679,6 +1679,7 @@ const alertsRouter = router({
         isRead: z.boolean().optional(),
         // H2 (2026-06): status filter; defaults to 'active' in db.listAlerts
         status: z.enum(["active", "resolved", "dismissed"]).optional(),
+        domain: z.enum(["sentiment", "geo"]).optional(), // 舆情 negative_article vs GEO answer alerts
         limit: z.number().optional(),
         offset: z.number().optional(),
       }).optional()
