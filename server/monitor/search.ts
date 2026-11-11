@@ -29,6 +29,8 @@ export async function searchNews(
   keyword: string,
   opts?: { tbs?: string; num?: number; gl?: string; hl?: string }
 ): Promise<SerperNewsItem[]> {
+  if (await budget.serperDisabled()) throw new Error("Serper 已停用");
+  if (await budget.serperDisabled()) throw new Error("Serper 已停用");
   if (!(await budget.hasSerperBudget())) throw new Error("Serper monthly budget exhausted");
   const { apiKey, base } = await getSerper();
   const body: Record<string, unknown> = { q: keyword, num: opts?.num ?? 10 };

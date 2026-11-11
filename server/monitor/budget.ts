@@ -76,6 +76,11 @@ export async function tryConsumeFirecrawl(): Promise<boolean> {
   return db.reserveSysConfigCredit(KEYS.firecrawlUsed, KEYS.firecrawlLimit, DEFAULTS.firecrawlLimit);
 }
 
+// A monthly limit of 0 switches Serper off entirely (no paid search; news uses publisher search).
+export async function serperDisabled(): Promise<boolean> {
+  return (await num(KEYS.serperLimit, DEFAULTS.serperLimit)) <= 0;
+}
+
 export async function hasSerperBudget(): Promise<boolean> {
   const state = await readBudget();
   return state.serper.used < state.serper.limit;

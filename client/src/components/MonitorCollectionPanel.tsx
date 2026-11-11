@@ -153,7 +153,11 @@ export default function MonitorCollectionPanel() {
             <p className="text-[11px] text-muted-foreground mb-3">北京时间自然月 · 每月 1 日 00:00 重置</p>
             <div className="space-y-2.5">
               <BudgetBar label="Firecrawl credits" used={budget?.firecrawl.used} limit={budget?.firecrawl.limit} />
-              <BudgetBar label="Serper API 请求（实际）" used={budget?.serper.used} limit={budget?.serper.limit} />
+              {budget?.serper.limit === 0 ? (
+                <div className="flex justify-between text-xs"><span>Serper 搜索</span><span className="text-muted-foreground">已停用（新闻走百分点 + 媒体站搜索）</span></div>
+              ) : (
+                <BudgetBar label="Serper API 请求（实际）" used={budget?.serper.used} limit={budget?.serper.limit} />
+              )}
               <BudgetBar label={`X 推文(twitterapi.io · $${(budget?.x?.estUsd ?? 0).toFixed(2)})`} used={budget?.x?.used} limit={budget?.x?.limit} />
               <div className="flex justify-between text-xs pt-2 border-t">
                 <span className="text-muted-foreground">本月成本细分</span>

@@ -1,6 +1,7 @@
 // Serper news wrapped as a SocialSource. Returns url+snippet (no fullContent) → pipeline fetches full
 // text via the fetch router (unchanged behavior).
 import { searchNews } from "../search";
+import { serperDisabled } from "../budget";
 import { parseSerperDate } from "../util";
 import { searchPublishers } from "./publisher-search";
 import type { SocialSource, DiscoveredPost, SearchOpts } from "./types";
@@ -10,6 +11,8 @@ export const serperSource: SocialSource = {
   platform: "web",
   enabled: true,
   async search(keyword: string, opts?: SearchOpts): Promise<DiscoveredPost[]> {
+    // Serper switched off: public publisher search is the regular news path, not a fallback.
+    if (await serperDisabled()) return searchPublishers(keyword);
     let items;
     try {
       items = await searchNews(keyword, opts);
