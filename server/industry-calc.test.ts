@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  DAY, HOUR, bigrams, findDuplicate, itemId, parseIndustryBatch, parseTriage, pickTop, similarity, triagePrompt,
+  DAY, HOUR, bigrams, fingerprint, findDuplicate, itemId, parseIndustryBatch, parseTriage, pickTop, similarity, triagePrompt,
   type IndustryRow,
 } from "./industry-calc";
 import { parseIndustryMetrics, parseIndustrySnapshot } from "./industry-metrics";
@@ -33,9 +33,18 @@ describe("near-duplicate detection", () => {
     const b = "消息：Tether 联合 Anchorage 与 Kraken 成立 FASE 基金会，试点稳定币人道主义援助";
     const c = "Strategy 上周增持 250 枚比特币，累计持有 848,250 枚";
     expect(similarity(bigrams(a), bigrams(b))).toBeGreaterThan(0.55);
-    expect(findDuplicate(b, [bigrams(c), bigrams(a)])).toBe(1);
-    expect(findDuplicate(c, [bigrams(a)])).toBe(-1);
-    expect(findDuplicate("短讯", [bigrams("短讯")])).toBe(-1); // too short to judge
+    expect(findDuplicate(b, [fingerprint(c), fingerprint(a)])).toBe(1);
+    expect(findDuplicate(c, [fingerprint(a)])).toBe(-1);
+    expect(findDuplicate("短讯", [fingerprint("短讯")])).toBe(-1); // too short to judge
+  });
+
+  it("keeps template newsflashes apart when numbers or direction differ", () => {
+    const fp = (s: string) => [fingerprint(s)];
+    expect(findDuplicate("数据：BTC 突破 75000 美元", fp("数据：BTC 跌破 75000 美元"))).toBe(-1);
+    expect(findDuplicate("数据：BTC 跌破 74000 美元", fp("数据：BTC 跌破 75000 美元"))).toBe(-1);
+    expect(findDuplicate("RootData：ARB 将于一周后解锁价值约 2162 万美元的代币", fp("RootData：AGT 将于一周后解锁价值约 407 万美元的代币"))).toBe(-1);
+    expect(findDuplicate("Hyperliquid 生态首个 L2 网络 Elysium 上线主网", fp("Hyperliquid 生态首个 L2 Elysium 今日主网上线"))).toBe(0);
+    expect(findDuplicate("贝莱德向 Coinbase 转入 5,320 枚 BTC", fp("贝莱德向 Coinbase 转入 5320 枚 BTC 与 40720 枚 ETH"))).toBe(0);
   });
 });
 

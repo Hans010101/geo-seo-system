@@ -5,8 +5,8 @@ import { ENV } from "./_core/env";
 import { invokeLLM } from "./_core/llm";
 import { dispatchNotification } from "./_core/notification";
 import {
-  CATEGORIES, DAY, ENTITIES, HOUR, INDUSTRY_SOURCES, bigrams, findDuplicate, itemId, parseTriage, triagePrompt,
-  type IndustryRow, type RawIndustryItem, type Triage,
+  CATEGORIES, DAY, ENTITIES, HOUR, INDUSTRY_SOURCES, fingerprint, findDuplicate, itemId, parseTriage, triagePrompt,
+  type Fingerprint, type IndustryRow, type RawIndustryItem, type Triage,
 } from "./industry-calc";
 
 type D1Result = { results: unknown[]; meta?: { changes?: number } };
@@ -61,7 +61,7 @@ export async function setIndustryAlerts(enabled: boolean) {
 }
 
 type Pending = { id: string; source: string; title: string; excerpt: string | null; publishedAt: number; attempts: number };
-type Primary = { id: string; grams: Set<string>[] };
+type Primary = { id: string; grams: Fingerprint[] };
 
 async function callTriage(model: string, items: Pending[]): Promise<{ triage: Triage[]; tokens: number }> {
   const env = getCloudflareEnv();
@@ -95,7 +95,7 @@ export async function triageIndustry(opts: { now?: number; maxBatches?: number }
   const recent = (await client.prepare(`SELECT id, title, summary FROM industryNews
     WHERE status = 'done' AND dupOf IS NULL AND publishedAt >= ?`).bind(now - 2 * DAY)
     .all<{ id: string; title: string; summary: string | null }>()).results;
-  const primaries: Primary[] = recent.map(r => ({ id: r.id, grams: [bigrams(r.title), ...(r.summary ? [bigrams(r.summary)] : [])] }));
+  const primaries: Primary[] = recent.map(r => ({ id: r.id, grams: [fingerprint(r.title), ...(r.summary ? [fingerprint(r.summary)] : [])] }));
   const flat = () => primaries.flatMap(p => p.grams.map(g => ({ id: p.id, g })));
 
   const writes: D1Stmt[] = [];
@@ -108,7 +108,7 @@ export async function triageIndustry(opts: { now?: number; maxBatches?: number }
 
   // 1) Title-level duplicates (same-language reposts) before spending tokens.
   const fresh: Pending[] = [];
-  const freshGrams: Set<string>[] = [];
+  const freshGrams: Fingerprint[] = [];
   let dups = 0;
   for (const it of pending) {
     const candidates = flat();
@@ -117,7 +117,7 @@ export async function triageIndustry(opts: { now?: number; maxBatches?: number }
     const inner = findDuplicate(it.title, freshGrams);
     if (inner >= 0) { markDup(it, fresh[inner].id); dups++; continue; }
     fresh.push(it);
-    freshGrams.push(bigrams(it.title));
+    freshGrams.push(fingerprint(it.title));
   }
   // Duplicates of a pending item point at it; it becomes a primary once classified.
   await runBatches(client, writes.splice(0));
@@ -128,12 +128,14 @@ export async function triageIndustry(opts: { now?: number; maxBatches?: number }
   for (let b = 0; b < fresh.length; b += BATCH) {
     const chunk = fresh.slice(b, b + BATCH);
     let triage: Triage[] = [];
-    try {
-      const res = await callTriage(settings.model, chunk);
-      triage = res.triage;
-      tokens += res.tokens;
-    } catch (error) {
-      console.log(JSON.stringify({ event: "industry.triage_failed", error: String((error as Error).message).slice(0, 200) }));
+    for (let attempt = 0; attempt < 2 && !triage.length; attempt++) {
+      try {
+        const res = await callTriage(settings.model, chunk);
+        triage = res.triage;
+        tokens += res.tokens;
+      } catch (error) {
+        console.log(JSON.stringify({ event: "industry.triage_failed", attempt, error: String((error as Error).message).slice(0, 200) }));
+      }
     }
     const byI = new Map(triage.map(t => [t.i, t]));
     chunk.forEach((it, i) => {
@@ -153,7 +155,7 @@ export async function triageIndustry(opts: { now?: number; maxBatches?: number }
       const hit = t.summary ? findDuplicate(t.summary, candidates.map(c => c.g)) : -1;
       if (hit >= 0 && candidates[hit].id !== it.id) { markDup(it, candidates[hit].id); dups++; return; }
       kept++;
-      primaries.push({ id: it.id, grams: [bigrams(it.title), ...(t.summary ? [bigrams(t.summary)] : [])] });
+      primaries.push({ id: it.id, grams: [fingerprint(it.title), ...(t.summary ? [fingerprint(t.summary)] : [])] });
       writes.push(client.prepare(`UPDATE industryNews SET status = 'done', category = ?, importance = ?, entities = ?, tron = ?,
         tronNote = ?, summary = ? WHERE id = ?`)
         .bind(t.category, t.importance, JSON.stringify(t.entities), t.tron, t.tronNote || null, t.summary || it.title, it.id));

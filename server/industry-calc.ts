@@ -101,11 +101,33 @@ export function similarity(a: Set<string>, b: Set<string>) {
 
 export const DUP_THRESHOLD = 0.55;
 
+/**
+ * Bigrams plus the numbers and price direction of a text. Template newsflashes ("BTC 突破 75000 美元"
+ * vs "BTC 跌破 74000 美元", token-unlock notices) look alike but differ exactly there.
+ */
+export type Fingerprint = { grams: Set<string>; nums: Set<string>; dir: "up" | "down" | null };
+export function fingerprint(text: string): Fingerprint {
+  const nums = new Set((text.replace(/(\d),(?=\d{3})/g, "$1").match(/\d+(?:\.\d+)?/g) || []).filter(n => n !== "24"));
+  const up = /突破|涨破|上涨|升至|surge|rise/i.test(text);
+  const down = /跌破|下跌|跌至|plunge|fall/i.test(text);
+  return { grams: bigrams(text), nums, dir: up && !down ? "up" : down && !up ? "down" : null };
+}
+
+function sameFacts(a: Fingerprint, b: Fingerprint) {
+  if (a.dir && b.dir && a.dir !== b.dir) return false;
+  if (!a.nums.size || !b.nums.size) return true;
+  let shared = 0;
+  a.nums.forEach(n => { if (b.nums.has(n)) shared++; });
+  return shared > 0;
+}
+
 /** Index of the first candidate this text duplicates, or -1. */
-export function findDuplicate(text: string, candidates: Set<string>[], threshold = DUP_THRESHOLD) {
-  const grams = bigrams(text);
-  if (grams.size < 6) return -1; // too short to judge
-  for (let i = 0; i < candidates.length; i++) if (similarity(grams, candidates[i]) >= threshold) return i;
+export function findDuplicate(text: string, candidates: Fingerprint[], threshold = DUP_THRESHOLD) {
+  const fp = fingerprint(text);
+  if (fp.grams.size < 6) return -1; // too short to judge
+  for (let i = 0; i < candidates.length; i++) {
+    if (similarity(fp.grams, candidates[i].grams) >= threshold && sameFacts(fp, candidates[i])) return i;
+  }
   return -1;
 }
 
