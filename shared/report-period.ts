@@ -87,7 +87,8 @@ export const geoReportKey = (p: ReportPeriod) => p.reportPeriod.replace(/\D/g, "
 // What kind of report a stored period is, for display. Custom date ranges are stored with
 // reportType "weekly" (the DB enum has no third value), so they are told apart by their dates.
 export function reportKindLabel(reportType: string, reportPeriod: string): "周报" | "月报" | "自定义" {
-  if (reportType === "monthly") return "月报";
+  // GEO reports have no type column, so a "YYYY-MM" period is what marks a monthly one.
+  if (reportType === "monthly" || /^\d{4}-\d{2}$/.test(reportPeriod)) return "月报";
   const dates = reportPeriod.match(/^(\d{4}-\d{2}-\d{2}) ~ (\d{4}-\d{2}-\d{2})$/);
   if (!dates) return "周报"; // legacy "YYYY-Wnn" labels
   const start = Date.parse(`${dates[1]}T00:00:00+08:00`);

@@ -51,7 +51,7 @@ import { getMarketLinkage, getMarketOverview, setMarketAlertSettings } from "./m
 import { generateBrief, getBrief, getBriefRecipientIds, getBriefSettings, listBriefs, resolveBriefRecipients, setBriefRecipient, setBriefSettings } from "./brief";
 import { getExternalGeoAnswer, getExternalGeoOverview, listExternalGeoAnswers, listPercentDailyStats } from "./external";
 import { emptyAnswerError, shouldLimitReasoning } from "./llm-answer";
-import { dateRangePeriod, geoReportKey, parsePeriod, reportDateRangeSchema } from "../shared/report-period";
+import { comparisonWindow, dateRangePeriod, formatReportDate, geoReportKey, parsePeriod, reportDateRangeSchema } from "../shared/report-period";
 
 // ==================== Structured Logger ====================
 function createLogger(module: string) {
@@ -1912,15 +1912,30 @@ const weeklyReportsRouter = router({
     .input(z.object({
       reportWeek: z.string().max(32).optional(),
       dateRange: reportDateRangeSchema.optional(),
+      // 月报：month = "YYYY-MM"，省略时为本月（北京时间）。
+      reportType: z.enum(["weekly", "monthly"]).optional(),
+      month: z.string().regex(/^\d{4}-\d{2}$/).optional(),
     }).refine(v => !(v.reportWeek && v.dateRange), { message: "请选择周次或起止日期中的一种" }))
     .mutation(async ({ input }) => {
-      const period = input.dateRange ? dateRangePeriod(input.dateRange)
+      const period = input.reportType === "monthly"
+        ? (input.month ? parsePeriod("monthly", input.month) : monthlyPeriodOf(Date.now()))
+        : input.dateRange ? dateRangePeriod(input.dateRange)
         : input.reportWeek ? parsePeriod("weekly", input.reportWeek) : weeklyPeriodOf(Date.now());
       const reportWeek = geoReportKey(period);
       const startTime = period.startMs;
       const endTime = period.endMs - 1; // Existing GEO queries use an inclusive upper bound.
 
-      const summary = await db.getDashboardSummary(startTime, endTime);
+      const current = await db.getDashboardSummary(startTime, endTime);
+      // 月报附上月环比；本月未过完时只比上月同期（如 11/1–11/11 对 10/1–10/11）。
+      let summary: typeof current & { previous?: typeof current; previousPeriod?: string } = current;
+      if (period.reportType === "monthly" && current) {
+        const win = comparisonWindow(period, Date.now());
+        const previous = await db.getDashboardSummary(win.prevStartMs, win.prevEndMs - 1);
+        summary = {
+          ...current, previous,
+          previousPeriod: `${formatReportDate(win.prevStartMs)} ~ ${formatReportDate(win.prevEndMs - 1)}`,
+        };
+      }
       const heatmap = await db.getHeatmapData(startTime, endTime);
       const topCited = await db.getTopCitedUrls(20, startTime, endTime);
       const alertsSummary = await db.getReportAlerts(startTime, endTime);
@@ -1936,7 +1951,7 @@ const weeklyReportsRouter = router({
         generatedAt: Date.now(),
       });
 
-      return { success: true, reportWeek };
+      return { success: true, reportWeek, reportPeriod: period.reportPeriod };
     }),
 });
 

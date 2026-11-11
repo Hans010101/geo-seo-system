@@ -421,7 +421,7 @@ describe("GEO Platform API", () => {
     it("lets admins generate a weekly report", async () => {
       const caller = appRouter.createCaller(createAdminContext());
       await expect(caller.weeklyReports.generate({ reportWeek: "2026-W34" }))
-        .resolves.toEqual({ success: true, reportWeek: "2026082120260827" });
+        .resolves.toEqual({ success: true, reportWeek: "2026082120260827", reportPeriod: "2026-08-21 ~ 2026-08-27" });
     });
 
     it("uses the selected dates for every GEO report aggregate and rejects invalid ranges", async () => {
@@ -433,7 +433,7 @@ describe("GEO Platform API", () => {
       const save = vi.spyOn(db, "upsertWeeklyReport");
       try {
         await expect(caller.weeklyReports.generate({ dateRange: { startDate: "2026-09-25", endDate: "2026-10-01" } }))
-          .resolves.toEqual({ success: true, reportWeek: "2026092520261001" });
+          .resolves.toEqual({ success: true, reportWeek: "2026092520261001", reportPeriod: "2026-09-25 ~ 2026-10-01" });
         const start = Date.parse("2026-09-25T00:00:00+08:00");
         const end = Date.parse("2026-10-01T23:59:59.999+08:00");
         expect(summary).toHaveBeenCalledWith(start, end);
@@ -443,6 +443,27 @@ describe("GEO Platform API", () => {
         expect(save).toHaveBeenCalledWith(expect.objectContaining({ reportPeriod: "2026-09-25 ~ 2026-10-01" }));
         await expect(caller.weeklyReports.generate({ dateRange: { startDate: "2026-10-02", endDate: "2026-10-01" } })).rejects.toThrow();
         await expect(caller.monitor.generateReport({ reportType: "monthly", dateRange: { startDate: "2026-09-25", endDate: "2026-10-01" } })).rejects.toThrow();
+      } finally {
+        vi.restoreAllMocks();
+      }
+    });
+
+    it("generates a calendar-month GEO report with a month-over-month comparison", async () => {
+      const caller = appRouter.createCaller(createAdminContext());
+      const summary = vi.spyOn(db, "getDashboardSummary");
+      const save = vi.spyOn(db, "upsertWeeklyReport");
+      try {
+        await expect(caller.weeklyReports.generate({ reportType: "monthly", month: "2026-10" }))
+          .resolves.toEqual({ success: true, reportWeek: "202610", reportPeriod: "2026-10" });
+        const start = Date.parse("2026-10-01T00:00:00+08:00");
+        const end = Date.parse("2026-11-01T00:00:00+08:00") - 1;
+        expect(summary).toHaveBeenCalledWith(start, end);
+        expect(summary).toHaveBeenCalledWith(Date.parse("2026-09-01T00:00:00+08:00"), start - 1);
+        expect(save).toHaveBeenCalledWith(expect.objectContaining({
+          reportWeek: "202610", reportPeriod: "2026-10",
+          summaryMetrics: expect.objectContaining({ previousPeriod: "2026-09-01 ~ 2026-09-30" }),
+        }));
+        await expect(caller.weeklyReports.generate({ reportType: "monthly", month: "2026-13" })).rejects.toThrow();
       } finally {
         vi.restoreAllMocks();
       }

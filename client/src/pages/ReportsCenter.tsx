@@ -19,7 +19,7 @@ export default function ReportsCenter() {
     <div className="space-y-6">
       <header>
         <h1 className="text-2xl font-semibold tracking-tight">报告中心</h1>
-        <p className="mt-1 text-sm text-muted-foreground">统一查看舆情周报/月报与 GEO 周报；导出功能保留在各报告详情页。</p>
+        <p className="mt-1 text-sm text-muted-foreground">统一查看舆情与 GEO 的周报/月报；导出功能保留在各报告详情页。</p>
       </header>
 
       <section className="grid gap-4 xl:grid-cols-2">

@@ -30,6 +30,8 @@ it("uses Beijing Friday–Thursday weeks and validates custom ranges without cha
 it("labels stored periods as weekly, monthly or custom", async () => {
   const { reportKindLabel } = await import("../../shared/report-period");
   expect(reportKindLabel("monthly", "2026-11")).toBe("月报");
+  expect(reportKindLabel("weekly", "2026-11")).toBe("月报"); // GEO 月报 has no type column
+  expect(geoReportKey(monthlyPeriodOf(Date.parse("2026-11-11T12:00:00+08:00")))).toBe("202611");
   expect(reportKindLabel("weekly", "2026-10-30 ~ 2026-11-05")).toBe("周报");
   expect(reportKindLabel("weekly", "2026-W40")).toBe("周报");
   expect(reportKindLabel("weekly", "2026-10-01 ~ 2026-10-31")).toBe("自定义");
