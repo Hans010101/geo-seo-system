@@ -162,8 +162,7 @@ export function buildBriefEmail(b: BriefData, link: string): { subject: string; 
   const industryRows = (ind?.items || []).map((it, i) => `<tr><td style="padding:8px 14px;${i ? `border-top:1px solid ${LINE};` : ""}${it.tron ? "background:#fff7d6;" : ""}font-size:14px">
       <span style="color:${MUTED};font-size:11.5px;border:1px solid ${LINE};padding:0 5px;margin-right:6px;white-space:nowrap">${esc(it.categoryLabel)}</span>${safeUrl(it.url) ? `<a href="${esc(it.url)}" style="color:${INK};text-decoration:none">${esc(it.summary)}</a>` : esc(it.summary)}</td></tr>`).join("");
   const industry = ind && ind.items.length ? `${heading("行业动态")}
-  <tr><td>${card(`${macroStrip ? `<tr><td style="padding:9px 14px;font-size:13px;background:#f8f6f1;border-bottom:1px solid ${LINE}">${macroStrip}</td></tr>` : ""}${industryRows}`)}
-    <div style="font-size:12px;color:${MUTED};margin-top:4px">本时段行业快讯 ${ind.total} 条（已去重），按重要性选 ${ind.items.length} 条；黄色为与 TRON 相关。</div></td></tr>` : "";
+  <tr><td>${card(`${macroStrip ? `<tr><td style="padding:9px 14px;font-size:13px;background:#f8f6f1;border-bottom:1px solid ${LINE}">${macroStrip}</td></tr>` : ""}${industryRows}`)}</td></tr>` : "";
 
   const t = b.trends;
   const trendCell = (title: string, url: string, note = "") => `<td width="50%" valign="top" style="padding:0 4px 8px">${card(`<tr><td style="padding:10px 12px">

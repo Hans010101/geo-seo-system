@@ -259,10 +259,12 @@ export type BriefIndustry = {
 type MacroInput = { symbol: string; name: string; unit: string | null; price: number | null; change1d: number | null }[];
 type FedInput = { events: { title: string; outcomes: { label: string; prob: number }[] }[] } | null;
 
+// Rate moves in % throughout (user preference 11-11: no "bp").
 const FED_LABELS: Record<string, string> = {
-  "No change": "维持", "25 bps increase": "加息 25bp", "50+ bps increase": "加息 50bp+",
-  "25 bps decrease": "降息 25bp", "50+ bps decrease": "降息 50bp+",
+  "No change": "维持", "25 bps increase": "加息 0.25%", "50+ bps increase": "加息 0.5% 以上",
+  "25 bps decrease": "降息 0.25%", "50+ bps decrease": "降息 0.5% 以上",
 };
+export const fedLabel = (label: string) => FED_LABELS[label] || label;
 const MONTHS: Record<string, string> = {
   January: "1 月", February: "2 月", March: "3 月", April: "4 月", May: "5 月", June: "6 月", July: "7 月",
   August: "8 月", September: "9 月", October: "10 月", November: "11 月", December: "12 月",
@@ -276,11 +278,11 @@ export function briefIndustrySection(rows: IndustryRow[], macro: MacroInput, fed
   for (const symbol of ["NASDAQ", "US10Y", "DXY", "GOLD"]) {
     const m = macro.find(x => x.symbol === symbol);
     if (!m || m.price === null) continue;
-    const bp = m.unit === "%";
+    const pctPoint = m.unit === "%"; // a yield: its change is in percentage points
     strip.push({
       label: symbol === "US10Y" ? "10Y 美债" : m.name,
-      value: bp ? `${m.price.toFixed(2)}%` : m.price >= 1000 ? Math.round(m.price).toLocaleString("en-US") : m.price.toFixed(2),
-      change: m.change1d === null ? "" : bp ? `${m.change1d > 0 ? "+" : ""}${m.change1d.toFixed(0)}bp` : `${m.change1d > 0 ? "+" : ""}${m.change1d.toFixed(2)}%`,
+      value: pctPoint ? `${m.price.toFixed(2)}%` : m.price >= 1000 ? Math.round(m.price).toLocaleString("en-US") : m.price.toFixed(2),
+      change: m.change1d === null ? "" : `${m.change1d > 0 ? "+" : ""}${m.change1d.toFixed(2)}%`,
       dir: dir(m.change1d),
     });
   }
@@ -288,7 +290,7 @@ export function briefIndustrySection(rows: IndustryRow[], macro: MacroInput, fed
   if (meeting?.outcomes?.length) {
     const top = meeting.outcomes[0];
     const month = Object.keys(MONTHS).find(k => meeting.title.includes(k));
-    strip.push({ label: `${month ? MONTHS[month] : "下次"}议息`, value: `${FED_LABELS[top.label] || top.label} ${Math.round(top.prob)}%`, change: "", dir: "flat" });
+    strip.push({ label: `${month ? MONTHS[month] : "下次"}议息`, value: `${fedLabel(top.label)}（概率 ${Math.round(top.prob)}%）`, change: "", dir: "flat" });
   }
   if (fng !== null) strip.push({ label: "恐慌贪婪", value: String(Math.round(fng)), change: "", dir: "flat" });
   return {

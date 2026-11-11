@@ -4,7 +4,7 @@
 import { getDb, getSysConfig, setSysConfig } from "./db";
 import { dispatchNotification } from "./_core/notification";
 import { MACRO_SERIES, priceAt, sparkline, toSeries } from "./market-calc";
-import { DAY, HOUR, ENTITIES } from "./industry-calc";
+import { DAY, HOUR, ENTITIES, fedLabel } from "./industry-calc";
 import { listIndustry } from "./industry";
 
 type D1Stmt = { bind(...values: unknown[]): D1Stmt; all<T = unknown>(): Promise<{ results: T[] }>; first<T = unknown>(): Promise<T | null> };
@@ -64,7 +64,8 @@ export async function getMacroDashboard(now = Date.now()) {
     const change = (span: number) => {
       const before = priceAt(points, last[0] - span, 4 * DAY);
       if (before === null) return null;
-      return unit === "%" ? Math.round((last[1] - before) * 1000) / 10 /* bp */ : Math.round(((last[1] - before) / before) * 10000) / 100;
+      // A yield moves in percentage points (+0.12%), a price in percent of itself.
+      return unit === "%" ? Math.round((last[1] - before) * 100) / 100 : Math.round(((last[1] - before) / before) * 10000) / 100;
     };
     return {
       symbol, name, unit: unit || null, price: last[1], at: last[0],
@@ -77,6 +78,7 @@ export async function getMacroDashboard(now = Date.now()) {
     .bind(bjDay(now - 30 * DAY)).all<{ day: string; value: number }>();
   let fed: FedSnapshot | null = null;
   try { fed = JSON.parse((await getSysConfig("industry_snapshot_fed")) || "null"); } catch { fed = null; }
+  if (fed) fed = { ...fed, events: fed.events.map(e => ({ ...e, outcomes: e.outcomes.map(o => ({ ...o, label: fedLabel(o.label) })) })) };
   const news = await listIndustry({ days: 7, category: "macro", minImportance: 3, limit: 12 }, now);
   return { macro, fng: fng.results, fed, news: news.items };
 }
@@ -205,9 +207,9 @@ export async function checkMacroAlerts(now = Date.now()) {
   }
   const tnx = move("US10Y", 20 * HOUR);
   if (tnx) {
-    const bp = (tnx.last - tnx.before) * 100;
-    if (Math.abs(bp) >= MACRO_THRESHOLDS.us10yBp) candidates.push({
-      kind: "us10y", title: `10 年期美债收益率单日${bp > 0 ? "上行" : "下行"} ${Math.abs(bp).toFixed(0)}bp`,
+    const move = tnx.last - tnx.before;
+    if (Math.abs(move) * 100 >= MACRO_THRESHOLDS.us10yBp) candidates.push({
+      kind: "us10y", title: `10 年期美债收益率单日${move > 0 ? "上行" : "下行"} ${Math.abs(move).toFixed(2)}%`,
       content: `10 年期美债收益率 ${tnx.last.toFixed(2)}%（前一交易日 ${tnx.before.toFixed(2)}%）。`,
     });
   }

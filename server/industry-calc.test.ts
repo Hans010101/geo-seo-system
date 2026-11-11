@@ -106,7 +106,7 @@ describe("早晚报行业动态板块", () => {
     ];
     const macro = [
       { symbol: "NASDAQ", name: "纳斯达克", unit: null, price: 25066.2, change1d: -0.73 },
-      { symbol: "US10Y", name: "10 年期美债收益率", unit: "%", price: 4.983, change1d: 12 },
+      { symbol: "US10Y", name: "10 年期美债收益率", unit: "%", price: 4.983, change1d: 0.12 },
     ];
     const fed = { events: [{ title: "Fed Decision in December?", outcomes: [{ label: "25 bps increase", prob: 85.5 }] }] };
     const s = briefIndustrySection(rows, macro, fed, 29);
@@ -114,8 +114,8 @@ describe("早晚报行业动态板块", () => {
     expect(s.items[1]).toMatchObject({ tron: 1, categoryLabel: "稳定币与支付", source: "The Block" });
     expect(s.macro).toEqual([
       { label: "纳斯达克", value: "25,066", change: "-0.73%", dir: "down" },
-      { label: "10Y 美债", value: "4.98%", change: "+12bp", dir: "up" },
-      { label: "12 月议息", value: "加息 25bp 86%", change: "", dir: "flat" },
+      { label: "10Y 美债", value: "4.98%", change: "+0.12%", dir: "up" },
+      { label: "12 月议息", value: "加息 0.25%（概率 86%）", change: "", dir: "flat" },
       { label: "恐慌贪婪", value: "29", change: "", dir: "flat" },
     ]);
     expect(s.total).toBe(3);

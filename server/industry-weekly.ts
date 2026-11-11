@@ -55,7 +55,7 @@ export async function generateIndustryWeekly(now = Date.now()): Promise<Industry
     ...macro.macro.filter(m => m.price !== null).map(m => ({
       label: m.name,
       value: m.unit === "%" ? `${m.price!.toFixed(2)}%` : m.price! >= 1000 ? Math.round(m.price!).toLocaleString("en-US") : m.price!.toFixed(2),
-      change: m.unit === "%" ? signed(m.change7d, "bp") : signed(m.change7d),
+      change: signed(m.change7d),
     })),
     ...comp.issuers.filter(i => i.value !== null).map(i => ({ label: i.label, value: fmtUsd(i.value), change: signed(i.change7d) })),
     ...comp.chains.filter(c => c.stablecoins !== null).slice(0, 5).map(c => ({

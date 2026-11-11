@@ -33,7 +33,7 @@ const bjTime = (ms: number, withDate = true) => {
 };
 const bjDay = (ms: number) => new Date(ms + 8 * 3_600_000).toISOString().slice(0, 10);
 const signed = (v: number | null | undefined, unit = "%", digits = 2) =>
-  v === null || v === undefined ? "—" : `${v > 0 ? "+" : ""}${unit === "bp" ? v.toFixed(0) : v.toFixed(digits)}${unit}`;
+  v === null || v === undefined ? "—" : `${v > 0 ? "+" : ""}${v.toFixed(digits)}${unit}`;
 const tone = (v: number | null | undefined) => (v === null || v === undefined ? "text-muted-foreground" : v > 0 ? "text-green-600" : v < 0 ? "text-red-600" : "");
 const usd = (v: number | null | undefined) =>
   v === null || v === undefined ? "—" : v >= 1e8 ? `${(v / 1e8).toFixed(v >= 1e10 ? 0 : 1)} 亿` : v >= 1e4 ? `${Math.round(v / 1e4)} 万` : v.toFixed(0);
@@ -160,7 +160,7 @@ function NewsTab() {
             <span className="flex items-center gap-3 ml-auto">
               <label className="flex items-center gap-1.5">
                 <Switch checked={!!status?.settings.alertsEnabled} onCheckedChange={v => setAlerts.mutate({ enabled: v })} />
-                重大事件告警（5 级事件、BTC±8%、纳指跌 3%、美债 ±15bp）
+                重大事件告警（5 级事件、BTC±8%、纳指跌 3%、美债收益率单日 ±0.15%）
               </label>
               <Button size="sm" variant="outline" disabled={triage.isPending} onClick={() => triage.mutate()}>{triage.isPending ? "分拣中…" : "立即分拣"}</Button>
             </span>
@@ -195,8 +195,8 @@ function MacroTab() {
               <div className="text-xs text-muted-foreground">{m.name}</div>
               <div className="text-lg font-semibold tabular-nums">{m.price === null ? "—" : bp ? `${m.price.toFixed(2)}%` : m.price >= 1000 ? Math.round(m.price).toLocaleString("en-US") : m.price.toFixed(2)}</div>
               <div className="text-xs flex gap-2 tabular-nums">
-                <span className={tone(m.change1d)}>日 {signed(m.change1d, bp ? "bp" : "%")}</span>
-                <span className={tone(m.change7d)}>周 {signed(m.change7d, bp ? "bp" : "%")}</span>
+                <span className={tone(m.change1d)}>日 {signed(m.change1d)}</span>
+                <span className={tone(m.change7d)}>周 {signed(m.change7d)}</span>
               </div>
               <MiniSpark values={m.spark} />
               <div className="text-[11px] text-muted-foreground">{m.at ? `截至 ${bjTime(m.at)} · 30 日` : "暂无数据"}</div>

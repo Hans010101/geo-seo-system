@@ -196,7 +196,6 @@ function BriefView({ brief }: { brief: Brief }) {
             </div>
           ))}
         </section>
-        <p className="text-xs text-muted-foreground -mt-1">本时段行业快讯 {brief.industry.total} 条（已去重），按重要性选 {brief.industry.items.length} 条；黄色为与 TRON 相关。<a href="/industry" className="underline ml-1">查看全部</a></p>
       </> : null}
 
       <Heading>事件追踪</Heading>
