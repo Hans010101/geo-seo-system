@@ -5,7 +5,8 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Loader2, Send, CheckCircle, XCircle, Mail, Bot, Settings2 } from "lucide-react";
+import { Loader2, Send, CheckCircle, XCircle, Mail, Bot, Settings2, Radar } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
 import { useState, useEffect } from "react";
 import { toast } from "sonner";
 import TelegramConnect from "@/components/TelegramConnect";
@@ -22,6 +23,11 @@ export default function NotificationSettings() {
   const { data: logs } = trpc.notifications.listLogs.useQuery({ limit: 10 });
   const { data: emailCfg } = trpc.notifications.getEmailAlertConfig.useQuery();
   const utils = trpc.useUtils();
+  const { data: push } = trpc.monitor.getPushConfig.useQuery();
+  const savePush = trpc.monitor.setPushConfig.useMutation({
+    onSuccess: () => { utils.monitor.getPushConfig.invalidate(); toast.success("推送设置已更新"); },
+    onError: (e) => toast.error(e.message),
+  });
 
   const upsertMutation = trpc.notifications.upsertConfig.useMutation({
     onSuccess: () => { utils.notifications.listConfigs.invalidate(); toast.success("已保存"); },
@@ -114,6 +120,42 @@ export default function NotificationSettings() {
         </Card>
       </div>
 
+      {/* 舆情推送开关（原在舆情情报页） */}
+      <Card>
+        <CardHeader className="pb-3"><CardTitle className="text-sm font-semibold flex items-center gap-2"><Radar className="h-4 w-4" /> 舆情推送</CardTitle></CardHeader>
+        <CardContent className="flex flex-wrap items-center gap-x-6 gap-y-3">
+          <label className="flex items-center gap-2 text-xs">
+            <Switch checked={push?.briefingEnabled ?? false} onCheckedChange={(v) => savePush.mutate({ briefingEnabled: v })} />
+            定时简报
+          </label>
+          <div className="flex items-center gap-2 text-xs">
+            <span className="text-muted-foreground">简报模式</span>
+            <Select value={push?.briefingMode || "every"} onValueChange={(v) => savePush.mutate({ briefingMode: v as any })}>
+              <SelectTrigger className="w-[130px] h-8 text-xs"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="every">每轮推送</SelectItem>
+                <SelectItem value="negative_only">仅有负面时</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <label className="flex items-center gap-2 text-xs">
+            <Switch checked={push?.realtimeEnabled ?? false} onCheckedChange={(v) => savePush.mutate({ realtimeEnabled: v })} />
+            负面实时预警
+          </label>
+          <div className="flex items-center gap-2 text-xs">
+            <span className="text-muted-foreground">预警阈值</span>
+            <Select value={push?.alertMinThreat || "medium"} onValueChange={(v) => savePush.mutate({ alertMinThreat: v as any })}>
+              <SelectTrigger className="w-[150px] h-8 text-xs"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="high">仅高威胁(最少)</SelectItem>
+                <SelectItem value="medium">中+高威胁(推荐)</SelectItem>
+                <SelectItem value="low">低+中+高(最多)</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </CardContent>
+      </Card>
+
       {/* 全局推送规则 */}
       <Card>
         <CardHeader className="pb-3"><CardTitle className="text-sm font-semibold">全局推送规则</CardTitle></CardHeader>
@@ -130,7 +172,7 @@ export default function NotificationSettings() {
             <div className="space-y-1.5"><Label className="text-xs">静默结束</Label><Input type="time" value={rules.silentEnd} onChange={(e) => setRules({ ...rules, silentEnd: e.target.value })} className="w-[120px] h-8 text-xs" /></div>
             <Button size="sm" onClick={saveRules} disabled={upsertMutation.isPending}>{upsertMutation.isPending ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : null}保存规则</Button>
           </div>
-          <p className="text-[10px] text-muted-foreground mt-2">静默时间内的预警将被跳过(Asia/Shanghai)。简报/实时预警的总开关在「舆情监控」页。</p>
+          <p className="text-[10px] text-muted-foreground mt-2">静默时间内的预警将被跳过(Asia/Shanghai)。简报/实时预警的开关见上方「舆情推送」。</p>
         </CardContent>
       </Card>
 

@@ -3,6 +3,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
+import MonitorCollectionPanel from "@/components/MonitorCollectionPanel";
 import { Activity, Bot, CircleGauge, Clock3, Database, ExternalLink, Radio, SearchCheck } from "lucide-react";
 
 const PROFILE_LABELS: Record<string, string> = {
@@ -94,7 +95,7 @@ export default function OperationsCenter() {
             <span className="text-xs text-muted-foreground">每分钟自动刷新</span>
           </div>
           <h1 className="text-2xl font-semibold tracking-tight">运行中心</h1>
-          <p className="mt-1 text-sm text-muted-foreground">查看采集漏斗、信源健康、GEO 进度与资源使用；本页只读，不会改变生产任务。</p>
+          <p className="mt-1 text-sm text-muted-foreground">查看舆情采集、信源健康、GEO 进度与资源成本；定时监控开关与「立即运行一轮」也在这里。</p>
         </div>
         <Button variant="outline" onClick={() => query.refetch()} disabled={query.isFetching}>
           <Activity className={`mr-2 h-4 w-4 ${query.isFetching ? "animate-spin" : ""}`} />刷新状态
@@ -109,6 +110,8 @@ export default function OperationsCenter() {
         <SummaryCard icon={Activity} label="社交任务" value={statusLabel(data?.profiles?.monitor_primary_social?.status)} detail={dateTime(data?.profiles?.monitor_primary_social?.finishedAt)} />
         <SummaryCard icon={Clock3} label="最新任务" value={data?.task || "—"} detail={dateTime(data?.finishedAt)} />
       </section>
+
+      <MonitorCollectionPanel />
 
       <section className="grid gap-4 xl:grid-cols-2">
         {profiles.map(([key, cycle]) => {
