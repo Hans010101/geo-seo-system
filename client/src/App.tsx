@@ -24,7 +24,6 @@ const ConfigTargetFacts = lazy(() => import("./pages/ConfigTargetFacts"));
 const ConfigOurContent = lazy(() => import("./pages/ConfigOurContent"));
 const ConfigPlatforms = lazy(() => import("./pages/ConfigPlatforms"));
 const ConfigCollection = lazy(() => import("./pages/ConfigCollection"));
-const ConfigScheduler = lazy(() => import("./pages/ConfigScheduler"));
 const ConfigUsers = lazy(() => import("./pages/ConfigUsers"));
 const ConfigNotifications = lazy(() => import("./pages/ConfigNotifications"));
 const SentimentMonitor = lazy(() => import("./pages/SentimentMonitor"));
@@ -65,7 +64,6 @@ function Router() {
           <Route path="/config/our-content" component={ConfigOurContent} />
           <Route path="/config/platforms" component={ConfigPlatforms} />
           <Route path="/config/collection" component={ConfigCollection} />
-          <Route path="/config/scheduler" component={ConfigScheduler} />
           <Route path="/config/users" component={ConfigUsers} />
           <Route path="/config/notifications" component={ConfigNotifications} />
           <Route path="/config/monitor-keywords" component={ConfigMonitorKeywords} />

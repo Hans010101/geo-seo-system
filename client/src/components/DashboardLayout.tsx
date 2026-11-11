@@ -24,7 +24,6 @@ import {
   LayoutDashboard,
   LogOut,
   PanelLeft,
-  Database,
   Globe,
   Activity,
   Radar,
@@ -40,8 +39,8 @@ import { Input } from "./ui/input";
 import { trpc } from "@/lib/trpc";
 import { Separator } from "./ui/separator";
 
-// Sidebar = 7 groups by domain (11-11); pages inside a group are switched with the tab bar above the
-// content. URLs are unchanged except /external/percent (百分点日报, split out of 外部监测).
+// Sidebar = 6 groups by domain (11-11); pages inside a group are switched with the tab bar above the
+// content. URLs are unchanged except /external/percent (百分点数据, split out of the old 外部监测 page).
 type NavTab = { label: string; path: string; prefixes?: string[]; developerOnly?: boolean };
 type NavGroup = { icon: typeof LayoutDashboard; label: string; tabs: NavTab[] };
 
@@ -52,14 +51,14 @@ const primaryGroups: NavGroup[] = [
       { label: "舆情列表", path: "/sentiment-monitor" },
       { label: "联动分析", path: "/sentiment-monitor/penetration" },
       { label: "预警与处置", path: "/alerts" },
-      { label: "百分点日报", path: "/external/percent" },
       { label: "监控关键词", path: "/config/monitor-keywords" },
+      { label: "百分点数据", path: "/external/percent" },
     ],
   },
   {
-    icon: Newspaper, label: "早晚报与报告", tabs: [
+    icon: Newspaper, label: "报告中心", tabs: [
       { label: "早晚报", path: "/briefs", prefixes: ["/briefs/"] },
-      { label: "报告中心", path: "/report-center", prefixes: ["/reports", "/sentiment-monitor/reports", "/industry-reports"] },
+      { label: "周月报", path: "/report-center", prefixes: ["/reports", "/sentiment-monitor/reports", "/industry-reports"] },
     ],
   },
   {
@@ -69,30 +68,25 @@ const primaryGroups: NavGroup[] = [
     ],
   },
   {
+    // GEO views and GEO configuration in one place.
     icon: Bot, label: "GEO 洞察", tabs: [
       { label: "GEO 总览", path: "/geo" },
       { label: "问题与回答", path: "/questions", prefixes: ["/questions/"] },
       { label: "引用源分析", path: "/citations" },
-      { label: "智推时代", path: "/external" },
+      { label: "智推时代数据", path: "/external" },
+      { label: "问题库", path: "/config/questions" },
+      { label: "目标事实", path: "/config/target-facts" },
+      { label: "己方 URL", path: "/config/our-content" },
+      { label: "采集任务", path: "/config/collection" },
     ],
   },
 ];
 
-// Everything that configures GEO collection lives in one place; 舆情 keywords sit with 舆情.
 const configGroups: NavGroup[] = [
-  {
-    icon: Database, label: "GEO 配置", tabs: [
-      { label: "问题库", path: "/config/questions" },
-      { label: "目标事实", path: "/config/target-facts" },
-      { label: "己方 URL", path: "/config/our-content" },
-      { label: "AI 平台", path: "/config/platforms" },
-      { label: "采集任务", path: "/config/collection" },
-      { label: "定时采集", path: "/config/scheduler" },
-    ],
-  },
   {
     icon: Activity, label: "运行与系统", tabs: [
       { label: "运行中心", path: "/operations" },
+      { label: "平台配置", path: "/config/platforms" },
       { label: "通知设置", path: "/config/notifications", developerOnly: true },
       { label: "用户管理", path: "/config/users", developerOnly: true },
     ],

@@ -19,7 +19,7 @@ export default function ReportsCenter() {
   return (
     <div className="space-y-6">
       <header>
-        <h1 className="text-2xl font-semibold tracking-tight">报告中心</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">周月报</h1>
         <p className="mt-1 text-sm text-muted-foreground">舆情、GEO、行业三类周报/月报，周期一致（周五至周四、自然月）；导出在各报告详情页。</p>
       </header>
 

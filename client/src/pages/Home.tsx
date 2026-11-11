@@ -355,7 +355,7 @@ export default function Home() {
             <Activity className="h-12 w-12 mx-auto text-muted-foreground/30 mb-4" />
             <h3 className="text-lg font-medium mb-2">暂无监测数据</h3>
             <p className="text-sm text-muted-foreground max-w-md mx-auto">
-              请先在「采集管理」中触发一次采集，或等待定时采集任务执行。采集完成后，仪表盘将自动展示监测数据。
+              请先在「采集任务」中触发一次采集。采集完成后，仪表盘将自动展示监测数据。
             </p>
           </CardContent>
         </Card>

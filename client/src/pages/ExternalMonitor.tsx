@@ -302,7 +302,7 @@ export default function ExternalMonitor() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold tracking-tight">{isPercent ? "百分点日报" : "智推时代 GEO"}</h1>
+        <h1 className="text-2xl font-bold tracking-tight">{isPercent ? "百分点数据" : "智推时代数据"}</h1>
         <p className="text-muted-foreground text-sm mt-1">
           {isPercent ? "百分点 Mediaforce 舆情服务的每日总量快照" : "服务商智推时代的 AI 平台回答监测，与本系统 GEO 采集互为对照"}
         </p>
