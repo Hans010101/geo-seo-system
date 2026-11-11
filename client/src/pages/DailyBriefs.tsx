@@ -178,6 +178,29 @@ function BriefView({ brief }: { brief: Brief }) {
         </section>
       </> : null}
 
+      {brief.industry && brief.industry.items.length ? <>
+        <Heading>行业动态</Heading>
+        <section className="border bg-card">
+          {brief.industry.macro.length ? (
+            <div className="px-3.5 py-2 text-[13px] bg-muted/40 border-b flex flex-wrap gap-x-4 gap-y-1">
+              {brief.industry.macro.map(x => (
+                <span key={x.label} className="whitespace-nowrap"><span className="text-muted-foreground">{x.label}</span> <b className="tabular-nums">{x.value}</b>
+                  {x.change ? <span className={`ml-1 tabular-nums ${x.dir === "up" ? "text-green-600" : x.dir === "down" ? "text-red-600" : "text-muted-foreground"}`}>{x.change}</span> : null}</span>
+              ))}
+            </div>
+          ) : null}
+          {brief.industry.items.map((it, i) => (
+            <div key={i} className={`px-3.5 py-2 text-sm ${i ? "border-t" : ""} ${it.tron ? "bg-yellow-50 dark:bg-yellow-950/30" : ""}`}>
+              <span className="text-[11px] text-muted-foreground border px-1 mr-1.5 whitespace-nowrap">{it.categoryLabel}</span>
+              <a href={it.url} target="_blank" rel="noreferrer" className="hover:underline">{it.summary}</a>
+              <span className="text-xs text-muted-foreground ml-2 whitespace-nowrap">{it.source}{it.sourceCount > 1 ? ` 等 ${it.sourceCount} 家` : ""}</span>
+              {it.tronNote ? <div className="text-xs text-amber-800 mt-0.5">与 TRON：{it.tronNote}</div> : null}
+            </div>
+          ))}
+        </section>
+        <p className="text-xs text-muted-foreground -mt-1">本时段行业快讯 {brief.industry.total} 条（已去重），按重要性选 {brief.industry.items.length} 条；黄色为与 TRON 相关。<a href="/industry" className="underline ml-1">查看全部</a></p>
+      </> : null}
+
       <Heading>事件追踪</Heading>
       {brief.events.map(e => (
         <article key={e.key} className="border bg-card grid">

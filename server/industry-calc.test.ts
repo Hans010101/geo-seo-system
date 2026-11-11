@@ -86,3 +86,29 @@ describe("metrics ingest", () => {
     expect(() => parseIndustrySnapshot({ kind: "other", data: {} })).toThrow();
   });
 });
+
+describe("早晚报行业动态板块", () => {
+  it("picks the top items and builds the macro strip", async () => {
+    const { briefIndustrySection } = await import("./industry-calc");
+    const rows: IndustryRow[] = [
+      { id: "a", source: "odaily", url: "https://a.test/a", title: "a", summary: "美联储维持利率", publishedAt: NOW, category: "macro", importance: 5, entities: "[]", tron: 0, tronNote: null, sourceCount: 3 },
+      { id: "b", source: "theblock", url: "https://a.test/b", title: "b", summary: "Tether 增发", publishedAt: NOW, category: "stablecoin", importance: 4, entities: "[\"tether\"]", tron: 1, tronNote: "USDT 主要在 TRON", sourceCount: 1 },
+      { id: "c", source: "odaily", url: "https://a.test/c", title: "c", summary: "小项目", publishedAt: NOW, category: "chain", importance: 2, entities: "[]", tron: 0, tronNote: null, sourceCount: 1 },
+    ];
+    const macro = [
+      { symbol: "NASDAQ", name: "纳斯达克", unit: null, price: 25066.2, change1d: -0.73 },
+      { symbol: "US10Y", name: "10 年期美债收益率", unit: "%", price: 4.983, change1d: 12 },
+    ];
+    const fed = { events: [{ title: "Fed Decision in December?", outcomes: [{ label: "25 bps increase", prob: 85.5 }] }] };
+    const s = briefIndustrySection(rows, macro, fed, 29);
+    expect(s.items.map(i => i.summary)).toEqual(["美联储维持利率", "Tether 增发"]);
+    expect(s.items[1]).toMatchObject({ tron: 1, categoryLabel: "稳定币与支付", source: "The Block" });
+    expect(s.macro).toEqual([
+      { label: "纳斯达克", value: "25,066", change: "-0.73%", dir: "down" },
+      { label: "10Y 美债", value: "4.98%", change: "+12bp", dir: "up" },
+      { label: "12 月议息", value: "加息 25bp 86%", change: "", dir: "flat" },
+      { label: "恐慌贪婪", value: "29", change: "", dir: "flat" },
+    ]);
+    expect(s.total).toBe(3);
+  });
+});

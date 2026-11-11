@@ -186,3 +186,60 @@ export function pickTop(rows: IndustryRow[], n: number, perCategory = 3, minImpo
   }
   return out;
 }
+
+// ------------------------------------------------------------------ 早晚报「行业动态」板块
+export type BriefIndustry = {
+  macro: { label: string; value: string; change: string; dir: "up" | "down" | "flat" }[];
+  items: {
+    summary: string; category: string; categoryLabel: string; importance: number; tron: number; tronNote: string;
+    url: string; source: string; sourceCount: number; publishedAt: number;
+  }[];
+  total: number;
+};
+
+type MacroInput = { symbol: string; name: string; unit: string | null; price: number | null; change1d: number | null }[];
+type FedInput = { events: { title: string; outcomes: { label: string; prob: number }[] }[] } | null;
+
+const FED_LABELS: Record<string, string> = {
+  "No change": "维持", "25 bps increase": "加息 25bp", "50+ bps increase": "加息 50bp+",
+  "25 bps decrease": "降息 25bp", "50+ bps decrease": "降息 50bp+",
+};
+const MONTHS: Record<string, string> = {
+  January: "1 月", February: "2 月", March: "3 月", April: "4 月", May: "5 月", June: "6 月", July: "7 月",
+  August: "8 月", September: "9 月", October: "10 月", November: "11 月", December: "12 月",
+};
+
+/** Pure: the 5–8 items and the one-line macro strip for a brief window. */
+export function briefIndustrySection(rows: IndustryRow[], macro: MacroInput, fed: FedInput, fng: number | null, n = 8): BriefIndustry {
+  const pick = pickTop(rows, n, 3, 3);
+  const dir = (v: number | null) => (v === null || v === 0 ? "flat" : v > 0 ? "up" : "down") as "up" | "down" | "flat";
+  const strip: BriefIndustry["macro"] = [];
+  for (const symbol of ["NASDAQ", "US10Y", "DXY", "GOLD"]) {
+    const m = macro.find(x => x.symbol === symbol);
+    if (!m || m.price === null) continue;
+    const bp = m.unit === "%";
+    strip.push({
+      label: symbol === "US10Y" ? "10Y 美债" : m.name,
+      value: bp ? `${m.price.toFixed(2)}%` : m.price >= 1000 ? Math.round(m.price).toLocaleString("en-US") : m.price.toFixed(2),
+      change: m.change1d === null ? "" : bp ? `${m.change1d > 0 ? "+" : ""}${m.change1d.toFixed(0)}bp` : `${m.change1d > 0 ? "+" : ""}${m.change1d.toFixed(2)}%`,
+      dir: dir(m.change1d),
+    });
+  }
+  const meeting = fed?.events?.[0];
+  if (meeting?.outcomes?.length) {
+    const top = meeting.outcomes[0];
+    const month = Object.keys(MONTHS).find(k => meeting.title.includes(k));
+    strip.push({ label: `${month ? MONTHS[month] : "下次"}议息`, value: `${FED_LABELS[top.label] || top.label} ${Math.round(top.prob)}%`, change: "", dir: "flat" });
+  }
+  if (fng !== null) strip.push({ label: "恐慌贪婪", value: String(Math.round(fng)), change: "", dir: "flat" });
+  return {
+    macro: strip,
+    total: rows.length,
+    items: pick.map(r => ({
+      summary: r.summary || r.title, category: r.category || "other",
+      categoryLabel: CATEGORIES.find(c => c.key === r.category)?.label || "其他",
+      importance: r.importance ?? 3, tron: r.tron ?? 0, tronNote: r.tronNote || "", url: r.url,
+      source: INDUSTRY_SOURCES[r.source]?.label || r.source, sourceCount: r.sourceCount || 1, publishedAt: Number(r.publishedAt),
+    })),
+  };
+}

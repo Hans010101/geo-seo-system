@@ -157,6 +157,16 @@ export function buildBriefEmail(b: BriefData, link: string): { subject: string; 
   const others = b.others.map((o, i) => `<tr><td width="80" valign="top" style="padding:8px 0 8px 14px;color:${MUTED};font-size:13.5px;font-weight:600;${i ? `border-top:1px solid ${LINE}` : ""}">${esc(o.label)}</td>
     <td style="padding:8px 14px 8px 6px;font-size:14px;${i ? `border-top:1px solid ${LINE}` : ""}">${esc(o.text)}</td></tr>`).join("");
 
+  const ind = b.industry;
+  const macroStrip = ind?.macro.map(x => `<span style="white-space:nowrap;margin-right:14px"><span style="color:${MUTED}">${esc(x.label)}</span> <b style="font-family:${MONO}">${esc(x.value)}</b>${x.change ? ` <span style="font-family:${MONO};color:${x.dir === "up" ? GOOD : x.dir === "down" ? RED : MUTED}">${esc(x.change)}</span>` : ""}</span>`).join("") || "";
+  const industryRows = (ind?.items || []).map((it, i) => `<tr><td style="padding:8px 14px;${i ? `border-top:1px solid ${LINE};` : ""}${it.tron ? "background:#fff7d6;" : ""}font-size:14px">
+      <span style="color:${MUTED};font-size:11.5px;border:1px solid ${LINE};padding:0 5px;margin-right:6px;white-space:nowrap">${esc(it.categoryLabel)}</span>${safeUrl(it.url) ? `<a href="${esc(it.url)}" style="color:${INK};text-decoration:none">${esc(it.summary)}</a>` : esc(it.summary)}
+      <span style="color:${MUTED};font-size:12px;white-space:nowrap">　${esc(it.source)}${it.sourceCount > 1 ? ` 等 ${it.sourceCount} 家` : ""} · ${hhmm(it.publishedAt)}</span>
+      ${it.tronNote ? `<div style="font-size:12.5px;color:#92400e;margin-top:2px">与 TRON：${esc(it.tronNote)}</div>` : ""}</td></tr>`).join("");
+  const industry = ind && ind.items.length ? `${heading("行业动态")}
+  <tr><td>${card(`${macroStrip ? `<tr><td style="padding:9px 14px;font-size:13px;background:#f8f6f1;border-bottom:1px solid ${LINE}">${macroStrip}</td></tr>` : ""}${industryRows}`)}
+    <div style="font-size:12px;color:${MUTED};margin-top:4px">本时段行业快讯 ${ind.total} 条（已去重），按重要性选 ${ind.items.length} 条；黄色为与 TRON 相关。</div></td></tr>` : "";
+
   const t = b.trends;
   const trendCell = (title: string, url: string, note = "") => `<td width="50%" valign="top" style="padding:0 4px 8px">${card(`<tr><td style="padding:10px 12px">
       <div style="font-size:13px;font-weight:600;margin-bottom:4px">${esc(title)}</div>
@@ -196,6 +206,7 @@ export function buildBriefEmail(b: BriefData, link: string): { subject: string; 
       ${m.trx.series.length > 1 ? `<img src="${trxChart(m.trx.series as [number, number][])}" width="440" alt="TRX 近 24 小时走势" style="display:block;width:100%;max-width:440px;height:auto;border:0">` : ""}</td></tr>`)}</td>
     <td width="40%" valign="top" style="padding:0 4px">${card(`<tr><td style="padding:6px 4px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0">${coinRows}</table></td></tr>`)}</td>
   </tr></table></td></tr>` : ""}
+  ${industry}
   ${heading("事件追踪")}
   ${events || `<tr><td style="font-size:14px;color:${MUTED}">本时段没有需要追踪的事件。</td></tr>`}
   ${others ? `${heading("其他动态")}<tr><td>${card(others)}</td></tr>` : ""}
@@ -216,6 +227,10 @@ export function buildBriefEmail(b: BriefData, link: string): { subject: string; 
     `${icon} 态势：${b.verdict.level}（较上期${b.verdict.change}）`, b.verdict.lead,
     ...b.verdict.points.map((x, i) => `${i + 1}. ${x}`), "",
     "【数据】", ...figures.map(x => `- ${x}`), "",
+    ...(ind && ind.items.length ? [
+      "【行业动态】", ind.macro.map(x => `${x.label} ${x.value}${x.change ? ` ${x.change}` : ""}`).join("　"),
+      ...ind.items.map(it => `- [${it.categoryLabel}] ${it.summary}${it.tronNote ? `（与 TRON：${it.tronNote}）` : ""}`), "",
+    ] : []),
     "【事件追踪】",
     ...b.events.flatMap(e => [
       `【${e.level}】${e.title}　${(TREND[e.trend] || TREND.flat)[0]}　${e.count} 条${e.prevCount !== null ? `（上期 ${e.prevCount}）` : ""}`,

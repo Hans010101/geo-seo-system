@@ -9,6 +9,9 @@ import { dispatchNotification } from "./_core/notification";
 import { getEmailAlertConfig, sendEmailToEach } from "./monitor/email-alert";
 import { listUsers } from "./db";
 import { buildBriefEmail } from "./brief-email";
+import { briefIndustrySection, type BriefIndustry } from "./industry-calc";
+import { topIndustry } from "./industry";
+import { getMacroDashboard } from "./industry-metrics";
 import { excessReturn, priceAt, toSeries } from "./market-calc";
 import {
   BRIEF_LABEL, bjDay, bjDayStart, bjHHMM, bjMMDD, briefWindow, buildPrompt, parseDraft, platformCn, pushText,
@@ -23,6 +26,7 @@ const SITE = "https://trongeo.asia";
 const KEYS = {
   enabled: "daily_brief_enabled", push: "daily_brief_push_enabled", email: "daily_brief_email_enabled",
   model: "daily_brief_model", request: "daily_brief_request", recipients: "daily_brief_recipients",
+  industry: "daily_brief_industry_enabled",
 } as const;
 const DEFAULT_MODEL = "anthropic/claude-sonnet-5.5";
 const COINS: [string, string][] = [["JST", "JUST"], ["BTT", "BitTorrent"], ["NFT", "APENFT"], ["WIN", "WINkLink"]];
@@ -62,7 +66,22 @@ export type BriefData = {
   outlook: string;
   asks: string[];
   model: string; usage?: { prompt: number; completion: number };
+  /** 行业动态 section (optional; on when daily_brief_industry_enabled = true). */
+  industry?: BriefIndustry | null;
 };
+
+/** 行业动态 for the brief window: top 5–8 triaged items plus the macro strip. Never throws. */
+export async function industryBlock(start: number, end: number): Promise<BriefIndustry | null> {
+  try {
+    const [rows, macro] = await Promise.all([topIndustry(start, end), getMacroDashboard(end)]);
+    if (!rows.length) return null;
+    const fng = macro.fng.length ? Number(macro.fng[macro.fng.length - 1].value) : null;
+    return briefIndustrySection(rows, macro.macro, macro.fed, fng);
+  } catch (error) {
+    console.log(JSON.stringify({ event: "brief.industry_failed", error: String((error as Error).message).slice(0, 200) }));
+    return null;
+  }
+}
 
 export async function getBriefSettings() {
   const [enabled, push, email, model] = await Promise.all([
@@ -286,7 +305,10 @@ export async function generateBrief(opts: { kind?: BriefKind; now?: number; push
       AND relevance IN ('high','medium') AND sentimentScore >= 4 ORDER BY sentimentScore DESC, publishedAt DESC LIMIT 15`)
     .bind(win.start, win.end).all<BriefItem>();
   const byId = new Map(items.map(i => [i.id, i]));
-  const [market, trends, geo, asks] = await Promise.all([marketBlock(client, now), trendBlock(client, now), geoLine(client, now), findAsks(now)]);
+  const [market, trends, geo, asks, industryOn] = await Promise.all([
+    marketBlock(client, now), trendBlock(client, now), geoLine(client, now), findAsks(now), getSysConfig(KEYS.industry),
+  ]);
+  const industry = industryOn === "true" ? await industryBlock(win.start, win.end) : null;
 
   const windowLabel = `${bjMMDD(win.start)} ${bjHHMM(win.start)} → ${bjMMDD(win.end)} ${bjHHMM(win.end)}`;
   const facts = [
@@ -344,6 +366,7 @@ export async function generateBrief(opts: { kind?: BriefKind; now?: number; push
       relevant: cur.rel, published: cur.total, publishedPrev: cmp.total, positive: cur.pos, positivePrev: cmp.pos,
     },
     market, events, others, trends, outlook: draft.outlook, asks, model: settings.model, usage,
+    ...(industry ? { industry } : {}),
   };
   await client.prepare(`INSERT INTO dailyBriefs (id, kind, day, generatedAt, data) VALUES (?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET generatedAt = excluded.generatedAt, data = excluded.data`)
