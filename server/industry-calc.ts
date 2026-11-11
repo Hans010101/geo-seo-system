@@ -150,7 +150,7 @@ export function triagePrompt(items: TriageInput[], knownEvents: string[] = []) {
 - entities：从 ${ENTITIES.map(e => e.key).join("/")} 中选涉及的（可为空数组；Binance 含币安、CZ/赵长鹏、BNB Chain；Tether 含 USDT；Circle 含 USDC、Arc）
 - tron：2=直接涉及 TRON/TRX/孙宇晨/波场/JUST/USDD/HTX；1=间接影响 TRON（稳定币监管、USDT/Tether 动向、竞品稳定币链、交易所对 TRX 的动作）；0=无关
 - tronNote：tron≥1 时用一句话（≤30 字）说明与 TRON 的关系，否则为空字符串
-- summary：一句话中文快讯（≤60 字），保留关键数字、主体和动作，不加评论；英文原文请翻译
+- summary：一句话中文快讯（≤60 字），保留关键数字、主体和动作，不加评论；英文原文请翻译；利率、收益率的变动一律用百分比写，不用 bp 或"基点"（如 50 个基点写作 0.5%，19bp 写作 0.19%）
 - event：事件标识，小写英文短横线连接（≤6 个词，主体+动作，如 project-faro-bank-stablecoin-funding、cftc-warns-kalshi）。同一件事的不同报道、不同语言、不同措辞必须用同一个标识；本批内也要一致。若与下方「已有事件」中某个是同一件事，直接复用该标识${knownEvents.length ? `
 
 已有事件（近 36 小时）：${knownEvents.join("、")}` : ""}`;
