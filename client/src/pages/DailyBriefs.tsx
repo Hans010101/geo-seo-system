@@ -291,7 +291,7 @@ function AdminBar() {
 export default function DailyBriefs() {
   const [, params] = useRoute("/briefs/:id");
   const [, navigate] = useLocation();
-  const { data: list } = trpc.briefs.list.useQuery(undefined, { staleTime: 60_000 });
+  const { data: list, isLoading: listLoading } = trpc.briefs.list.useQuery(undefined, { staleTime: 60_000 });
   const id = params?.id || list?.[0]?.id;
   const { data: brief, isLoading } = trpc.briefs.get.useQuery({ id: id || "" }, { enabled: !!id });
   return (
@@ -313,7 +313,7 @@ export default function DailyBriefs() {
         ) : null}
       </div>
       <AdminBar />
-      {brief ? <BriefView brief={brief} /> : isLoading && id ? <p className="text-sm text-muted-foreground">加载中…</p>
+      {brief ? <BriefView brief={brief} /> : listLoading || (isLoading && id) ? <p className="text-sm text-muted-foreground">加载中…</p>
         : <div className="border bg-card p-6 text-sm text-muted-foreground">还没有早晚报。系统会在每天 09:30、17:30 自动生成并发送；管理员也可以点上方按钮立即生成。</div>}
       {brief ? <Badge variant="outline" className="text-muted-foreground font-normal">{brief.model} · {brief.events.length} 个事件</Badge> : null}
     </div>
