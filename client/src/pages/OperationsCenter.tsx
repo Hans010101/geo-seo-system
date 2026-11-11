@@ -39,7 +39,7 @@ function dateTime(value?: number | string | null) {
 }
 
 function statusLabel(status?: string) {
-  return status === "success" ? "正常" : status === "running" ? "运行中" : status === "queued" ? "已排队" : status === "partial" || status === "partial_failure" ? "部分失败" : status === "empty" ? "无新增" : status === "failed" ? "失败" : status === "missing" ? "本轮未报告" : status === "stale" ? "状态已过期" : status === "disabled" ? "已停用" : status || "从未运行";
+  return status === "fallback" ? "备用通道" : status === "success" ? "正常" : status === "running" ? "运行中" : status === "queued" ? "已排队" : status === "partial" || status === "partial_failure" ? "部分失败" : status === "empty" ? "无新增" : status === "failed" ? "失败" : status === "missing" ? "本轮未报告" : status === "stale" ? "状态已过期" : status === "disabled" ? "已停用" : status || "从未运行";
 }
 
 function isAbnormalStatus(status?: string) {
@@ -66,7 +66,9 @@ export default function OperationsCenter() {
         source,
         ...(diagnostic || {}),
         reported: Boolean(diagnostic),
-        status: stale ? "stale" : diagnostic?.status || (active ? cycle.status : "missing"),
+        status: stale ? "stale"
+          : diagnostic?.provider?.split("+").includes("publisher") && (diagnostic.status === "success" || diagnostic.status === "empty") ? "fallback"
+          : diagnostic?.status || (active ? cycle.status : "missing"),
         updatedAt,
         inserted: hasInsertedMetric ? insertedKeys.reduce((sum, key) => sum + Number(insertedSourceDist[key] || 0), 0) : null,
         errors: stale

@@ -8,6 +8,8 @@ export type SearchOpts = {
   hl?: string;
   shard?: string;
   budgetReserved?: boolean;
+  /** Called when the primary provider failed and a fallback answered instead. */
+  onFallback?: (reason: string) => void;
 };
 
 export interface DiscoveredPost {

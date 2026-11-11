@@ -16,7 +16,6 @@ export const RSS_FEEDS = [
   "https://www.newsbtc.com/tag/tron/feed/",
   "https://www.newsbtc.com/tag/justin-sun/feed/",
   "https://cryptopotato.com/tag/tron/feed/",
-  "https://coingape.com/tag/tron/feed/",
   "https://cryptoslate.com/tag/justin-sun/feed/",
   "https://crypto.news/tag/tron/feed/",
   "https://crypto.news/tag/justin-sun/feed/",

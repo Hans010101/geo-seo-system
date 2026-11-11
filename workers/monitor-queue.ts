@@ -2096,6 +2096,7 @@ async function discover(task: DiscoveryTask, env: QueueEnv): Promise<void> {
   let queriesAttempted = 0;
   let queriesSucceeded = 0;
   const browserErrors: string[] = [];
+  const fallbackReasons = new Set<string>();
   const browserPosts = new Map<string, DiscoveredPost[]>();
   if (chineseSocial && task.browserPreferred) {
     const platform = task.sourceName.replace(/_serper$/, "");
@@ -2158,6 +2159,7 @@ async function discover(task: DiscoveryTask, env: QueueEnv): Promise<void> {
           hl: zh ? "zh-cn" : "en",
           shard: task.shard,
           budgetReserved: task.budgetReserved,
+          onFallback: reason => fallbackReasons.add(reason),
         });
         queriesSucceeded++;
       } catch (error) {
@@ -2237,6 +2239,7 @@ async function discover(task: DiscoveryTask, env: QueueEnv): Promise<void> {
           : posts.size > 0 ? "success" : "empty",
       provider: chineseSocial && browserSuccesses > 0
         ? "browser"
+        : fallbackReasons.size > 0 ? "publisher"
         : task.sourceName.endsWith("_serper") ? "serper" : undefined,
       discovered: posts.size,
       enqueued: selected.length,
@@ -2245,7 +2248,16 @@ async function discover(task: DiscoveryTask, env: QueueEnv): Promise<void> {
       fallbacks: browserFallbacks,
       queriesAttempted,
       queriesSucceeded,
-      ...(browserErrors.length > 0 ? { errors: browserErrors.slice(0, 4) } : {}),
+      ...(browserErrors.length > 0 || fallbackReasons.size > 0
+        ? {
+            errors: [
+              ...(fallbackReasons.size > 0
+                ? [`Serper 不可用，已改用媒体站搜索（${Array.from(fallbackReasons)[0]}）`]
+                : []),
+              ...browserErrors,
+            ].slice(0, 4),
+          }
+        : {}),
       updatedAt: Date.now(),
     },
   });

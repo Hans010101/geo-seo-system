@@ -15,6 +15,7 @@ export const serperSource: SocialSource = {
       items = await searchNews(keyword, opts);
     } catch (error) {
       console.warn(JSON.stringify({ event: "news.publisher_fallback", keyword }));
+      opts?.onFallback?.(String((error as Error)?.message || error).slice(0, 160));
       try { return await searchPublishers(keyword); } catch (fallbackError) {
         throw new AggregateError([error, fallbackError], "Serper and public publisher search failed");
       }
