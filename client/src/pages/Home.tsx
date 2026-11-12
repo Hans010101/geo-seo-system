@@ -145,7 +145,7 @@ export default function Home() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">GEO 总览</h1>
-          <p className="text-muted-foreground text-sm mt-1">各 AI 平台回答中 TRON 的情感、来源、事实覆盖与己方引用</p>
+          <p className="text-muted-foreground text-sm mt-1">各 AI 平台回答中 TRON 的情感、来源、事实覆盖与己方引用。指标来自自测采集（每周）；国内平台的每日情况来自智推时代</p>
         </div>
         <div className="flex flex-wrap gap-2">
           <Select value={timeRange} onValueChange={(v) => setTimeRange(v as TimeRange)}>
@@ -209,6 +209,8 @@ export default function Home() {
           </Card>
         );
       })()}
+
+      <VendorPulse />
 
       {/* Recent Alerts — paginated */}
       {alertsList && alertsList.length > 0 && (
@@ -401,4 +403,43 @@ function getSentimentColor(score: number): string {
   if (score <= 3.5) return "#eab308";
   if (score <= 4.5) return "#22c55e";
   return "#10b981";
+}
+
+// 智推时代 daily monitoring of the domestic platforms, next to the weekly self-test numbers above.
+function VendorPulse() {
+  const { data } = trpc.external.geoOverview.useQuery({ days: 7 }, { staleTime: 300_000 });
+  if (!data || data.total === 0) return null;
+  const negative = data.byPlatform.reduce((n, p) => n + p.negative, 0);
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <CardTitle className="text-base font-semibold">国内平台每日监测 · 近 7 天</CardTitle>
+            <p className="text-xs text-muted-foreground mt-1">
+              智推时代数据：{data.total.toLocaleString()} 条回答，负面 {((negative / data.total) * 100).toFixed(1)}%（服务商判定）
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" asChild><Link href="/questions?source=genoptima">看回答</Link></Button>
+            <Button variant="ghost" size="sm" asChild><Link href="/external">供应商数据</Link></Button>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="grid grid-cols-3 md:grid-cols-6 gap-3">
+          {data.byPlatform.map(p => {
+            const rate = p.total ? p.negative / p.total : 0;
+            return (
+              <div key={p.platform} className="rounded-lg border p-2.5 text-center space-y-1">
+                <p className="text-[11px] font-semibold">{p.label}</p>
+                <p className={`text-xl font-bold ${rate >= 0.2 ? "text-red-600" : rate >= 0.1 ? "text-amber-600" : "text-green-600"}`}>{(rate * 100).toFixed(1)}%</p>
+                <p className="text-[10px] text-muted-foreground">负面 {p.negative}/{p.total}</p>
+              </div>
+            );
+          })}
+        </div>
+      </CardContent>
+    </Card>
+  );
 }

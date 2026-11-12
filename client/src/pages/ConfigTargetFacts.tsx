@@ -15,7 +15,11 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { PLATFORM_LABELS } from "@shared/geo-types";
+
+const OTHER_PLATFORMS: Record<string, string> = { hunyuan: "腾讯元宝", perplexity: "Perplexity", llama: "Llama" };
 import { Plus, Pencil, Trash2, Target, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { useRole } from "@/hooks/useRole";
@@ -26,6 +30,19 @@ export default function ConfigTargetFacts() {
   const [editing, setEditing] = useState<any>(null);
 
   const { data: factsList, isLoading } = trpc.targetFacts.list.useQuery({});
+  const [days, setDays] = useState(30);
+  const { data: coverage } = trpc.targetFacts.coverage.useQuery({ days }, { staleTime: 300_000 });
+  const coverageBy = useMemo(() => new Map((coverage || []).map(c => [c.factKey, c])), [coverage]);
+  const rate = (key: string) => {
+    const c = coverageBy.get(key);
+    return c && c.total ? c.hit / c.total : null;
+  };
+  // Active facts weakest first, so the ones AI 没说到的 sit on top; inactive facts last.
+  const sortedFacts = useMemo(() => [...(factsList || [])].sort((a, b) =>
+    Number(!!b.isActive) - Number(!!a.isActive) || (rate(a.factKey) ?? 2) - (rate(b.factKey) ?? 2)), [factsList, coverageBy]);
+  const activeRates = (factsList || []).filter(f => f.isActive).map(f => rate(f.factKey)).filter((r): r is number => r !== null);
+  const avgRate = activeRates.length ? activeRates.reduce((a, b) => a + b, 0) / activeRates.length : null;
+  const unseen = activeRates.filter(r => r === 0).length;
   const utils = trpc.useUtils();
 
   const createMutation = trpc.targetFacts.create.useMutation({
@@ -75,11 +92,27 @@ export default function ConfigTargetFacts() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">目标事实配置</h1>
+          <h1 className="text-2xl font-bold tracking-tight">事实与口径</h1>
           <p className="text-muted-foreground text-sm mt-1">
-            配置AI回答中应包含的目标事实，用于事实覆盖率检测
+            我们希望 AI 说到的关键事实，以及各平台实际说到的比例（自测采集；孙宇晨类事实只统计孙宇晨线问题，TRON 类只统计 TRON 线问题）
+          </p>
+          <p className="text-sm mt-2">
+            {avgRate === null ? <span className="text-muted-foreground">所选时间内暂无自测分析</span> : <>
+              平均提及率 <span className="font-semibold">{(avgRate * 100).toFixed(1)}%</span>
+              <span className="text-muted-foreground"> · </span>
+              没有任何平台提到 <span className={`font-semibold ${unseen ? "text-red-600" : ""}`}>{unseen}</span> 条
+            </>}
           </p>
         </div>
+        <div className="flex items-center gap-2">
+        <Select value={String(days)} onValueChange={v => setDays(Number(v))}>
+          <SelectTrigger className="w-[120px]"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="14">近 14 天</SelectItem>
+            <SelectItem value="30">近 30 天</SelectItem>
+            <SelectItem value="90">近 90 天</SelectItem>
+          </SelectContent>
+        </Select>
         <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
           <DialogTrigger asChild>
             <Button onClick={() => { setEditing(null); setDialogOpen(true); }} disabled={!canEdit}>
@@ -130,6 +163,7 @@ export default function ConfigTargetFacts() {
             </form>
           </DialogContent>
         </Dialog>
+        </div>
       </div>
 
       {isLoading ? (
@@ -144,7 +178,10 @@ export default function ConfigTargetFacts() {
         </Card>
       ) : (
         <div className="space-y-2">
-          {factsList.map((fact) => (
+          {sortedFacts.map((fact) => {
+            const c = coverageBy.get(fact.factKey);
+            const r = rate(fact.factKey);
+            return (
             <Card key={fact.id}>
               <CardContent className="p-4">
                 <div className="flex items-start gap-3">
@@ -156,7 +193,28 @@ export default function ConfigTargetFacts() {
                       </Badge>
                     </div>
                     <p className="text-sm text-muted-foreground">{fact.factDescription}</p>
+                    {fact.isActive && c ? (
+                      <div className="mt-2 flex flex-wrap gap-1">
+                        {c.platforms.map(p => {
+                          const pr = p.total ? p.hit / p.total : 0;
+                          const tone = pr >= 0.5 ? "bg-green-50 text-green-700 border-green-200" : pr > 0 ? "bg-amber-50 text-amber-700 border-amber-200" : "bg-red-50 text-red-600 border-red-200";
+                          return (
+                            <span key={p.platform} title={`${p.hit}/${p.total} 条回答提到`} className={`rounded border px-1.5 py-0.5 text-[11px] ${tone}`}>
+                              {PLATFORM_LABELS[p.platform as keyof typeof PLATFORM_LABELS] || OTHER_PLATFORMS[p.platform] || p.platform} {Math.round(pr * 100)}%
+                            </span>
+                          );
+                        })}
+                      </div>
+                    ) : null}
                   </div>
+                  {fact.isActive ? (
+                    <div className="w-20 shrink-0 text-right">
+                      <div className={`text-lg font-semibold ${r === null ? "text-muted-foreground" : r === 0 ? "text-red-600" : r < 0.2 ? "text-amber-600" : "text-green-600"}`}>
+                        {r === null ? "—" : `${(r * 100).toFixed(0)}%`}
+                      </div>
+                      <div className="text-[10px] text-muted-foreground">{c ? `${c.hit}/${c.total} 提及` : "暂无数据"}</div>
+                    </div>
+                  ) : null}
                   <div className={`flex gap-1 shrink-0${!canEdit ? " invisible" : ""}`}>
                     <Button
                       variant="ghost"
@@ -181,7 +239,8 @@ export default function ConfigTargetFacts() {
                 </div>
               </CardContent>
             </Card>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>

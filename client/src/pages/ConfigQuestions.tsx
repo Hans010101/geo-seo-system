@@ -1,4 +1,5 @@
 import { useRole } from "@/hooks/useRole";
+import { GEO_SETUP_NAV, GeoSubNav } from "@/components/GeoSubNav";
 import { trpc } from "@/lib/trpc";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -98,9 +99,10 @@ export default function ConfigQuestions() {
 
   return (
     <div className="space-y-6">
+      <GeoSubNav items={GEO_SETUP_NAV} />
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">问题库管理</h1>
+          <h1 className="text-2xl font-bold tracking-tight">问题库</h1>
           <p className="text-muted-foreground text-sm mt-1">
             管理GEO监测的问题集，共 {questionsList?.length || 0} 个问题
           </p>

@@ -1,132 +1,159 @@
 import { trpc } from "@/lib/trpc";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useRoute } from "wouter";
 import { useState } from "react";
 import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { GenoptimaAnswerList, pct, time, type AnswerFilter } from "@/components/GenoptimaAnswers";
 
-const PLATFORM_LABELS: Record<string, string> = {
-  doubao: "豆包", deepseek: "DeepSeek", yuanbao: "腾讯元宝", qianwen: "通义千问", kimi: "Kimi", wenxin: "文心一言",
-};
-const SENTIMENT_META: Record<string, { label: string; className: string }> = {
-  positive: { label: "正面", className: "bg-green-50 text-green-700 border-green-200" },
-  negative: { label: "负面", className: "bg-red-50 text-red-700 border-red-200" },
-  none: { label: "未判定", className: "bg-gray-50 text-gray-600 border-gray-200" },
-};
-const PAGE_SIZE = 30;
-
-const pct = (part: number, total: number) => (total > 0 ? `${((part / total) * 100).toFixed(1)}%` : "—");
-/** Beijing time "YYYY-MM-DD HH:mm" (locale-independent; zh-CN strings vary in padding). */
-const time = (ms: number | null | undefined) => {
-  if (!ms) return "—";
-  const iso = new Date(ms + 8 * 3_600_000).toISOString();
-  return `${iso.slice(0, 10)} ${iso.slice(11, 16)}`;
-};
-
-function SentimentBadge({ value }: { value: string | null }) {
-  const meta = SENTIMENT_META[value === "positive" || value === "negative" ? value : "none"];
-  return <Badge variant="outline" className={meta.className}>{meta.label}</Badge>;
-}
-
-function Stat({ label, value, hint }: { label: string; value: string; hint?: string }) {
+function Stat({ label, value, hint, tone }: { label: string; value: string; hint?: string; tone?: "good" | "warn" | "bad" }) {
+  const color = tone === "bad" ? "text-red-600" : tone === "warn" ? "text-amber-600" : tone === "good" ? "text-green-600" : "";
   return (
     <Card>
       <CardContent className="pt-5">
         <div className="text-sm text-muted-foreground">{label}</div>
-        <div className="text-2xl font-semibold mt-1">{value}</div>
+        <div className={`text-2xl font-semibold mt-1 ${color}`}>{value}</div>
         {hint ? <div className="text-xs text-muted-foreground mt-1">{hint}</div> : null}
       </CardContent>
     </Card>
   );
 }
 
-function AnswerDialog({ id, onClose }: { id: string | null; onClose: () => void }) {
-  const { data } = trpc.external.geoAnswer.useQuery({ id: id || "" }, { enabled: !!id });
+const share = (part: number, total: number) => (total > 0 ? part / total : 0);
+const hoursAgo = (ms: number | null) => (ms ? (Date.now() - ms) / 3_600_000 : Infinity);
+
+// ---------------------------------------------------------------- 服务效果（供应商评估）
+function SupplierSection({ days }: { days: number }) {
+  const { data: s, isLoading } = trpc.external.geoSupplier.useQuery({ days }, { staleTime: 60_000 });
+  if (isLoading || !s) return <p className="text-sm text-muted-foreground">加载中…</p>;
+
+  const today = time(Date.now()).slice(0, 10);
+  const full = s.daily.filter(d => d.day < today);
+  const avg = full.length ? Math.round(full.reduce((n, d) => n + d.total, 0) / full.length) : 0;
+  const expectedPairs = s.scope.platforms * s.scope.questions;
+  const pairRate = full.length && expectedPairs ? full.reduce((n, d) => n + d.pairs, 0) / (full.length * expectedPairs) : 0;
+  const judged = 1 - share(s.totals.unjudged, s.totals.total);
+  const lowDays = full.filter(d => s.baseline && d.total < s.baseline * 0.8);
+  const syncLag = hoursAgo(s.latestSyncTime);
+  const rows = [...s.daily, ...s.missingDays.map(day => ({ day, missing: true as const }))]
+    .sort((a, b) => b.day.localeCompare(a.day));
+
   return (
-    <Dialog open={!!id} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle className="text-base leading-6">{data ? data.question : "加载中…"}</DialogTitle>
-        </DialogHeader>
-        {data ? (
-          <div className="space-y-3 text-sm">
-            <div className="flex flex-wrap items-center gap-2 text-muted-foreground">
-              <Badge variant="secondary">{PLATFORM_LABELS[data.platform] || data.platform}</Badge>
-              <SentimentBadge value={data.sentiment} />
-              <span>{time(data.queryTime)}</span>
-              <span>引用 {data.referenceCount} 个信源</span>
-            </div>
-            <div className="whitespace-pre-wrap leading-6 rounded-md bg-muted/40 p-3">{data.answer}</div>
-            {data.refs.length > 0 ? (
-              <div>
-                <div className="font-medium mb-1">引用信源</div>
-                <div className="flex flex-wrap gap-1.5">
-                  {data.refs.map((name, i) => <Badge key={i} variant="outline">{name}</Badge>)}
-                </div>
-              </div>
-            ) : null}
-          </div>
-        ) : null}
-      </DialogContent>
-    </Dialog>
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <Stat label="交付量（日均）" value={avg.toLocaleString()}
+          hint={`常态约 ${s.baseline.toLocaleString()} 条/天 · 断档 ${s.missingDays.length} 天 · 偏少 ${lowDays.length} 天`}
+          tone={s.missingDays.length || lowDays.length ? "warn" : "good"} />
+        <Stat label="覆盖（平台 × 问题）" value={`${(pairRate * 100).toFixed(1)}%`}
+          hint={`${s.scope.platforms} 个平台 × ${s.scope.questions} 个问题，按天计`}
+          tone={pairRate >= 0.98 ? "good" : "warn"} />
+        <Stat label="情感已判定" value={`${(judged * 100).toFixed(1)}%`}
+          hint={`${s.totals.unjudged.toLocaleString()} 条未判定 · ${s.totals.noRefs.toLocaleString()} 条无引用信源`}
+          tone={judged >= 0.95 ? "good" : judged >= 0.85 ? "warn" : "bad"} />
+        <Stat label="数据新鲜度" value={time(s.latestQueryTime).slice(5)}
+          hint={`最近同步 ${time(s.latestSyncTime).slice(5)}`}
+          tone={syncLag > 24 ? "bad" : syncLag > 12 ? "warn" : "good"} />
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-5">
+        <Card className="lg:col-span-3">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">每日交付</CardTitle>
+            <p className="text-xs text-muted-foreground">轮次 = 当天有回答的整点数；覆盖 = 当天采到的「平台 × 问题」组合占比。低于常态 80% 标黄。</p>
+          </CardHeader>
+          <CardContent className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="text-muted-foreground">
+                <tr className="border-b">
+                  <th className="text-left py-2">日期</th><th className="text-right">回答</th><th className="text-right">轮次</th>
+                  <th className="text-right">平台</th><th className="text-right">问题</th><th className="text-right">覆盖</th><th className="text-right">未判定</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map(d => {
+                  if (!d) return null;
+                  if ("missing" in d) return (
+                    <tr key={d.day} className="border-b bg-red-50 dark:bg-red-950/30">
+                      <td className="py-1.5">{d.day}</td><td className="text-right text-red-600" colSpan={6}>无交付</td>
+                    </tr>
+                  );
+                  const partial = d.day >= today;
+                  const low = !partial && s.baseline > 0 && d.total < s.baseline * 0.8;
+                  return (
+                    <tr key={d.day} className={`border-b last:border-0 ${low ? "bg-amber-50 dark:bg-amber-950/30" : ""}`}>
+                      <td className="py-1.5">{d.day}{partial ? <span className="text-xs text-muted-foreground">（今天）</span> : null}</td>
+                      <td className="text-right font-medium">{d.total.toLocaleString()}</td>
+                      <td className="text-right">{d.rounds}</td>
+                      <td className="text-right">{d.platforms}</td>
+                      <td className="text-right">{d.questions}</td>
+                      <td className="text-right">{expectedPairs ? pct(d.pairs, expectedPairs) : "—"}</td>
+                      <td className="text-right">{pct(d.unjudged, d.total)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            {s.daily.length === 0 ? <p className="text-sm text-muted-foreground text-center py-6">所选时间内没有交付</p> : null}
+          </CardContent>
+        </Card>
+
+        <Card className="lg:col-span-2">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">与自测结果对照</CardTitle>
+            <p className="text-xs text-muted-foreground">
+              同一模型的负面率：智推为服务商判定；自测为本系统对 TRON 线问题的打分（≤2 分算负面）。两边差距大，说明智推的情感判定需要复核。
+            </p>
+          </CardHeader>
+          <CardContent>
+            <table className="w-full text-sm">
+              <thead className="text-muted-foreground">
+                <tr className="border-b"><th className="text-left py-2">平台</th><th className="text-right">智推负面率</th><th className="text-right">自测负面率</th><th className="text-right">差距</th></tr>
+              </thead>
+              <tbody>
+                {s.consistency.map(row => {
+                  const v = share(row.vendor.negative, row.vendor.total);
+                  const m = share(row.self.negative, row.self.total);
+                  const gap = row.vendor.total && row.self.total ? (v - m) * 100 : null;
+                  return (
+                    <tr key={row.platform} className="border-b last:border-0">
+                      <td className="py-1.5">{row.label}</td>
+                      <td className="text-right">{pct(row.vendor.negative, row.vendor.total)}<span className="text-xs text-muted-foreground"> /{row.vendor.total}</span></td>
+                      <td className="text-right">{row.self.total ? pct(row.self.negative, row.self.total) : "无自测"}{row.self.total ? <span className="text-xs text-muted-foreground"> /{row.self.total}</span> : null}</td>
+                      <td className={`text-right font-medium ${gap !== null && Math.abs(gap) >= 10 ? "text-amber-600" : ""}`}>
+                        {gap === null ? "—" : `${gap > 0 ? "+" : ""}${gap.toFixed(1)} 点`}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </CardContent>
+        </Card>
+      </div>
+    </div>
   );
 }
 
-function GeoTab() {
-  const [days, setDays] = useState(7);
-  const [platform, setPlatform] = useState("all");
-  const [sentiment, setSentiment] = useState<"all" | "positive" | "negative" | "none">("negative");
-  const [question, setQuestion] = useState("");
-  const [page, setPage] = useState(0);
-  const [openId, setOpenId] = useState<string | null>(null);
-
-  const { data: overview, isLoading } = trpc.external.geoOverview.useQuery({ days }, { staleTime: 60_000 });
-  const { data: answers } = trpc.external.geoAnswers.useQuery({
-    days,
-    platform: platform === "all" ? undefined : platform,
-    sentiment: sentiment === "all" ? undefined : sentiment,
-    question: question.trim() || undefined,
-    limit: PAGE_SIZE,
-    offset: page * PAGE_SIZE,
-  }, { staleTime: 60_000 });
-
+// ---------------------------------------------------------------- 监测内容
+function ContentSection({ days }: { days: number }) {
+  const [preset, setPreset] = useState<AnswerFilter>({});
+  const { data: overview } = trpc.external.geoOverview.useQuery({ days: Math.min(days, 30) }, { staleTime: 60_000 });
   const totals = (overview?.byPlatform || []).reduce(
     (acc, row) => ({ positive: acc.positive + row.positive, negative: acc.negative + row.negative }),
     { positive: 0, negative: 0 },
   );
-  const resetPage = <T,>(set: (value: T) => void) => (value: T) => { set(value); setPage(0); };
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-sm text-muted-foreground">
-          数据来自智推时代 GenOptima「星枢监测」（项目：波场TRON），由 Mac 本机采集器每轮同步；情感为服务商判定。
-        </p>
-        <Select value={String(days)} onValueChange={resetPage((v: string) => setDays(Number(v)))}>
-          <SelectTrigger className="w-[120px]"><SelectValue /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="1">近 1 天</SelectItem>
-            <SelectItem value="7">近 7 天</SelectItem>
-            <SelectItem value="14">近 14 天</SelectItem>
-            <SelectItem value="30">近 30 天</SelectItem>
-          </SelectContent>
-        </Select>
-      </div>
-
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <Stat label="AI 回答数" value={isLoading ? "…" : String(overview?.total ?? 0)} hint={`${overview?.byPlatform.length ?? 0} 个 AI 平台`} />
-        <Stat label="正面占比" value={pct(totals.positive, overview?.total ?? 0)} hint={`${totals.positive} 条`} />
-        <Stat label="负面占比" value={pct(totals.negative, overview?.total ?? 0)} hint={`${totals.negative} 条`} />
-        <Stat label="最近一次采集" value={time(overview?.latestQueryTime)} />
-      </div>
-
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
-          <CardHeader className="pb-2"><CardTitle className="text-base">各 AI 平台情感</CardTitle></CardHeader>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">各 AI 平台情感</CardTitle>
+            <p className="text-xs text-muted-foreground">
+              共 {overview?.total ?? 0} 条 · 正面 {pct(totals.positive, overview?.total ?? 0)} · 负面 {pct(totals.negative, overview?.total ?? 0)}
+            </p>
+          </CardHeader>
           <CardContent>
             <table className="w-full text-sm">
               <thead className="text-muted-foreground">
@@ -173,7 +200,7 @@ function GeoTab() {
               <button
                 key={row.question}
                 className="w-full flex items-center justify-between gap-3 text-left text-sm rounded px-2 py-1.5 hover:bg-muted"
-                onClick={() => { setQuestion(row.question); setSentiment("negative"); setPage(0); }}
+                onClick={() => setPreset({ question: row.question, sentiment: "negative", nonce: Date.now() })}
               >
                 <span className="truncate">{row.question}</span>
                 <span className="shrink-0 text-red-600">{row.negative}/{row.total}</span>
@@ -195,63 +222,36 @@ function GeoTab() {
         </Card>
       </div>
 
-      <Card>
-        <CardHeader className="pb-2">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <CardTitle className="text-base">回答明细（{answers?.total ?? 0} 条）</CardTitle>
-            <div className="flex flex-wrap items-center gap-2">
-              <Input
-                className="w-[220px] h-9"
-                placeholder="按问题搜索"
-                value={question}
-                onChange={(e) => { setQuestion(e.target.value); setPage(0); }}
-              />
-              <Select value={platform} onValueChange={resetPage(setPlatform)}>
-                <SelectTrigger className="w-[120px] h-9"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">全部平台</SelectItem>
-                  {Object.entries(PLATFORM_LABELS).map(([key, label]) => <SelectItem key={key} value={key}>{label}</SelectItem>)}
-                </SelectContent>
-              </Select>
-              <Select value={sentiment} onValueChange={resetPage((v: string) => setSentiment(v as typeof sentiment))}>
-                <SelectTrigger className="w-[110px] h-9"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">全部情感</SelectItem>
-                  <SelectItem value="negative">负面</SelectItem>
-                  <SelectItem value="positive">正面</SelectItem>
-                  <SelectItem value="none">未判定</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-1">
-          {(answers?.items || []).map(item => (
-            <button
-              key={item.id}
-              className="w-full text-left rounded-md border px-3 py-2 hover:bg-muted/50"
-              onClick={() => setOpenId(item.id)}
-            >
-              <div className="flex flex-wrap items-center gap-2 text-sm">
-                <Badge variant="secondary">{PLATFORM_LABELS[item.platform] || item.platform}</Badge>
-                <SentimentBadge value={item.sentiment} />
-                <span className="font-medium">{item.question}</span>
-                <span className="ml-auto text-xs text-muted-foreground">{time(item.queryTime)}</span>
-              </div>
-              <div className="text-xs text-muted-foreground mt-1 line-clamp-2">{item.preview}</div>
-            </button>
-          ))}
-          {answers && answers.items.length === 0 ? <p className="text-sm text-muted-foreground text-center py-6">没有符合条件的回答</p> : null}
-          {answers && answers.total > PAGE_SIZE ? (
-            <div className="flex items-center justify-end gap-2 pt-2 text-sm">
-              <Button variant="outline" size="sm" disabled={page === 0} onClick={() => setPage(page - 1)}>上一页</Button>
-              <span className="text-muted-foreground">{page + 1} / {Math.ceil(answers.total / PAGE_SIZE)}</span>
-              <Button variant="outline" size="sm" disabled={(page + 1) * PAGE_SIZE >= answers.total} onClick={() => setPage(page + 1)}>下一页</Button>
-            </div>
-          ) : null}
-        </CardContent>
-      </Card>
-      <AnswerDialog id={openId} onClose={() => setOpenId(null)} />
+      <GenoptimaAnswerList days={days} defaultSentiment="negative" preset={preset} />
+    </div>
+  );
+}
+
+function GeoTab() {
+  const [days, setDays] = useState(14);
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-sm text-muted-foreground">
+          数据来自智推时代 GenOptima「星枢监测」（项目：波场TRON），由 Mac 本机采集器每轮同步；情感为服务商判定。
+        </p>
+        <Select value={String(days)} onValueChange={v => setDays(Number(v))}>
+          <SelectTrigger className="w-[120px]"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="7">近 7 天</SelectItem>
+            <SelectItem value="14">近 14 天</SelectItem>
+            <SelectItem value="30">近 30 天</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+      <section className="space-y-3">
+        <h2 className="text-lg font-semibold flex items-center gap-2">服务效果 <Badge variant="outline" className="font-normal">供应商评估</Badge></h2>
+        <SupplierSection days={days} />
+      </section>
+      <section className="space-y-3">
+        <h2 className="text-lg font-semibold">监测内容</h2>
+        <ContentSection days={days} />
+      </section>
     </div>
   );
 }
@@ -304,7 +304,7 @@ export default function ExternalMonitor() {
       <div>
         <h1 className="text-2xl font-bold tracking-tight">{isPercent ? "百分点数据" : "智推时代数据"}</h1>
         <p className="text-muted-foreground text-sm mt-1">
-          {isPercent ? "百分点 Mediaforce 舆情服务的每日总量快照" : "服务商智推时代的 AI 平台回答监测，与本系统 GEO 采集互为对照"}
+          {isPercent ? "百分点 Mediaforce 舆情服务的每日总量快照" : "服务商智推时代的交付情况与监测内容：国内 6 个 AI 平台、TRON 相关问题，每天约 3 轮"}
         </p>
       </div>
       {isPercent ? <PercentTab /> : <GeoTab />}

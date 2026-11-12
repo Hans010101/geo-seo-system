@@ -1,4 +1,5 @@
 import { trpc } from "@/lib/trpc";
+import { GEO_SOURCES_NAV, GeoSubNav } from "@/components/GeoSubNav";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -99,6 +100,9 @@ export default function CitationAnalysis() {
     }));
   }, [domainDist]);
 
+  const vendorDays = timeRange === "week" ? 7 : 30;
+  const { data: vendorOverview } = trpc.external.geoOverview.useQuery({ days: vendorDays }, { staleTime: 300_000 });
+
   // Top domains for bar chart
   const topDomains = useMemo(() => {
     if (!domainDist) return [];
@@ -114,10 +118,11 @@ export default function CitationAnalysis() {
 
   return (
     <div className="space-y-6">
+      <GeoSubNav items={GEO_SOURCES_NAV} />
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">引用源分析</h1>
-          <p className="text-muted-foreground text-sm mt-1">AI回答中引用来源的统计分析</p>
+          <p className="text-muted-foreground text-sm mt-1">AI 回答引用了哪些来源、己方内容有没有被引用；「国内平台信源」来自智推时代数据</p>
         </div>
         <div className="flex items-center gap-2">
         <Select value={timeRange} onValueChange={(v) => setTimeRange(v as TimeRange)}>
@@ -142,7 +147,8 @@ export default function CitationAnalysis() {
         <TabsList>
           <TabsTrigger value="top">引用排行</TabsTrigger>
           <TabsTrigger value="distribution">域名分布</TabsTrigger>
-          <TabsTrigger value="uncited">未被引用</TabsTrigger>
+          <TabsTrigger value="uncited">己方未被引用</TabsTrigger>
+          <TabsTrigger value="vendor">国内平台信源（智推）</TabsTrigger>
         </TabsList>
 
         <TabsContent value="top" className="space-y-4">
@@ -283,6 +289,29 @@ export default function CitationAnalysis() {
                           {item.publishPlatform}
                         </span>
                       )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="vendor" className="space-y-4">
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base font-semibold">国内 AI 平台最常引用的信源 Top 20（智推时代，{vendorDays === 7 ? "近 7 天" : "近 30 天"}）</CardTitle>
+              <p className="text-xs text-muted-foreground">智推只提供信源名称（不含链接），与上面按 URL 统计的自测数据分开计数。</p>
+            </CardHeader>
+            <CardContent>
+              {!vendorOverview?.topReferences.length ? (
+                <p className="text-sm text-muted-foreground text-center py-8">暂无数据</p>
+              ) : (
+                <div className="grid gap-x-6 md:grid-cols-2">
+                  {vendorOverview.topReferences.map((row, i) => (
+                    <div key={row.name} className="flex items-center justify-between border-b py-2 text-sm">
+                      <span className="truncate"><span className="text-muted-foreground mr-2 inline-block w-5 text-right">{i + 1}</span>{row.name}</span>
+                      <span className="shrink-0 text-muted-foreground">{row.count} 次</span>
                     </div>
                   ))}
                 </div>

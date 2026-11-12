@@ -41,7 +41,7 @@ import { Separator } from "./ui/separator";
 
 // Sidebar = 6 groups by domain (11-11); pages inside a group are switched with the tab bar above the
 // content. URLs are unchanged except /external/percent (百分点数据, split out of the old 外部监测 page).
-type NavTab = { label: string; path: string; prefixes?: string[]; developerOnly?: boolean };
+type NavTab = { label: string; path: string; prefixes?: string[]; developerOnly?: boolean; adminOnly?: boolean };
 type NavGroup = { icon: typeof LayoutDashboard; label: string; tabs: NavTab[] };
 
 const primaryGroups: NavGroup[] = [
@@ -68,16 +68,15 @@ const primaryGroups: NavGroup[] = [
     ],
   },
   {
-    // GEO views and GEO configuration in one place.
+    // GEO work loop: 看结果 → 看回答 → 看来源 → 管口径 → 看供应商 → 管问题与采集 (11-12).
+    // 自测 and 智推时代 data are fused into the views; 智推时代数据 stays separate for supplier evaluation.
     icon: Bot, label: "GEO 洞察", tabs: [
-      { label: "GEO 总览", path: "/geo" },
-      { label: "问题与回答", path: "/questions", prefixes: ["/questions/"] },
-      { label: "引用源分析", path: "/citations" },
+      { label: "总览", path: "/geo" },
+      { label: "回答监测", path: "/questions", prefixes: ["/questions/"] },
+      { label: "信源与引用", path: "/citations", prefixes: ["/config/our-content"] },
+      { label: "事实与口径", path: "/config/target-facts" },
       { label: "智推时代数据", path: "/external" },
-      { label: "问题库", path: "/config/questions" },
-      { label: "目标事实", path: "/config/target-facts" },
-      { label: "己方 URL", path: "/config/our-content" },
-      { label: "采集任务", path: "/config/collection" },
+      { label: "问题与采集", path: "/config/questions", prefixes: ["/config/collection"], adminOnly: true },
     ],
   },
 ];
@@ -95,7 +94,9 @@ const configGroups: NavGroup[] = [
 
 const tabMatches = (location: string, tab: NavTab) =>
   location === tab.path || (tab.prefixes ?? []).some(p => location === p || location.startsWith(p.endsWith("/") ? p : `${p}/`) || location.startsWith(`${p}?`));
-const visibleTabs = (group: NavGroup, isDeveloper: boolean) => group.tabs.filter(t => !t.developerOnly || isDeveloper);
+type Access = { isDeveloper: boolean; isAdmin: boolean };
+const visibleTabs = (group: NavGroup, access: Access) =>
+  group.tabs.filter(t => (!t.developerOnly || access.isDeveloper) && (!t.adminOnly || access.isAdmin));
 const activeTabOf = (location: string, group: NavGroup) => group.tabs.find(t => tabMatches(location, t));
 
 const SIDEBAR_WIDTH_KEY = "sidebar-width";
@@ -392,12 +393,13 @@ function DashboardLayoutContent({
   const [isResizing, setIsResizing] = useState(false);
   const sidebarRef = useRef<HTMLDivElement>(null);
   const isDeveloper = user?.role === "developer";
+  const access = { isDeveloper, isAdmin: isDeveloper || user?.role === "admin" };
   const allGroups = [...primaryGroups, ...configGroups];
   const activeGroup = allGroups.find(g => activeTabOf(location, g));
   const activeTab = activeGroup ? activeTabOf(location, activeGroup) : undefined;
-  const groupTabs = activeGroup ? visibleTabs(activeGroup, isDeveloper) : [];
+  const groupTabs = activeGroup ? visibleTabs(activeGroup, access) : [];
   const renderGroups = (groups: NavGroup[]) => groups.map(group => {
-    const tabs = visibleTabs(group, isDeveloper);
+    const tabs = visibleTabs(group, access);
     if (!tabs.length) return null;
     const isActive = activeGroup === group;
     // Clicking a group opens its first page (or stays on the current one inside it).

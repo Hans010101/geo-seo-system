@@ -1,4 +1,5 @@
 import { trpc } from "@/lib/trpc";
+import { GEO_SETUP_NAV, GeoSubNav } from "@/components/GeoSubNav";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -298,8 +299,9 @@ export default function ConfigCollection() {
 
   return (
     <div className="space-y-6">
+      <GeoSubNav items={GEO_SETUP_NAV} />
       <div>
-        <h1 className="text-2xl font-bold tracking-tight">采集管理</h1>
+        <h1 className="text-2xl font-bold tracking-tight">采集任务</h1>
         <p className="text-muted-foreground text-sm mt-1">手动触发采集任务，查看采集记录和详情</p>
       </div>
 

@@ -1,4 +1,5 @@
 import { trpc } from "@/lib/trpc";
+import { GEO_SOURCES_NAV, GeoSubNav } from "@/components/GeoSubNav";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -110,9 +111,10 @@ export default function ConfigOurContent() {
 
   return (
     <div className="space-y-6">
+      <GeoSubNav items={GEO_SOURCES_NAV} />
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">己方URL库</h1>
+          <h1 className="text-2xl font-bold tracking-tight">己方 URL 库</h1>
           <p className="text-muted-foreground text-sm mt-1">
             管理己方已布局的内容URL，共 {contentList?.length || 0} 条
           </p>

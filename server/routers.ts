@@ -49,7 +49,8 @@ import {
 import { isCloudflareRuntime } from "./runtime";
 import { getMarketLinkage, getMarketOverview, setMarketAlertSettings } from "./market";
 import { generateBrief, getBrief, getBriefRecipientIds, getBriefSettings, listBriefs, resolveBriefRecipients, setBriefRecipient, setBriefSettings } from "./brief";
-import { getExternalGeoAnswer, getExternalGeoOverview, listExternalGeoAnswers, listPercentDailyStats } from "./external";
+import { getExternalGeoAnswer, getExternalGeoOverview, getExternalGeoSupplier, listExternalGeoAnswers, listPercentDailyStats } from "./external";
+import { getFactCoverage } from "./fact-coverage";
 import { emptyAnswerError, shouldLimitReasoning } from "./llm-answer";
 import { comparisonWindow, dateRangePeriod, formatReportDate, geoReportKey, parsePeriod, reportDateRangeSchema } from "../shared/report-period";
 
@@ -1632,6 +1633,11 @@ const targetFactsRouter = router({
       return db.listTargetFacts(input?.activeOnly);
     }),
 
+  // 事实与口径: mention rate of each fact in self-test answers, per platform.
+  coverage: protectedProcedure
+    .input(z.object({ days: z.number().int().min(7).max(90) }))
+    .query(async ({ input }) => getFactCoverage(input.days)),
+
   create: adminProcedure
     .input(
       z.object({
@@ -2895,6 +2901,10 @@ const externalRouter = router({
   geoOverview: protectedProcedure
     .input(z.object({ days: z.number().int().min(1).max(30) }))
     .query(async ({ input }) => getExternalGeoOverview(input.days)),
+  // 智推时代 supplier evaluation: delivery volume/stability, coverage, completeness, agreement with self-test.
+  geoSupplier: protectedProcedure
+    .input(z.object({ days: z.number().int().min(7).max(60) }))
+    .query(async ({ input }) => getExternalGeoSupplier(input.days)),
   geoAnswers: protectedProcedure
     .input(z.object({
       days: z.number().int().min(1).max(60),

@@ -9,6 +9,7 @@ import {
 } from "@/components/ui/sheet";
 import { useState, useMemo, useEffect } from "react";
 import { useRoute, useLocation } from "wouter";
+import { GenoptimaAnswerList } from "@/components/GenoptimaAnswers";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from "recharts";
@@ -43,6 +44,15 @@ export default function QuestionDetail() {
     } else {
       navigate("/questions", { replace: true });
     }
+  };
+
+  // 数据来源: 自测采集 (this system, weekly) or 智推时代 (vendor, daily); ?source=genoptima deep-links.
+  const [source, setSource] = useState<"self" | "genoptima">(() =>
+    typeof window !== "undefined" && new URLSearchParams(window.location.search).get("source") === "genoptima" ? "genoptima" : "self");
+  const switchSource = (next: "self" | "genoptima") => {
+    setSource(next);
+    const url = next === "genoptima" ? "/questions?source=genoptima" : selectedQuestionId ? `/questions/${selectedQuestionId}` : "/questions";
+    window.history.replaceState(null, "", url);
   };
 
   const { data: questionsList } = trpc.questions.list.useQuery({});
@@ -102,12 +112,42 @@ export default function QuestionDetail() {
     return Array.from(set) as Platform[];
   }, [trendData]);
 
+  const sourceSwitch = (
+    <div className="inline-flex rounded-lg border bg-muted/40 p-0.5 text-sm">
+      {([["self", "自测采集"], ["genoptima", "智推时代"]] as const).map(([key, label]) => (
+        <button key={key} type="button" onClick={() => switchSource(key)}
+          className={`rounded-md px-3 py-1 ${source === key ? "bg-background font-medium shadow-sm" : "text-muted-foreground hover:text-foreground"}`}>
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+  const header = (
+    <div className="flex flex-wrap items-start justify-between gap-3">
+      <div>
+        <h1 className="text-2xl font-bold tracking-tight">回答监测</h1>
+        <p className="text-muted-foreground text-sm mt-1">
+          {source === "genoptima"
+            ? "智推时代每天采集的国内 6 个平台回答（TRON 相关 65 个问题），情感为服务商判定"
+            : "本系统每周采集的 11 个平台回答（孙宇晨线 + TRON 线），点击卡片查看完整内容与分析"}
+        </p>
+      </div>
+      <div className="flex items-center gap-2 text-sm"><span className="text-muted-foreground">数据来源</span>{sourceSwitch}</div>
+    </div>
+  );
+
+  if (source === "genoptima") {
+    return (
+      <div className="space-y-6">
+        {header}
+        <GenoptimaAnswerList />
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight">问题详情</h1>
-        <p className="text-muted-foreground text-sm mt-1">查看各AI平台对每个问题的回答对比，点击卡片查看完整内容与分析</p>
-      </div>
+      {header}
 
       <div className="flex gap-3 items-center">
         <Select value={brandFilter} onValueChange={setBrandFilter}>
