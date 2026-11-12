@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useEffect, useState } from "react";
+import { GENOPTIMA_TOPICS, TOPIC_LINE_LABELS, type TopicLine } from "@shared/genoptima-topics";
 
 // 智推时代 (GenOptima) answers: shared by 智推时代数据 and 回答监测 (数据来源 = 智推时代).
 export const PLATFORM_LABELS: Record<string, string> = {
@@ -67,9 +68,12 @@ export function AnswerDialog({ id, onClose }: { id: string | null; onClose: () =
 export type AnswerFilter = { question?: string; sentiment?: "all" | "positive" | "negative" | "none"; nonce?: number };
 
 /** Filterable answer list. `preset` lets a parent (e.g. 负面回答最多的问题) jump the filters. */
-export function GenoptimaAnswerList({ days: fixedDays, defaultSentiment = "all", preset }: {
+export function GenoptimaAnswerList({ days: fixedDays, defaultSentiment = "all", preset, topic: fixedTopic, title = "回答明细" }: {
   days?: number; defaultSentiment?: AnswerFilter["sentiment"]; preset?: AnswerFilter;
+  /** Fix the list to one 智推 topic (主题对照); otherwise a 主题 / 品牌线 filter is shown. */
+  topic?: string; title?: string;
 }) {
+  const [topicFilter, setTopicFilter] = useState("all");
   const [ownDays, setDays] = useState(7);
   const days = fixedDays ?? ownDays;
   const [platform, setPlatform] = useState("all");
@@ -78,6 +82,7 @@ export function GenoptimaAnswerList({ days: fixedDays, defaultSentiment = "all",
   const [page, setPage] = useState(0);
   const [openId, setOpenId] = useState<string | null>(null);
 
+  useEffect(() => { setPage(0); }, [fixedTopic]);
   useEffect(() => {
     if (!preset?.nonce) return;
     if (preset.question !== undefined) setQuestion(preset.question);
@@ -90,6 +95,9 @@ export function GenoptimaAnswerList({ days: fixedDays, defaultSentiment = "all",
     platform: platform === "all" ? undefined : platform,
     sentiment: sentiment === "all" ? undefined : sentiment,
     question: question.trim() || undefined,
+    ...(fixedTopic ? { topic: fixedTopic }
+      : topicFilter.startsWith("line:") ? { line: topicFilter.slice(5) as TopicLine }
+      : topicFilter !== "all" ? { topic: topicFilter } : {}),
     limit: PAGE_SIZE,
     offset: page * PAGE_SIZE,
   }, { staleTime: 60_000 });
@@ -100,7 +108,7 @@ export function GenoptimaAnswerList({ days: fixedDays, defaultSentiment = "all",
       <Card>
         <CardHeader className="pb-2">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <CardTitle className="text-base">回答明细（{answers?.total ?? 0} 条）</CardTitle>
+            <CardTitle className="text-base">{title}（{answers?.total ?? 0} 条）</CardTitle>
             <div className="flex flex-wrap items-center gap-2">
               {fixedDays === undefined ? (
                 <Select value={String(days)} onValueChange={resetPage((v: string) => setDays(Number(v)))}>
@@ -119,6 +127,21 @@ export function GenoptimaAnswerList({ days: fixedDays, defaultSentiment = "all",
                 value={question}
                 onChange={(e) => { setQuestion(e.target.value); setPage(0); }}
               />
+              {fixedTopic ? null : (
+                <Select value={topicFilter} onValueChange={resetPage(setTopicFilter)}>
+                  <SelectTrigger className="w-[150px] h-9"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">全部主题</SelectItem>
+                    {(["sun", "tron"] as TopicLine[]).map(line => [
+                      <SelectItem key={line} value={`line:${line}`}>{TOPIC_LINE_LABELS[line]} · 全部</SelectItem>,
+                      ...GENOPTIMA_TOPICS.filter(t => t.line === line).map(t => (
+                        <SelectItem key={t.id} value={t.id}>　{t.label}</SelectItem>
+                      )),
+                    ])}
+                    <SelectItem value="unmapped">未归类</SelectItem>
+                  </SelectContent>
+                </Select>
+              )}
               <Select value={platform} onValueChange={resetPage(setPlatform)}>
                 <SelectTrigger className="w-[120px] h-9"><SelectValue /></SelectTrigger>
                 <SelectContent>

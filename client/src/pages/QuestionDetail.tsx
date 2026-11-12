@@ -10,6 +10,7 @@ import {
 import { useState, useMemo, useEffect } from "react";
 import { useRoute, useLocation } from "wouter";
 import { GenoptimaAnswerList } from "@/components/GenoptimaAnswers";
+import { TopicComparison } from "@/components/TopicComparison";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from "recharts";
@@ -46,12 +47,19 @@ export default function QuestionDetail() {
     }
   };
 
-  // 数据来源: 自测采集 (this system, weekly) or 智推时代 (vendor, daily); ?source=genoptima deep-links.
-  const [source, setSource] = useState<"self" | "genoptima">(() =>
-    typeof window !== "undefined" && new URLSearchParams(window.location.search).get("source") === "genoptima" ? "genoptima" : "self");
-  const switchSource = (next: "self" | "genoptima") => {
+  // 视图: 主题对照 (智推 topics vs self-test, default) · 自测明细 (/questions/:id) · 智推明细 (?source=genoptima).
+  type View = "topics" | "self" | "genoptima";
+  const [source, setSource] = useState<View>(() => {
+    if (params?.questionId) return "self";
+    const s = typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("source") : null;
+    return s === "genoptima" ? "genoptima" : s === "self" ? "self" : "topics";
+  });
+  useEffect(() => { if (params?.questionId) setSource("self"); }, [params?.questionId]);
+  const switchSource = (next: View) => {
     setSource(next);
-    const url = next === "genoptima" ? "/questions?source=genoptima" : selectedQuestionId ? `/questions/${selectedQuestionId}` : "/questions";
+    const url = next === "genoptima" ? "/questions?source=genoptima"
+      : next === "topics" ? "/questions"
+      : selectedQuestionId ? `/questions/${selectedQuestionId}` : "/questions?source=self";
     window.history.replaceState(null, "", url);
   };
 
@@ -114,7 +122,7 @@ export default function QuestionDetail() {
 
   const sourceSwitch = (
     <div className="inline-flex rounded-lg border bg-muted/40 p-0.5 text-sm">
-      {([["self", "自测采集"], ["genoptima", "智推时代"]] as const).map(([key, label]) => (
+      {([["topics", "主题对照"], ["self", "自测明细"], ["genoptima", "智推明细"]] as const).map(([key, label]) => (
         <button key={key} type="button" onClick={() => switchSource(key)}
           className={`rounded-md px-3 py-1 ${source === key ? "bg-background font-medium shadow-sm" : "text-muted-foreground hover:text-foreground"}`}>
           {label}
@@ -128,13 +136,24 @@ export default function QuestionDetail() {
         <h1 className="text-2xl font-bold tracking-tight">回答监测</h1>
         <p className="text-muted-foreground text-sm mt-1">
           {source === "genoptima"
-            ? "智推时代每天采集的国内 6 个平台回答（TRON 与孙宇晨相关的 65 个问题），情感为服务商判定"
+            ? "智推时代每天采集的国内 6 个平台回答（孙宇晨 10 个主题、TRON 3 个主题，共 65 个问题），情感为服务商判定"
+            : source === "topics"
+            ? "按主题并排看智推时代（国内 6 个平台、每天）和自测采集（11 个平台、每周）的回答情绪"
             : "本系统每周采集的 11 个平台回答（孙宇晨线 + TRON 线），点击卡片查看完整内容与分析"}
         </p>
       </div>
-      <div className="flex items-center gap-2 text-sm"><span className="text-muted-foreground">数据来源</span>{sourceSwitch}</div>
+      {sourceSwitch}
     </div>
   );
+
+  if (source === "topics") {
+    return (
+      <div className="space-y-6">
+        {header}
+        <TopicComparison />
+      </div>
+    );
+  }
 
   if (source === "genoptima") {
     return (

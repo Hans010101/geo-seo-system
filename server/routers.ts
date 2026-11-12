@@ -49,7 +49,7 @@ import {
 import { isCloudflareRuntime } from "./runtime";
 import { getMarketLinkage, getMarketOverview, setMarketAlertSettings } from "./market";
 import { generateBrief, getBrief, getBriefRecipientIds, getBriefSettings, listBriefs, resolveBriefRecipients, setBriefRecipient, setBriefSettings } from "./brief";
-import { getExternalGeoAnswer, getExternalGeoOverview, getExternalGeoSupplier, listExternalGeoAnswers, listPercentDailyStats } from "./external";
+import { getExternalGeoAnswer, getExternalGeoOverview, getExternalGeoSupplier, getGenoptimaTopics, listExternalGeoAnswers, listPercentDailyStats } from "./external";
 import { getFactCoverage } from "./fact-coverage";
 import { emptyAnswerError, shouldLimitReasoning } from "./llm-answer";
 import { comparisonWindow, dateRangePeriod, formatReportDate, geoReportKey, parsePeriod, reportDateRangeSchema } from "../shared/report-period";
@@ -2902,6 +2902,10 @@ const externalRouter = router({
     .input(z.object({ days: z.number().int().min(1).max(30) }))
     .query(async ({ input }) => getExternalGeoOverview(input.days)),
   // 智推时代 supplier evaluation: delivery volume/stability, coverage, completeness, agreement with self-test.
+  // 主题对照: 智推 13 topics vs the matching self-test 情绪类 questions.
+  geoTopics: protectedProcedure
+    .input(z.object({ days: z.number().int().min(7).max(60) }))
+    .query(async ({ input }) => getGenoptimaTopics(input.days)),
   geoSupplier: protectedProcedure
     .input(z.object({ days: z.number().int().min(7).max(60) }))
     .query(async ({ input }) => getExternalGeoSupplier(input.days)),
@@ -2911,6 +2915,8 @@ const externalRouter = router({
       platform: z.string().max(32).optional(),
       sentiment: z.enum(["positive", "negative", "none"]).optional(),
       question: z.string().max(200).optional(),
+      topic: z.string().max(40).optional(), // 智推 topic id or "unmapped"
+      line: z.enum(["sun", "tron"]).optional(),
       limit: z.number().int().min(1).max(100).default(30),
       offset: z.number().int().min(0).default(0),
     }))

@@ -405,11 +405,16 @@ function getSentimentColor(score: number): string {
   return "#10b981";
 }
 
-// 智推时代 daily monitoring of the domestic platforms, next to the weekly self-test numbers above.
+// 智推时代 daily monitoring of the domestic platforms, next to the weekly self-test numbers above;
+// split into 孙宇晨 / TRON because 50 of the vendor's 65 questions are about 孙宇晨.
 function VendorPulse() {
-  const { data } = trpc.external.geoOverview.useQuery({ days: 7 }, { staleTime: 300_000 });
-  if (!data || data.total === 0) return null;
-  const negative = data.byPlatform.reduce((n, p) => n + p.negative, 0);
+  const { data } = trpc.external.geoTopics.useQuery({ days: 7 }, { staleTime: 300_000 });
+  const total = data?.byLine.reduce((n, l) => n + l.total, 0) ?? 0;
+  if (!data || total === 0) return null;
+  const negative = data.byLine.reduce((n, l) => n + l.negative, 0);
+  const platforms = [...new Set(data.byLine.flatMap(l => l.platforms.map(p => p.platform)))];
+  const labelOf = (key: string) => data.byLine.flatMap(l => l.platforms).find(p => p.platform === key)?.label || key;
+  const color = (n: number, t: number) => { const r = t ? n / t : 0; return r >= 0.2 ? "text-red-600" : r >= 0.1 ? "text-amber-600" : "text-green-600"; };
   return (
     <Card>
       <CardHeader className="pb-3">
@@ -417,28 +422,41 @@ function VendorPulse() {
           <div>
             <CardTitle className="text-base font-semibold">国内平台每日监测 · 近 7 天</CardTitle>
             <p className="text-xs text-muted-foreground mt-1">
-              智推时代数据：{data.total.toLocaleString()} 条回答，负面 {((negative / data.total) * 100).toFixed(1)}%（服务商判定）
+              智推时代数据：{total.toLocaleString()} 条回答，负面 {((negative / total) * 100).toFixed(1)}%（服务商判定）
             </p>
           </div>
           <div className="flex gap-2">
-            <Button variant="outline" size="sm" asChild><Link href="/questions?source=genoptima">看回答</Link></Button>
+            <Button variant="outline" size="sm" asChild><Link href="/questions">按主题对照</Link></Button>
             <Button variant="ghost" size="sm" asChild><Link href="/external">供应商数据</Link></Button>
           </div>
         </div>
       </CardHeader>
-      <CardContent>
-        <div className="grid grid-cols-3 md:grid-cols-6 gap-3">
-          {data.byPlatform.map(p => {
-            const rate = p.total ? p.negative / p.total : 0;
-            return (
-              <div key={p.platform} className="rounded-lg border p-2.5 text-center space-y-1">
-                <p className="text-[11px] font-semibold">{p.label}</p>
-                <p className={`text-xl font-bold ${rate >= 0.2 ? "text-red-600" : rate >= 0.1 ? "text-amber-600" : "text-green-600"}`}>{(rate * 100).toFixed(1)}%</p>
-                <p className="text-[10px] text-muted-foreground">负面 {p.negative}/{p.total}</p>
-              </div>
-            );
-          })}
-        </div>
+      <CardContent className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="text-muted-foreground">
+            <tr className="border-b">
+              <th className="text-left py-2 font-medium">负面率</th>
+              <th className="text-right font-medium">合计</th>
+              {platforms.map(p => <th key={p} className="text-right font-medium">{labelOf(p)}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {data.byLine.map(line => (
+              <tr key={line.line} className="border-b last:border-0">
+                <td className="py-2 font-medium">{line.label}</td>
+                <td className={`text-right font-semibold ${color(line.negative, line.total)}`}>{line.total ? `${((line.negative / line.total) * 100).toFixed(1)}%` : "—"}</td>
+                {platforms.map(key => {
+                  const p = line.platforms.find(x => x.platform === key);
+                  return (
+                    <td key={key} className={`text-right ${p ? color(p.negative, p.total) : "text-muted-foreground"}`} title={p ? `${p.negative}/${p.total}` : ""}>
+                      {p && p.total ? `${((p.negative / p.total) * 100).toFixed(1)}%` : "—"}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </CardContent>
     </Card>
   );

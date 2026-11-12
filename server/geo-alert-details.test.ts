@@ -8,7 +8,7 @@ const state = vi.hoisted(() => ({ alerts: [] as any[] }));
 vi.mock("@/lib/trpc", () => ({ trpc: {
   useUtils: () => ({}),
   dashboard: { summary: { useQuery: () => ({}) }, heatmap: { useQuery: () => ({}) } },
-  external: { geoOverview: { useQuery: () => ({}) } },
+  external: { geoOverview: { useQuery: () => ({}) }, geoTopics: { useQuery: () => ({}) } },
   questions: { list: { useQuery: () => ({}) } },
   alerts: { list: { useQuery: () => ({ data: { data: state.alerts, total: state.alerts.length } }) } },
 } }));

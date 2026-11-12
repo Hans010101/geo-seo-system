@@ -6,6 +6,8 @@ import { useRoute } from "wouter";
 import { useState } from "react";
 import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { GenoptimaAnswerList, pct, time, type AnswerFilter } from "@/components/GenoptimaAnswers";
+import { Link } from "wouter";
+import { TOPIC_LINE_LABELS, type TopicLine } from "@shared/genoptima-topics";
 
 function Stat({ label, value, hint, tone }: { label: string; value: string; hint?: string; tone?: "good" | "warn" | "bad" }) {
   const color = tone === "bad" ? "text-red-600" : tone === "warn" ? "text-amber-600" : tone === "good" ? "text-green-600" : "";
@@ -102,7 +104,7 @@ function SupplierSection({ days }: { days: number }) {
           <CardHeader className="pb-2">
             <CardTitle className="text-base">与自测结果对照</CardTitle>
             <p className="text-xs text-muted-foreground">
-              同一模型的负面率：智推为服务商判定；自测为本系统对孙宇晨线和 TRON 线问题的打分（≤2 分算负面）。两边差距大，说明智推的情感判定需要复核。
+              同一批问题（13 个主题对应的自测情绪类问题）、同一模型的负面率：智推为服务商判定；自测为本系统打分（≤2 分算负面）。两边差距大，说明智推的情感判定需要复核。
             </p>
           </CardHeader>
           <CardContent>
@@ -131,7 +133,67 @@ function SupplierSection({ days }: { days: number }) {
           </CardContent>
         </Card>
       </div>
+      <TopicTable days={days} />
     </div>
+  );
+}
+
+// 各主题负面率: where the vendor's negatives come from, and whether self-test agrees on the same topic.
+function TopicTable({ days }: { days: number }) {
+  const { data } = trpc.external.geoTopics.useQuery({ days }, { staleTime: 120_000 });
+  if (!data) return null;
+  const r = (s: { total: number; negative: number }) => (s.total ? s.negative / s.total : null);
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <CardTitle className="text-base">各主题负面率</CardTitle>
+          <Link href="/questions" className="text-sm text-muted-foreground hover:text-foreground">在回答监测里按主题对照 →</Link>
+        </div>
+        <p className="text-xs text-muted-foreground">智推 65 个问题 = 13 个主题 × 5 种问法；自测列只统计同一批模型（DeepSeek、豆包、Kimi、通义、文心、元宝）。差距 ≥10 个百分点标黄。</p>
+      </CardHeader>
+      <CardContent className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="text-muted-foreground">
+            <tr className="border-b">
+              <th className="text-left py-2">主题</th><th className="text-right">智推回答</th><th className="text-right">智推负面率</th>
+              <th className="text-right">自测回答</th><th className="text-right">自测负面率</th><th className="text-right">差距</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(["sun", "tron"] as TopicLine[]).map(line => {
+              const lineStat = data.byLine.find(l => l.line === line);
+              return [
+                <tr key={line} className="border-b bg-muted/40">
+                  <td className="py-1.5 font-semibold" colSpan={2}>{TOPIC_LINE_LABELS[line]}</td>
+                  <td className="text-right font-semibold">{lineStat ? pct(lineStat.negative, lineStat.total) : "—"}</td>
+                  <td colSpan={3} />
+                </tr>,
+                ...data.topics.filter(t => t.line === line).map(t => {
+                  const v = r(t.vendor), m = r(t.selfMatched);
+                  const gap = v !== null && m !== null ? (v - m) * 100 : null;
+                  return (
+                    <tr key={t.id} className="border-b last:border-0">
+                      <td className="py-1.5 pl-3">{t.label}</td>
+                      <td className="text-right">{t.vendor.total.toLocaleString()}</td>
+                      <td className={`text-right font-medium ${v !== null && v >= 0.3 ? "text-red-600" : ""}`}>{pct(t.vendor.negative, t.vendor.total)}</td>
+                      <td className="text-right">{t.selfMatched.total || "—"}</td>
+                      <td className="text-right">{t.selfMatched.total ? pct(t.selfMatched.negative, t.selfMatched.total) : "无自测"}</td>
+                      <td className={`text-right ${gap !== null && Math.abs(gap) >= 10 ? "text-amber-600 font-medium" : ""}`}>
+                        {gap === null ? "—" : `${gap > 0 ? "+" : ""}${gap.toFixed(1)} 点`}
+                      </td>
+                    </tr>
+                  );
+                }),
+              ];
+            })}
+          </tbody>
+        </table>
+        {data.unmapped.length ? (
+          <p className="mt-2 text-xs text-amber-700">有 {data.unmapped.length} 个智推新问题未归入主题：{data.unmapped.map(u => u.question).join("；")}</p>
+        ) : null}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -304,7 +366,7 @@ export default function ExternalMonitor() {
       <div>
         <h1 className="text-2xl font-bold tracking-tight">{isPercent ? "百分点数据" : "智推时代数据"}</h1>
         <p className="text-muted-foreground text-sm mt-1">
-          {isPercent ? "百分点 Mediaforce 舆情服务的每日总量快照" : "服务商智推时代的交付情况与监测内容：国内 6 个 AI 平台、TRON 与孙宇晨相关的 65 个问题，每天约 3 轮"}
+          {isPercent ? "百分点 Mediaforce 舆情服务的每日总量快照" : "服务商智推时代的交付情况与监测内容：国内 6 个 AI 平台，孙宇晨 10 个主题 + TRON 3 个主题（每个主题 5 种问法，共 65 个问题），每天约 3 轮"}
         </p>
       </div>
       {isPercent ? <PercentTab /> : <GeoTab />}
