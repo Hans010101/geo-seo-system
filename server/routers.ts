@@ -53,7 +53,7 @@ import { getExternalGeoAnswer, getExternalGeoOverview, getExternalGeoSupplier, g
 import { getFactCoverage } from "./fact-coverage";
 import { REASONING_BUDGETS, emptyAnswerError, shouldLimitReasoning } from "./llm-answer";
 import * as claims from "./collection-claims";
-import { NEW_ROW_MIN_MS, PER_CALL_TIMEOUT_MS, ROUND_BUDGET_MS, RoundDeadlineError, attemptTimeoutMs } from "./collection-claims";
+import { NEW_ROW_MIN_MS, PER_CALL_TIMEOUT_MS, ROUND_BUDGET_MS, SHORT_NEW_ROW_MIN_MS, SHORT_ROUND_BUDGET_MS, RoundDeadlineError, attemptTimeoutMs } from "./collection-claims";
 import { comparisonWindow, dateRangePeriod, formatReportDate, geoReportKey, parsePeriod, reportDateRangeSchema } from "../shared/report-period";
 
 // ==================== Structured Logger ====================
@@ -1246,12 +1246,17 @@ const collectionsRouter = router({
     .input(z.object({
       batchId: z.string(),
       concurrency: z.number().min(1).max(10).optional(),
+      // Set by the streamed /api/geo/execute-round route. Plain tRPC calls (pages still running the
+      // old client) are cut with a 524 at ~120s, so they get a short round.
+      streamed: z.boolean().optional(),
     }))
     .mutation(async ({ input }) => {
       const concurrency = input.concurrency || 5;
       const client = await claims.claimClient();
       const roundStart = Date.now();
-      const deadline = roundStart + ROUND_BUDGET_MS;
+      const budget = input.streamed ? ROUND_BUDGET_MS : SHORT_ROUND_BUDGET_MS;
+      const newRowMin = input.streamed ? NEW_ROW_MIN_MS : SHORT_NEW_ROW_MIN_MS;
+      const deadline = roundStart + budget;
       const expired = await claims.expireExhaustedRows(client, input.batchId, roundStart);
 
       let completed = 0;
@@ -1259,7 +1264,7 @@ const collectionsRouter = router({
       let deferred = 0;
       let claimedAny = false;
       const slot = async () => {
-        while (deadline - Date.now() >= NEW_ROW_MIN_MS) {
+        while (deadline - Date.now() >= newRowMin) {
           const [row] = await claims.claimPendingRows(client, input.batchId, 1, Date.now());
           if (!row) return;
           claimedAny = true;

@@ -95,3 +95,7 @@ export class RoundDeadlineError extends Error {
 // A worker slot only claims a new row while at least this much of the round is left, so the first
 // attempt of every row it starts gets a reasonable time budget.
 export const NEW_ROW_MIN_MS = 100_000;
+
+// Rounds requested over plain (non-streamed) tRPC must end, post-processing included, before the ~120s 524.
+export const SHORT_ROUND_BUDGET_MS = 80_000;
+export const SHORT_NEW_ROW_MIN_MS = 50_000;

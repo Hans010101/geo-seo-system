@@ -195,7 +195,7 @@ app.post("/api/geo/execute-round", async (c) => {
   void send(" ");
   const heartbeat = setInterval(() => void send(" "), 15_000);
   const work = caller.collections
-    .executeNextBatch({ batchId: String(body.batchId ?? ""), concurrency: body.concurrency })
+    .executeNextBatch({ batchId: String(body.batchId ?? ""), concurrency: body.concurrency, streamed: true })
     .then(
       (result) => ({ result }),
       (error: any) => ({ error: { message: error?.message || String(error), code: error?.code ?? null } }),
