@@ -102,7 +102,7 @@ function SupplierSection({ days }: { days: number }) {
           <CardHeader className="pb-2">
             <CardTitle className="text-base">与自测结果对照</CardTitle>
             <p className="text-xs text-muted-foreground">
-              同一模型的负面率：智推为服务商判定；自测为本系统对 TRON 线问题的打分（≤2 分算负面）。两边差距大，说明智推的情感判定需要复核。
+              同一模型的负面率：智推为服务商判定；自测为本系统对孙宇晨线和 TRON 线问题的打分（≤2 分算负面）。两边差距大，说明智推的情感判定需要复核。
             </p>
           </CardHeader>
           <CardContent>
@@ -304,7 +304,7 @@ export default function ExternalMonitor() {
       <div>
         <h1 className="text-2xl font-bold tracking-tight">{isPercent ? "百分点数据" : "智推时代数据"}</h1>
         <p className="text-muted-foreground text-sm mt-1">
-          {isPercent ? "百分点 Mediaforce 舆情服务的每日总量快照" : "服务商智推时代的交付情况与监测内容：国内 6 个 AI 平台、TRON 相关问题，每天约 3 轮"}
+          {isPercent ? "百分点 Mediaforce 舆情服务的每日总量快照" : "服务商智推时代的交付情况与监测内容：国内 6 个 AI 平台、TRON 与孙宇晨相关的 65 个问题，每天约 3 轮"}
         </p>
       </div>
       {isPercent ? <PercentTab /> : <GeoTab />}

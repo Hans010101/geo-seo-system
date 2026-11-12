@@ -183,11 +183,11 @@ export async function getExternalGeoSupplier(days: number, now = Date.now()): Pr
     client.prepare(`SELECT MAX(queryTime) AS latestQueryTime, MAX(createdAt) AS latestSyncTime FROM externalGeoAnswers`),
     client.prepare(`SELECT platform, COUNT(*) AS total, SUM(sentiment = 'positive') AS positive, SUM(sentiment = 'negative') AS negative
       FROM externalGeoAnswers WHERE queryDay >= ? GROUP BY platform`).bind(fromDay),
-    // Self-test answers to TRON-line questions on the same model families; score 1–5 (≥4 正面, ≤2 负面).
+    // Self-test answers to 孙宇晨/TRON questions (competitors excluded) on the same model families; score 1–5 (≥4 正面, ≤2 负面).
     client.prepare(`SELECT c.platform AS platform, COUNT(*) AS total,
         SUM(a.sentimentScore >= 4) AS positive, SUM(a.sentimentScore <= 2) AS negative
       FROM collections c JOIN analyses a ON a.collectionId = c.id JOIN questions q ON q.questionId = c.questionId
-      WHERE c.status = 'success' AND c.timestamp >= ? AND q.brandLine LIKE 'tron%'
+      WHERE c.status = 'success' AND c.timestamp >= ? AND q.brandLine != 'competitor'
         AND c.platform IN (${selfPlatforms.map(() => "?").join(",")})
       GROUP BY c.platform`).bind(from, ...selfPlatforms),
   ]);
