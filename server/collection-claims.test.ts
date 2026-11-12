@@ -11,7 +11,7 @@ import {
   releaseClaim,
   type ClaimClient,
 } from "./collection-claims";
-import { LOW_REASONING_PLATFORMS } from "./llm-answer";
+import { REASONING_BUDGETS } from "./llm-answer";
 
 const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite");
 
@@ -86,7 +86,8 @@ describe("attempt timeouts", () => {
     expect(attemptTimeoutMs(MIN_ATTEMPT_MS - 1, 0)).toBeNull();
   });
 
-  it("doubao starts with low reasoning", () => {
-    expect(LOW_REASONING_PLATFORMS.has("doubao")).toBe(true);
+  it("doubao gets a capped reasoning budget with room left for the answer", () => {
+    const b = REASONING_BUDGETS.doubao;
+    expect(b.reasoningTokens).toBeLessThan(b.maxTokens / 2);
   });
 });

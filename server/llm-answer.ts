@@ -14,7 +14,10 @@ export function shouldLimitReasoning(finishReason: string | null | undefined, co
   return finishReason === "length" && content.trim().length === 0;
 }
 
-// Platforms whose OpenRouter model reasons by default and, at full effort, usually returns no visible
-// answer within the output budget (Seed: 26 of 31 answers empty on 2026-11-05). Ask for low effort
-// from the first attempt instead of paying for an empty answer and retrying.
-export const LOW_REASONING_PLATFORMS: ReadonlySet<string> = new Set(["doubao"]);
+// Platforms whose OpenRouter model reasons by default and, within the normal 4096-token output budget,
+// usually returns no visible answer (Seed: 26 of 31 empty on 2026-11-05; on 2026-11-12 every call was
+// empty, also with reasoning effort "low" — seed-2-1-turbo does not support reasoning_effort). Cap the
+// reasoning budget and give the output room for reasoning plus the answer.
+export const REASONING_BUDGETS: Readonly<Record<string, { maxTokens: number; reasoningTokens: number }>> = {
+  doubao: { maxTokens: 12_000, reasoningTokens: 2_048 },
+};
