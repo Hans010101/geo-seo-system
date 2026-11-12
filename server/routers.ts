@@ -51,7 +51,7 @@ import { getMarketLinkage, getMarketOverview, setMarketAlertSettings } from "./m
 import { generateBrief, getBrief, getBriefRecipientIds, getBriefSettings, listBriefs, resolveBriefRecipients, setBriefRecipient, setBriefSettings } from "./brief";
 import { getExternalGeoAnswer, getExternalGeoOverview, getExternalGeoSupplier, getGenoptimaTopics, listExternalGeoAnswers, listPercentDailyStats } from "./external";
 import { getFactCoverage } from "./fact-coverage";
-import { REASONING_BUDGETS, emptyAnswerError, shouldLimitReasoning } from "./llm-answer";
+import { REASONING_SETTINGS, emptyAnswerError, shouldLimitReasoning } from "./llm-answer";
 import * as claims from "./collection-claims";
 import { NEW_ROW_MIN_MS, PER_CALL_TIMEOUT_MS, ROUND_BUDGET_MS, SHORT_NEW_ROW_MIN_MS, SHORT_ROUND_BUDGET_MS, RoundDeadlineError, attemptTimeoutMs } from "./collection-claims";
 import { comparisonWindow, dateRangePeriod, formatReportDate, geoReportKey, parsePeriod, reportDateRangeSchema } from "../shared/report-period";
@@ -423,7 +423,7 @@ async function callExternalLLM(
 
   const provider = detectProviderFromBaseUrl(config.baseUrl);
   let limitReasoning = false;
-  const reasoningBudget = REASONING_BUDGETS[platform];
+  const reasoningSettings = REASONING_SETTINGS[platform];
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     const timeoutMs = attemptTimeoutMs(deadline, Date.now());
@@ -453,9 +453,9 @@ async function callExternalLLM(
         body: JSON.stringify({
           model: config.model,
           messages,
-          max_tokens: reasoningBudget ? reasoningBudget.maxTokens : Math.min(4096, Math.max(256, maxTokens)),
-          ...(isOpenRouter && reasoningBudget
-            ? { reasoning: { max_tokens: reasoningBudget.reasoningTokens } }
+          max_tokens: reasoningSettings ? reasoningSettings.maxTokens : Math.min(4096, Math.max(256, maxTokens)),
+          ...(isOpenRouter && reasoningSettings
+            ? { reasoning: { effort: limitReasoning ? "minimal" : reasoningSettings.effort } }
             : isOpenRouter && limitReasoning ? { reasoning: { effort: "low" } } : {}),
         }),
         signal: controller.signal,

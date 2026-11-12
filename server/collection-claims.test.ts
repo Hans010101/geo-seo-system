@@ -11,7 +11,8 @@ import {
   releaseClaim,
   type ClaimClient,
 } from "./collection-claims";
-import { REASONING_BUDGETS } from "./llm-answer";
+import { REASONING_SETTINGS } from "./llm-answer";
+import { PLATFORM_OPENROUTER_MODELS } from "../shared/geo-types";
 
 const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite");
 
@@ -86,8 +87,8 @@ describe("attempt timeouts", () => {
     expect(attemptTimeoutMs(MIN_ATTEMPT_MS - 1, 0)).toBeNull();
   });
 
-  it("doubao gets a capped reasoning budget with room left for the answer", () => {
-    const b = REASONING_BUDGETS.doubao;
-    expect(b.reasoningTokens).toBeLessThan(b.maxTokens / 2);
+  it("doubao runs on Seed 2.0 Lite with low reasoning effort", () => {
+    expect(PLATFORM_OPENROUTER_MODELS.doubao).toBe("bytedance-seed/seed-2.0-lite");
+    expect(REASONING_SETTINGS.doubao.effort).toBe("low");
   });
 });

@@ -55,7 +55,9 @@ export const PLATFORM_OPENROUTER_MODELS: Record<Platform, string> = {
   claude: "anthropic/claude-sonnet-5",
   // Microsoft Copilot uses an undisclosed dynamic router. Luna is the closest broad-consumer proxy.
   copilot: "openai/gpt-5.6-luna",
-  doubao: "bytedance-seed/seed-2-1-turbo",
+  // 2026-11-12: seed-2-1-turbo spends the whole output on reasoning (empty answers) and ignores
+  // reasoning effort; seed-2.0-lite supports reasoning_effort.
+  doubao: "bytedance-seed/seed-2.0-lite",
   kimi: "moonshotai/kimi-k2.6",
   // Flash matches the public Instant experience; Pro is intentionally excluded.
   deepseek: "deepseek/deepseek-v4-flash-0731",

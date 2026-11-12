@@ -10,6 +10,7 @@ export const OPENROUTER_PRICING: Record<string, Pricing> = {
   "baidu/ernie-4.5-vl-424b-a47b":        { input: 0.00000042,   output: 0.00000125 },
   "anthropic/claude-sonnet-5":           { input: 0.000002,     output: 0.00001 },
   "bytedance-seed/seed-2-1-turbo":       { input: 0.0000005,    output: 0.0000025 },
+  "bytedance-seed/seed-2.0-lite":        { input: 0.00000025,   output: 0.000002 },
   "moonshotai/kimi-k2.6":                { input: 0.0000005415, output: 0.00000228 },
   "deepseek/deepseek-v4-flash-0731":     { input: 0.00000008,   output: 0.00000018 },
   "minimax/minimax-m2.5":                { input: 0.00000027,   output: 0.00000108 },
