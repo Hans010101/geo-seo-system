@@ -81,11 +81,12 @@ const primaryGroups: NavGroup[] = [
   },
 ];
 
+// 运行与系统: developer accounts only (the 007 owner accounts); hidden for everyone else (11-12).
 const configGroups: NavGroup[] = [
   {
     icon: Activity, label: "运行与系统", tabs: [
-      { label: "运行中心", path: "/operations" },
-      { label: "平台配置", path: "/config/platforms" },
+      { label: "运行中心", path: "/operations", developerOnly: true },
+      { label: "平台配置", path: "/config/platforms", developerOnly: true },
       { label: "通知设置", path: "/config/notifications", developerOnly: true },
       { label: "用户管理", path: "/config/users", developerOnly: true },
     ],
@@ -398,6 +399,8 @@ function DashboardLayoutContent({
   const activeGroup = allGroups.find(g => activeTabOf(location, g));
   const activeTab = activeGroup ? activeTabOf(location, activeGroup) : undefined;
   const groupTabs = activeGroup ? visibleTabs(activeGroup, access) : [];
+  // A page whose tab is hidden for this account (e.g. 运行与系统 for non-developers) is not shown by URL either.
+  const forbidden = !!activeTab && !groupTabs.includes(activeTab);
   const renderGroups = (groups: NavGroup[]) => groups.map(group => {
     const tabs = visibleTabs(group, access);
     if (!tabs.length) return null;
@@ -473,27 +476,10 @@ function DashboardLayoutContent({
           </SidebarHeader>
 
           <SidebarContent className="gap-0">
-            {/* 决策工作区 */}
+            {/* One flat list; 运行与系统 only shows for developers. */}
             <div className="px-3 py-2">
-              {!isCollapsed && (
-                <p className="text-[10px] font-medium text-sidebar-foreground/40 uppercase tracking-wider mb-1 px-2">
-                  决策工作区
-                </p>
-              )}
               <SidebarMenu>
-                {renderGroups(primaryGroups)}
-              </SidebarMenu>
-            </div>
-
-            {/* 配置管理 */}
-            <div className="px-3 py-2">
-              {!isCollapsed && (
-                <p className="text-[10px] font-medium text-sidebar-foreground/40 uppercase tracking-wider mb-1 px-2">
-                  系统配置
-                </p>
-              )}
-              <SidebarMenu>
-                {renderGroups(configGroups)}
+                {renderGroups(allGroups)}
               </SidebarMenu>
             </div>
           </SidebarContent>
@@ -578,7 +564,9 @@ function DashboardLayoutContent({
               })}
             </nav>
           ) : null}
-          {children}
+          {forbidden ? (
+            <div className="py-24 text-center text-sm text-muted-foreground">当前账号没有这个页面的访问权限</div>
+          ) : children}
         </main>
       </SidebarInset>
     </>

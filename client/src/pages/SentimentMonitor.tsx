@@ -26,7 +26,7 @@ import { THREAT_META, STANCE_META, RELEVANCE_LABELS, FETCH_ENGINE_LABELS, SOURCE
 const PAGE_SIZE = 50;
 
 export default function SentimentMonitor() {
-  const { isAdmin } = useRole();
+  const { isAdmin, isDeveloper } = useRole();
   const utils = trpc.useUtils();
   const [page, setPage] = useState(0);
   const [threat, setThreat] = useState<string>("all");
@@ -100,9 +100,11 @@ export default function SentimentMonitor() {
           <p className="text-muted-foreground text-sm mt-1">涉及孙宇晨 / 波场的最新内容，点任一条查看全文、AI 分析与处置。</p>
         </div>
         <div className="flex items-center gap-3 flex-wrap">
-          <Link href="/operations" className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
-            <Settings2 className="h-3.5 w-3.5" /> 采集运行与成本
-          </Link>
+          {isDeveloper && (
+            <Link href="/operations" className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
+              <Settings2 className="h-3.5 w-3.5" /> 采集运行与成本
+            </Link>
+          )}
           {isAdmin && (
             <Button size="sm" variant="outline" onClick={() => trigger.mutate()} disabled={trigger.isPending || schedule?.running} className="gap-1.5">
               {trigger.isPending || schedule?.running ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}

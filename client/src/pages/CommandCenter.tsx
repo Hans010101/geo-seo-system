@@ -1,4 +1,5 @@
 import { Link } from "wouter";
+import { useRole } from "@/hooks/useRole";
 import { trpc } from "@/lib/trpc";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -36,6 +37,7 @@ function timeAgo(value?: number | string | null) {
 }
 
 export default function CommandCenter() {
+  const { isDeveloper } = useRole();
   const [articleId, setArticleId] = useState<number | null>(null);
   const [collectionId, setCollectionId] = useState<number | null>(null);
   const [weekRange] = useState(week);
@@ -203,7 +205,7 @@ export default function CommandCenter() {
             <RuntimeRow label="币安广场" value={worker?.binance?.status || "等待状态"} detail={worker?.binance?.provider || "未报告通道"} />
             <RuntimeRow label="日常 GEO" value={worker?.dailyGeo?.status || "等待状态"} detail={timeAgo(worker?.dailyGeo?.finishedAt)} />
             <RuntimeRow label="周度 GEO" value={worker?.weeklyGeo?.status || "等待状态"} detail={timeAgo(worker?.weeklyGeo?.finishedAt)} />
-            <Button variant="outline" className="w-full" asChild><Link href="/operations">查看运行中心</Link></Button>
+            {isDeveloper && <Button variant="outline" className="w-full" asChild><Link href="/operations">查看运行中心</Link></Button>}
           </CardContent>
         </Card>
       </div>
