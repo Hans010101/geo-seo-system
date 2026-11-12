@@ -51,7 +51,9 @@ import { getMarketLinkage, getMarketOverview, setMarketAlertSettings } from "./m
 import { generateBrief, getBrief, getBriefRecipientIds, getBriefSettings, listBriefs, resolveBriefRecipients, setBriefRecipient, setBriefSettings } from "./brief";
 import { getExternalGeoAnswer, getExternalGeoOverview, getExternalGeoSupplier, getGenoptimaTopics, listExternalGeoAnswers, listPercentDailyStats } from "./external";
 import { getFactCoverage } from "./fact-coverage";
-import { emptyAnswerError, shouldLimitReasoning } from "./llm-answer";
+import { LOW_REASONING_PLATFORMS, emptyAnswerError, shouldLimitReasoning } from "./llm-answer";
+import * as claims from "./collection-claims";
+import { NEW_ROW_MIN_MS, PER_CALL_TIMEOUT_MS, ROUND_BUDGET_MS, RoundDeadlineError, attemptTimeoutMs } from "./collection-claims";
 import { comparisonWindow, dateRangePeriod, formatReportDate, geoReportKey, parsePeriod, reportDateRangeSchema } from "../shared/report-period";
 
 // ==================== Structured Logger ====================
@@ -406,6 +408,7 @@ async function callExternalLLM(
   traceId: string,
   providerOverride?: "openrouter",
   maxTokens = 4096,
+  deadline?: number,
 ): Promise<LLMCallTelemetry> {
   const config = await resolveApiConfig(platform, providerOverride);
 
@@ -413,17 +416,19 @@ async function callExternalLLM(
     throw new Error(`该平台 (${platform}) 未配置 API Key，请在「平台配置」或「全局 API 配置」中设置`);
   }
 
-  const maxRetries = 3;
-  // Bumped from 60s → 200s so it covers slow-generating long-tail platforms (zhipu max 185s observed).
-  // Previously the AbortController was canceled right after `fetch()` resolved headers, so body
-  // streaming was effectively unbounded — masking the real per-call duration. Now timer is cleared
-  // only after the full body is consumed, so the deadline covers the entire request.
-  const timeoutMs = 200000;
+  // Two attempts per call. Each attempt is bounded by PER_CALL_TIMEOUT_MS and, inside a polling round,
+  // by the round deadline: an attempt that cannot fit is not started (RoundDeadlineError leaves the row
+  // pending for the next round) instead of being paid for and then cut off.
+  const maxRetries = 2;
 
   const provider = detectProviderFromBaseUrl(config.baseUrl);
-  let limitReasoning = false;
+  // Reasoning models that otherwise burn the whole output budget on hidden reasoning start low.
+  let limitReasoning = LOW_REASONING_PLATFORMS.has(platform);
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    const timeoutMs = attemptTimeoutMs(deadline, Date.now());
+    if (timeoutMs == null) throw new RoundDeadlineError();
+    const cutByRound = timeoutMs < PER_CALL_TIMEOUT_MS;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     const t0 = Date.now();
@@ -506,7 +511,9 @@ async function callExternalLLM(
     } catch (error: any) {
       clearTimeout(timer);
       log.warn(`External API attempt ${attempt} failed for ${platform}: ${error.message}`, { traceId });
+      if (controller.signal.aborted && cutByRound) throw new RoundDeadlineError();
       if (attempt === maxRetries) {
+        if (controller.signal.aborted) throw new Error(`模型 ${Math.round(timeoutMs / 1000)} 秒内未返回`);
         throw error;
       }
       await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempt - 1)));
@@ -523,7 +530,8 @@ async function executeCollection(
   platform: string,
   providerOverride?: "openrouter",
   maxTokens?: number,
-): Promise<{ success: boolean; error?: string }> {
+  deadline?: number,
+): Promise<{ success: boolean; error?: string; deferred?: boolean }> {
   const traceId = `col-${collectionId}-${nanoid(6)}`;
 
   if (isCancelled(collectionId)) {
@@ -552,6 +560,7 @@ async function executeCollection(
       traceId,
       providerOverride,
       maxTokens,
+      deadline,
     );
     const responseText = telemetry.content;
     const apiSource = telemetry.source;
@@ -605,6 +614,12 @@ async function executeCollection(
 
     return { success: true };
   } catch (error: any) {
+    if (error instanceof RoundDeadlineError) {
+      // Not enough round time left for (another) model call: hand the row to the next round.
+      log.info(`Collection ${collectionId} deferred to next round`, { traceId, platform });
+      try { await claims.releaseClaim(await claims.claimClient(), collectionId); } catch {}
+      return { success: false, deferred: true, error: error.message };
+    }
     log.error(`Collection ${collectionId} failed: ${error.message}`, { traceId, platform });
     if (!isCancelled(collectionId)) {
       try {
@@ -1220,11 +1235,11 @@ const collectionsRouter = router({
       return { success: true, batchId, totalCreated };
     }),
 
-  // Execute next batch of pending items — called by frontend polling
-  // Streaming concurrent execution: prefetch up to concurrency*3 pending rows (capped at 15) and
-  // process via p-limit pool so a slow cell never blocks faster ones in the same round.
-  // Per-round duration is bounded by Cloud Run 5min timeout; un-finished rows stay 'pending' and
-  // get retried by the next poll round, so increasing the prefetch is safe.
+  // Execute next batch of pending items — called by frontend polling.
+  // `concurrency` worker slots each claim one pending row at a time (atomic claim, see
+  // collection-claims.ts) and keep going until the round budget no longer fits a new model call.
+  // Claims make it safe for several open pages to drive the same batch, and rows whose round died
+  // are retried once, then closed as timeout — never re-run forever.
   executeNextBatch: geoBatchProcedure
     .input(z.object({
       batchId: z.string(),
@@ -1232,45 +1247,46 @@ const collectionsRouter = router({
     }))
     .mutation(async ({ input }) => {
       const concurrency = input.concurrency || 5;
-      // Prefetch more than concurrency so the p-limit pool stays full as cells complete.
-      // Capped at 15 to stay well under Cloud Run 5min limit even if many cells hit the 200s timeout.
-      const prefetch = Math.min(concurrency * 3, 15);
-      const progress = await db.getBatchProgress(input.batchId);
+      const client = await claims.claimClient();
+      const roundStart = Date.now();
+      const deadline = roundStart + ROUND_BUDGET_MS;
+      const expired = await claims.expireExhaustedRows(client, input.batchId, roundStart);
 
-      // Get pending collections for this batch
-      const pendingResult = await db.listCollections({
-        batchId: input.batchId,
-        status: "pending",
-        limit: prefetch,
-        offset: 0,
-      });
-      const pending = pendingResult.data;
-
-      if (pending.length === 0) {
-        return { completed: 0, failed: 0, remaining: 0, total: progress.total };
-      }
-
-      // Resolve questions for each pending row up front; mark as failed any with missing question
-      const tasks: { collectionId: number; question: { questionId: string; text: string; language: string }; platform: string }[] = [];
+      let completed = 0;
       let failed = 0;
-      for (const col of pending) {
-        const question = await db.getQuestionById(col.questionId);
-        if (!question) {
-          await db.updateCollection(col.id, { status: "failed", errorMessage: "Question not found" });
-          failed++;
-          continue;
+      let deferred = 0;
+      let claimedAny = false;
+      const slot = async () => {
+        while (deadline - Date.now() >= NEW_ROW_MIN_MS) {
+          const [row] = await claims.claimPendingRows(client, input.batchId, 1, Date.now());
+          if (!row) return;
+          claimedAny = true;
+          const question = await db.getQuestionById(row.questionId);
+          if (!question) {
+            await db.updateCollection(row.id, { status: "failed", errorMessage: "Question not found" });
+            failed++;
+            continue;
+          }
+          const r = await executeCollection(
+            row.id,
+            { questionId: question.questionId, text: question.text, language: question.language },
+            row.platform,
+            "openrouter",
+            undefined,
+            deadline,
+          );
+          if (r.success) completed++;
+          else if (r.deferred) { deferred++; return; }
+          else failed++;
         }
-        tasks.push({
-          collectionId: col.id,
-          question: { questionId: question.questionId, text: question.text, language: question.language },
-          platform: col.platform,
-        });
-      }
+      };
+      await Promise.all(Array.from({ length: concurrency }, () => slot()));
 
-      // Streaming concurrent execution (shared helper)
-      const result = await runCollectionsConcurrently(tasks, concurrency);
-      const completed = result.completed;
-      failed += result.failed;
+      if (!claimedAny && expired === 0) {
+        const progress = await db.getBatchProgress(input.batchId);
+        // Nothing runnable: either finished, or every pending row is held by another live round.
+        return { completed: 0, failed: 0, remaining: progress.pending, total: progress.total };
+      }
 
       // Recount remaining
       const updatedProgress = await db.getBatchProgress(input.batchId);
@@ -1362,7 +1378,7 @@ const collectionsRouter = router({
       const batchId = `retry-${nanoid(8)}`;
 
       for (const col of collections) {
-        await db.updateCollection(col.id, { status: "pending", errorMessage: null, batchId });
+        await db.updateCollection(col.id, { status: "pending", errorMessage: null, batchId, attempts: 0, claimedAt: null });
       }
 
       return { success: true, retried: collections.length, batchId };

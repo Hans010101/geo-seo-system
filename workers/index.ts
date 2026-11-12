@@ -179,6 +179,42 @@ app.all("/api/trpc/*", async (c) => {
   });
 });
 
+// ─── GEO batch round (streamed) ───
+// A collection round runs several model calls (30–150s each). Through trongeo.asia a request that has
+// not sent response headers is cut with a 524 after ~120s, which cancelled rounds mid-call: the calls
+// were billed, nothing was saved and the rows were re-run. Send headers at once, keep the connection
+// alive with whitespace, and write the JSON result when the round ends.
+app.post("/api/geo/execute-round", async (c) => {
+  const user = await authenticateRequestCf(c);
+  const body = (await c.req.json().catch(() => ({}))) as { batchId?: string; concurrency?: number };
+  const caller = appRouter.createCaller({ req: c.req.raw, res: null, user, clearSessionCookie: () => {} } as any);
+  const encoder = new TextEncoder();
+  const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
+  const writer = writable.getWriter();
+  const send = (text: string) => writer.write(encoder.encode(text)).catch(() => {});
+  void send(" ");
+  const heartbeat = setInterval(() => void send(" "), 15_000);
+  const work = caller.collections
+    .executeNextBatch({ batchId: String(body.batchId ?? ""), concurrency: body.concurrency })
+    .then(
+      (result) => ({ result }),
+      (error: any) => ({ error: { message: error?.message || String(error), code: error?.code ?? null } }),
+    )
+    .then(async (payload) => {
+      clearInterval(heartbeat);
+      await send(JSON.stringify(payload));
+      await writer.close().catch(() => {});
+    });
+  try { c.executionCtx.waitUntil(work); } catch {}
+  return new Response(readable, {
+    headers: {
+      "content-type": "text/plain; charset=utf-8",
+      "cache-control": "no-store, no-transform",
+      "x-content-type-options": "nosniff",
+    },
+  });
+});
+
 // ─── Cloudflare Cron Triggers ───
 // A once-per-minute dispatcher preserves the user-configurable cron expressions
 // stored in MySQL. ENABLE_CLOUDFLARE_CRON remains false while Cloud Run is the

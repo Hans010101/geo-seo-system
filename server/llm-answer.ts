@@ -13,3 +13,8 @@ export function emptyAnswerError(content: string, finishReason: string | null | 
 export function shouldLimitReasoning(finishReason: string | null | undefined, content: string): boolean {
   return finishReason === "length" && content.trim().length === 0;
 }
+
+// Platforms whose OpenRouter model reasons by default and, at full effort, usually returns no visible
+// answer within the output budget (Seed: 26 of 31 answers empty on 2026-11-05). Ask for low effort
+// from the first attempt instead of paying for an empty answer and retrying.
+export const LOW_REASONING_PLATFORMS: ReadonlySet<string> = new Set(["doubao"]);

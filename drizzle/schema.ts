@@ -94,6 +94,9 @@ export const collections = mysqlTable(
     totalTokens: int("totalTokens"),
     latencyMs: int("latencyMs"),
     costUsd: decimal("costUsd", { precision: 10, scale: 6 }),
+    // Batch execution claims (server/collection-claims.ts; scripts/collection-claims.sql)
+    attempts: int("attempts").default(0).notNull(),
+    claimedAt: bigint("claimedAt", { mode: "number" }),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   (table) => [

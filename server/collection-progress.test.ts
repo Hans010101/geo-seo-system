@@ -66,7 +66,7 @@ describe("batch progress is independent from execution", () => {
 
   it("does not treat an HTTP error as completion", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
-    fetchMock.mockResolvedValue({ ok: false, json: async () => ({ error: { json: { message: "Server error" } } }) });
+    fetchMock.mockResolvedValue({ ok: true, text: async () => `   ${JSON.stringify({ error: { message: "Server error" } })}` });
     await act(async () => poller.start("existing-batch", 341));
     expect(poller.isRunning).toBe(true);
     await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
@@ -79,7 +79,7 @@ describe("batch progress is independent from execution", () => {
     fetchMock.mockImplementation(() => new Promise(r => { resolve = r; }));
     await act(async () => poller.start("old-batch", 341));
     await act(async () => poller.start("new-batch", 10, false));
-    await act(async () => resolve({ ok: true, json: async () => ({ result: { data: { json: { remaining: 200 } } } }) }));
+    await act(async () => resolve({ ok: true, text: async () => ` ${JSON.stringify({ result: { remaining: 200 } })}` }));
     await act(async () => { await vi.advanceTimersByTimeAsync(4000); });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(poller.batchId).toBe("new-batch");

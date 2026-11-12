@@ -11,7 +11,7 @@ type D1Like = {
   prepare(sql: string): { bind(...values: unknown[]): D1Stmt } & D1Stmt;
   batch(statements: D1Stmt[]): Promise<{ results: unknown[] }[]>;
 };
-type D1Stmt = { all<T = unknown>(): Promise<{ results: T[] }>; first<T = unknown>(): Promise<T | null> };
+type D1Stmt = { all<T = unknown>(): Promise<{ results: T[] }>; first<T = unknown>(): Promise<T | null>; run(): Promise<unknown> };
 
 export async function d1(): Promise<D1Like> {
   const database = await getDb();

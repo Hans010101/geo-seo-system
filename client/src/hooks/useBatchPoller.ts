@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { trpc } from "@/lib/trpc";
 
+export function parseRoundResponse(text: string): any {
+  try { return JSON.parse(text.trim()); } catch { return null; }
+}
+
 export function useBatchPoller() {
   const [batchId, setBatchId] = useState<string | null>(null);
   const [total, setTotal] = useState(0);
@@ -33,16 +37,17 @@ export function useBatchPoller() {
     const run = async () => {
       if (generation !== activeRef.current) return;
       try {
-        const res = await fetch("/api/trpc/collections.executeNextBatch", {
+        // Streamed endpoint: whitespace heartbeats, then one JSON object (see workers/index.ts).
+        const res = await fetch("/api/geo/execute-round", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           credentials: "include",
-          body: JSON.stringify({ json: { batchId: id, concurrency: 5 } }),
+          body: JSON.stringify({ batchId: id, concurrency: 5 }),
         });
-        const json = await res.json();
-        const result = json?.result?.data?.json ?? json?.result?.data;
-        if (!res.ok || json.error || !Number.isInteger(result?.remaining)) {
-          throw new Error(json.error?.json?.message || "采集执行接口异常");
+        const json = parseRoundResponse(await res.text());
+        const result = json?.result;
+        if (!res.ok || json?.error || !Number.isInteger(result?.remaining)) {
+          throw new Error(json?.error?.message || "采集执行接口异常");
         }
         // Execution returns per-round deltas; only the independent query owns progress.
         if (result.remaining === 0) return;

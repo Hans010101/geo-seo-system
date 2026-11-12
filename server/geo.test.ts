@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { appRouter } from "./routers";
 import * as db from "./db";
+import * as claims from "./collection-claims";
 import type { TrpcContext } from "./_core/context";
 
 type AuthenticatedUser = NonNullable<TrpcContext["user"]>;
@@ -295,7 +296,11 @@ describe("GEO Platform API", () => {
     it("blocks old pending Wenxin work without calling any model provider", async () => {
       const caller = appRouter.createCaller(createDeveloperContext("hans.pan007@gmail.com"));
       vi.spyOn(db, "getBatchProgress").mockResolvedValue({ total: 1, completed: 0, failed: 0, pending: 1 } as any);
-      vi.spyOn(db, "listCollections").mockResolvedValue({ data: [{ id: 7, questionId: "Q1", platform: "wenxin" }], total: 1 } as any);
+      vi.spyOn(claims, "claimClient").mockResolvedValue({} as any);
+      vi.spyOn(claims, "expireExhaustedRows").mockResolvedValue(0);
+      vi.spyOn(claims, "claimPendingRows")
+        .mockResolvedValueOnce([{ id: 7, questionId: "Q1", platform: "wenxin", attempts: 1 }])
+        .mockResolvedValue([]);
       vi.spyOn(db, "getQuestionById").mockResolvedValue({ questionId: "Q1", text: "Test", language: "zh-CN" } as any);
       const update = vi.spyOn(db, "updateCollection").mockResolvedValue(undefined);
       const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("Unexpected paid request"));
