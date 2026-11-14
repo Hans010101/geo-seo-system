@@ -16,16 +16,18 @@ export const MARKET_TOKENS: MarketToken[] = [
   { symbol: "NFT", id: "apenft", name: "APENFT", group: "tron" },
   { symbol: "JST", id: "just", name: "JUST", group: "tron", binance: "JSTUSDT" },
   { symbol: "WIN", id: "wink", name: "WINkLink", group: "tron", binance: "WINUSDT" },
+  { symbol: "HTX", id: "htx-dao", name: "HTX DAO", group: "tron" }, // not on Binance → CoinGecko
   { symbol: "BTC", id: "bitcoin", name: "Bitcoin", group: "benchmark", binance: "BTCUSDT" },
   { symbol: "ETH", id: "ethereum", name: "Ethereum", group: "benchmark", binance: "ETHUSDT" },
   { symbol: "BNB", id: "binancecoin", name: "BNB", group: "benchmark", binance: "BNBUSDT" },
   { symbol: "SOL", id: "solana", name: "Solana", group: "benchmark", binance: "SOLUSDT" },
   { symbol: "XRP", id: "ripple", name: "XRP", group: "benchmark", binance: "XRPUSDT" },
   { symbol: "HYPE", id: "hyperliquid", name: "Hyperliquid", group: "benchmark", binance: "HYPEUSDT" },
+  { symbol: "DOGE", id: "dogecoin", name: "Dogecoin", group: "benchmark", binance: "DOGEUSDT" },
 ];
 /** Equal-weight TRON ecosystem index (USDD is a stablecoin and tracked separately). */
 export const TRON_INDEX = MARKET_TOKENS.filter(t => t.group === "tron").map(t => t.symbol);
-/** Equal-weight market benchmark: BTC, ETH, BNB, SOL, XRP, HYPE. */
+/** Equal-weight market benchmark: BTC, ETH, BNB, SOL, XRP, HYPE, DOGE. */
 export const BENCHMARK = MARKET_TOKENS.filter(t => t.group === "benchmark").map(t => t.symbol);
 export const BENCHMARK_LABEL = BENCHMARK.join("/");
 

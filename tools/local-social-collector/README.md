@@ -32,7 +32,7 @@
 ## 币价（币价联动）
 
 Binance 和 CoinGecko 拒绝 Cloudflare 的出口 IP（2026-11-09 云端实测 403/429），所以币价也由 Mac 采：每轮最先运行，
-Binance 1h K 线取 TRX/JST/WIN/BTC/ETH/BNB/SOL/XRP/HYPE，CoinGecko 取 USDD/NFT/BTT 走势和一次市值快照（每次间隔 15 秒），
+Binance 1h K 线取 TRX/JST/WIN/BTC/ETH/BNB/SOL/XRP/HYPE/DOGE，CoinGecko 取 USDD/NFT/BTT/HTX 走势和一次市值快照（每次间隔 15 秒），
 首次每个币回补 90 天，之后每轮取 2 天，经 `/market-prices` 写入 D1 `marketPrices`。云端 :15 的队列任务只做清理和
 USDD 脱锚 / TRX 跑输大盘提醒判断；价格超过 6 小时没更新时不判断。断流提醒里显示为“币价（本机采集）”。
 

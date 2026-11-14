@@ -123,7 +123,7 @@ def test_market_rows():
                                  "market_caps": [[t0 + 50 * 60_000, 5e8]], "total_volumes": []})
     assert rows == [{"symbol": "USDD", "ts": t0, "price": 0.999, "marketCap": 5e8, "volume": None}]
     snap = c.snapshot_rows([{"id": "hyperliquid", "current_price": 74.1, "market_cap": 2.5e10, "total_volume": 3e8,
-                             "last_updated": "2026-11-01T00:42:10.000Z"}, {"id": "dogecoin", "current_price": 1,
+                             "last_updated": "2026-11-01T00:42:10.000Z"}, {"id": "shiba-inu", "current_price": 1,
                              "last_updated": "2026-11-01T00:42:10.000Z"}])
     assert snap == [{"symbol": "HYPE", "ts": t0, "price": 74.1, "marketCap": 2.5e10, "volume": 3e8}]
 

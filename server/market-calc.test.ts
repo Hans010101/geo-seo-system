@@ -25,7 +25,7 @@ describe("market calc", () => {
     expect(parseMarketRows({ rows: [{ symbol: "TRX", ts: T0, price: 0.3165, marketCap: 3e10, volume: null }] }, now))
       .toEqual([{ symbol: "TRX", ts: T0, price: 0.3165, marketCap: 3e10, volume: null }]);
     expect(parseMarketRows({ rows: [{ symbol: "HYPE", ts: T0, price: 74, marketCap: "x" }] }, now)[0].marketCap).toBeNull();
-    expect(() => parseMarketRows({ rows: [{ symbol: "DOGE", ts: T0, price: 1 }] }, now)).toThrow("symbol");
+    expect(() => parseMarketRows({ rows: [{ symbol: "SHIB", ts: T0, price: 1 }] }, now)).toThrow("symbol");
     expect(() => parseMarketRows({ rows: [{ symbol: "TRX", ts: T0 + 1, price: 1 }] }, now)).toThrow("ts");
     expect(() => parseMarketRows({ rows: [{ symbol: "TRX", ts: T0 - 101 * DAY, price: 1 }] }, now)).toThrow("ts");
     expect(() => parseMarketRows({ rows: [{ symbol: "TRX", ts: T0, price: 0 }] }, now)).toThrow("price");
@@ -51,10 +51,10 @@ describe("market calc", () => {
     expect(rows[1]).toMatchObject({ negatives: 3, highThreats: 1, usdd: 1 });
   });
 
-  it("samples a sparkline and benchmarks six majors", () => {
+  it("samples a sparkline and benchmarks seven majors", () => {
     expect(sparkline(line(6, h => h + 1), T0, T0 + 6 * HOUR, 2 * HOUR)).toEqual([1, 3, 5, 7]);
     expect(sparkline([[T0, 1]], T0 - HOUR, T0 + 5 * HOUR, 2 * HOUR)).toEqual([null, 1, 1, null]);
-    expect(BENCHMARK).toEqual(["BTC", "ETH", "BNB", "SOL", "XRP", "HYPE"]);
+    expect(BENCHMARK).toEqual(["BTC", "ETH", "BNB", "SOL", "XRP", "HYPE", "DOGE"]);
   });
 
   it("measures event impact only after the window closes", () => {

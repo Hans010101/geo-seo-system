@@ -696,9 +696,9 @@ def collect_genoptima(page, cfg, state, dry_run):
 # them to /market-prices; the cron worker only evaluates alerts on what is stored.
 MARKET_TOKENS = (  # symbol, CoinGecko id, Binance USDT pair (None → CoinGecko hourly chart)
     ("TRX", "tron", "TRXUSDT"), ("USDD", "usdd", None), ("BTT", "bittorrent", None), ("NFT", "apenft", None),
-    ("JST", "just", "JSTUSDT"), ("WIN", "wink", "WINUSDT"), ("BTC", "bitcoin", "BTCUSDT"),
+    ("JST", "just", "JSTUSDT"), ("WIN", "wink", "WINUSDT"), ("HTX", "htx-dao", None), ("BTC", "bitcoin", "BTCUSDT"),
     ("ETH", "ethereum", "ETHUSDT"), ("BNB", "binancecoin", "BNBUSDT"), ("SOL", "solana", "SOLUSDT"),
-    ("XRP", "ripple", "XRPUSDT"), ("HYPE", "hyperliquid", "HYPEUSDT"),
+    ("XRP", "ripple", "XRPUSDT"), ("HYPE", "hyperliquid", "HYPEUSDT"), ("DOGE", "dogecoin", "DOGEUSDT"),
 )
 BINANCE_KLINES = "https://data-api.binance.vision/api/v3/klines?symbol={}&interval=1h&startTime={}&limit=1000"
 COINGECKO = "https://api.coingecko.com/api/v3"

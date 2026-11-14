@@ -12,7 +12,7 @@ import { buildBriefEmail } from "./brief-email";
 import { briefIndustrySection, type BriefIndustry } from "./industry-calc";
 import { topIndustry } from "./industry";
 import { getMacroDashboard } from "./industry-metrics";
-import { excessReturn, priceAt, toSeries } from "./market-calc";
+import { BENCHMARK_LABEL, excessReturn, priceAt, toSeries } from "./market-calc";
 import {
   BRIEF_LABEL, bjDay, bjDayStart, bjHHMM, bjMMDD, briefWindow, buildPrompt, parseDraft, platformCn, pushText,
   toSource, weekday, type BriefDraft, type BriefItem, type BriefKind, type BriefSource, type PreviousEvent,
@@ -185,7 +185,7 @@ async function marketBlock(client: D1Like, now: number): Promise<BriefData["mark
   const trxPrices = trxSeries.map(p => p[1]);
   const trx24 = change("TRX");
   const note = trxPrices.length
-    ? `24 小时在 ${fmtPrice(Math.min(...trxPrices))}–${fmtPrice(Math.max(...trxPrices))} 之间，较 ${bjMMDD(from)} ${bjHHMM(from)} ${trx24 !== null && trx24 < 0 ? "跌" : "涨"} ${Math.abs(trx24 ?? 0).toFixed(2)}%；同期大盘（BTC/ETH/BNB/SOL/XRP/HYPE）${signed(move.benchmark)}，TRX ${(move.excess ?? 0) >= 0 ? "相对抗跌" : "跑输大盘"}（超额 ${signed(move.excess)}）。`
+    ? `24 小时在 ${fmtPrice(Math.min(...trxPrices))}–${fmtPrice(Math.max(...trxPrices))} 之间，较 ${bjMMDD(from)} ${bjHHMM(from)} ${trx24 !== null && trx24 < 0 ? "跌" : "涨"} ${Math.abs(trx24 ?? 0).toFixed(2)}%；同期大盘（${BENCHMARK_LABEL}）${signed(move.benchmark)}，TRX ${(move.excess ?? 0) >= 0 ? "相对抗跌" : "跑输大盘"}（超额 ${signed(move.excess)}）。`
     : "";
   const coins = COINS.map(([symbol, name]) => {
     const s = window(symbol);
