@@ -3,7 +3,9 @@ import { trpc } from "@/lib/trpc";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { AlertTriangle, Loader2, RefreshCw, Wallet } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { AlertTriangle, Eye, EyeOff, Loader2, Plus, RefreshCw, Wallet } from "lucide-react";
+import { useState } from "react";
 import { toast } from "sonner";
 import { useRole } from "@/hooks/useRole";
 
@@ -44,6 +46,31 @@ export default function OpenRouterAccountsCard() {
 
   const accounts = data?.accounts ?? [];
   const anyPaused = accounts.some(a => a.paused.length > 0);
+  const refresh = () => {
+    utils.globalApiKeys.openrouterAccounts.invalidate();
+    utils.globalApiKeys.list.invalidate();
+    utils.globalApiKeys.routePreview.invalidate();
+  };
+  const setPrimary = trpc.globalApiKeys.setOpenRouterPrimary.useMutation({
+    onSuccess: () => { toast.success("主号已切换"); refresh(); },
+    onError: (err) => toast.error(err.message),
+  });
+  const [form, setForm] = useState<{ name: string; apiKey: string; asPrimary: boolean } | null>(null);
+  const [showKey, setShowKey] = useState(false);
+  const addKey = trpc.globalApiKeys.addOpenRouterKey.useMutation({
+    onSuccess: (res) => {
+      toast.success(`已添加${form?.asPrimary ? "为主号" : "为副号"}`, {
+        description: res.remaining != null ? `Key 校验通过，剩余 ${usd(res.remaining)}` : "Key 校验通过（未设额度上限）",
+      });
+      setForm(null);
+      refresh();
+    },
+    onError: (err) => toast.error(err.message),
+  });
+  const openForm = () => {
+    setShowKey(false);
+    setForm({ name: accounts.length ? "OpenRouter · 公用" : "OpenRouter", apiKey: "", asPrimary: true });
+  };
 
   return (
     <Card>
@@ -62,6 +89,11 @@ export default function OpenRouterAccountsCard() {
             </div>
           </div>
           <div className="flex items-center gap-1 shrink-0">
+            {canEdit && !form && (
+              <Button size="sm" className="h-7 text-xs gap-1" onClick={openForm}>
+                <Plus className="h-3.5 w-3.5" />添加 OpenRouter Key
+              </Button>
+            )}
             {anyPaused && canEdit && (
               <Button variant="outline" size="sm" className="h-7 text-xs" disabled={clearPauses.isPending} onClick={() => clearPauses.mutate()}>
                 {clearPauses.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : "解除暂停"}
@@ -89,6 +121,12 @@ export default function OpenRouterAccountsCard() {
                     <span className="font-medium">{a.name}</span>
                     <span className="font-mono text-muted-foreground">{a.apiKeyMasked}</span>
                     {!b.ok && <Badge variant="destructive" className="text-[10px]">Key 校验失败</Badge>}
+                    {i > 0 && a.keyId > 0 && canEdit && (
+                      <Button variant="outline" size="sm" className="h-6 px-2 text-[11px] ml-auto" disabled={setPrimary.isPending}
+                        onClick={() => setPrimary.mutate({ id: a.keyId })}>
+                        设为主号
+                      </Button>
+                    )}
                     {low && <Badge variant="destructive" className="text-[10px]">余额偏低</Badge>}
                     {a.paused.map(p => (
                       <Badge key={p.model} variant="outline" className="text-[10px] border-amber-400 text-amber-700 dark:text-amber-300">
@@ -111,8 +149,10 @@ export default function OpenRouterAccountsCard() {
                 </div>
               );
             })}
-            {accounts.length === 1 && (
-              <p className="text-xs text-muted-foreground">只有一个 OpenRouter Key，暂无副号兜底。</p>
+            {accounts.length === 1 && !form && (
+              <p className="text-xs text-muted-foreground">
+                只有一个 OpenRouter Key，暂无副号兜底。点右上角「添加 OpenRouter Key」填入公用号的 Key 并选「作为主号」，现在这个会自动变成副号。
+              </p>
             )}
             {data?.unrecordedWeek && data.unrecordedWeek.rows > 0 && (
               <p className="text-[11px] text-muted-foreground">另有 {data.unrecordedWeek.rows} 条（{usd(data.unrecordedWeek.usd)}）为启用主副号记账前的采集，未区分账号。</p>
@@ -124,6 +164,53 @@ export default function OpenRouterAccountsCard() {
               </p>
             )}
           </div>
+        )}
+        {form && (
+          <form
+            className="rounded-md border border-primary/30 p-3 space-y-2"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (!form.apiKey.trim()) { toast.error("请填入 API Key"); return; }
+              addKey.mutate({ name: form.name.trim() || "OpenRouter", apiKey: form.apiKey.trim(), asPrimary: form.asPrimary });
+            }}
+          >
+            <p className="text-xs font-medium">添加 OpenRouter Key</p>
+            <div className="grid gap-2 sm:grid-cols-[180px_1fr]">
+              <Input className="h-8 text-sm" placeholder="名称" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+              <div className="relative">
+                <Input
+                  type={showKey ? "text" : "password"}
+                  autoComplete="off"
+                  className="h-8 text-sm font-mono pr-9"
+                  placeholder="sk-or-v1-..."
+                  value={form.apiKey}
+                  onChange={(e) => setForm({ ...form, apiKey: e.target.value })}
+                />
+                <button type="button" className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground" onClick={() => setShowKey(!showKey)}>
+                  {showKey ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                </button>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-4 text-xs">
+              <label className="flex items-center gap-1.5 cursor-pointer">
+                <input type="radio" name="or-role" checked={form.asPrimary} onChange={() => setForm({ ...form, asPrimary: true })} />
+                作为主号{accounts.length ? `（「${accounts[0].name}」改为副号）` : ""}
+              </label>
+              {accounts.length > 0 && (
+                <label className="flex items-center gap-1.5 cursor-pointer">
+                  <input type="radio" name="or-role" checked={!form.asPrimary} onChange={() => setForm({ ...form, asPrimary: false })} />
+                  作为副号
+                </label>
+              )}
+            </div>
+            <p className="text-[11px] text-muted-foreground">保存前会先向 OpenRouter 校验 Key 并读取余额；校验不通过不会保存。</p>
+            <div className="flex gap-2">
+              <Button type="button" variant="outline" size="sm" className="h-7 text-xs" onClick={() => setForm(null)}>取消</Button>
+              <Button type="submit" size="sm" className="h-7 text-xs" disabled={addKey.isPending}>
+                {addKey.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : "校验并保存"}
+              </Button>
+            </div>
+          </form>
         )}
       </CardContent>
     </Card>

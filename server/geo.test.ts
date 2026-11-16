@@ -317,6 +317,41 @@ describe("GEO Platform API", () => {
   });
 
   describe("OpenRouter 主号/副号", () => {
+    const personal = { id: 3, name: "OpenRouter", apiKey: "sk-or-me-000000", baseUrl: "https://openrouter.ai/api/v1", coveredPlatforms: ["grok", "doubao"], isActive: true, sortOrder: 1 };
+
+    it("adds a checked key as the new 主号 and moves the old one to 副号", async () => {
+      const caller = appRouter.createCaller(createAdminContext());
+      const added = { id: 10, name: "OpenRouter · 公用", apiKey: "sk-or-team-1111", baseUrl: "https://openrouter.ai/api/v1", isActive: true, sortOrder: 12 };
+      vi.spyOn(db, "listGlobalApiKeys").mockResolvedValueOnce([personal] as any).mockResolvedValue([personal, added] as any);
+      const upsert = vi.spyOn(db, "upsertGlobalApiKey").mockResolvedValue(undefined);
+      const order = vi.spyOn(orAccounts, "setKeyOrder").mockResolvedValue();
+      vi.spyOn(orAccounts, "clearBlocks").mockResolvedValue();
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (url: any) =>
+        String(url).endsWith("/key") ? new Response(JSON.stringify({ data: { usage: 0, limit: 100, limit_remaining: 100 } })) : new Response("", { status: 404 }));
+      try {
+        const res = await caller.globalApiKeys.addOpenRouterKey({ name: "OpenRouter · 公用", apiKey: "sk-or-team-1111", asPrimary: true });
+        expect(res).toMatchObject({ success: true, remaining: 100 });
+        expect(upsert).toHaveBeenCalledWith(expect.objectContaining({ baseUrl: "https://openrouter.ai/api/v1", coveredPlatforms: ["grok", "doubao"], isActive: true }));
+        expect(order).toHaveBeenCalledWith([10, 3], 1);
+      } finally {
+        vi.restoreAllMocks();
+      }
+    });
+
+    it("refuses a key OpenRouter rejects, without saving it", async () => {
+      const caller = appRouter.createCaller(createAdminContext());
+      vi.spyOn(db, "listGlobalApiKeys").mockResolvedValue([personal] as any);
+      const upsert = vi.spyOn(db, "upsertGlobalApiKey").mockResolvedValue(undefined);
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response('{"error":{"message":"No auth credentials found"}}', { status: 401 }));
+      try {
+        await expect(caller.globalApiKeys.addOpenRouterKey({ name: "x", apiKey: "sk-or-bad-2222", asPrimary: true })).rejects.toThrow("Key 校验失败");
+        await expect(caller.globalApiKeys.addOpenRouterKey({ name: "x", apiKey: "sk-or-me-000000", asPrimary: true })).rejects.toThrow("已经配置过");
+        expect(upsert).not.toHaveBeenCalled();
+      } finally {
+        vi.restoreAllMocks();
+      }
+    });
+
     it("moves a collection to the backup when the primary has no credits, and records it", async () => {
       const caller = appRouter.createCaller(createDeveloperContext("hans.pan007@gmail.com"));
       vi.spyOn(db, "getBatchProgress").mockResolvedValue({ total: 1, completed: 0, failed: 0, pending: 1 } as any);

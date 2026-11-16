@@ -1976,6 +1976,34 @@ const globalApiKeysRouter = router({
     };
   }),
 
+  // Add an OpenRouter account from the 主号/副号 card. The key is checked against /key before it is saved;
+  // asPrimary puts it first (the current 主号 becomes the 副号), otherwise it is appended as a 副号.
+  addOpenRouterKey: adminProcedure
+    .input(z.object({ name: z.string().trim().min(1).max(64), apiKey: z.string().trim().min(10), asPrimary: z.boolean() }))
+    .mutation(async ({ input }) => {
+      const all = await db.listGlobalApiKeys();
+      const existing = all.filter(k => detectProvider(k.baseUrl) === "openrouter");
+      if (existing.some(k => (k.apiKey || "").trim() === input.apiKey)) throw new Error("这个 Key 已经配置过了");
+      const bal = await orAccounts.fetchKeyBalance(input.apiKey, OPENROUTER_BASE_URL);
+      if (!bal.ok) throw new Error(`Key 校验失败：${bal.error || "未知错误"}`);
+      const coverage = (existing.find(k => Array.isArray(k.coveredPlatforms) && (k.coveredPlatforms as string[]).length)?.coveredPlatforms as string[] | undefined)
+        ?? [...PLATFORMS];
+      const maxOrder = Math.max(0, ...all.map(k => k.sortOrder ?? 0));
+      await db.upsertGlobalApiKey({
+        name: input.name, apiKey: input.apiKey, baseUrl: OPENROUTER_BASE_URL,
+        coveredPlatforms: coverage, isActive: true, sortOrder: maxOrder + 1,
+      } as any);
+      const added = (await db.listGlobalApiKeys()).find(k => (k.apiKey || "").trim() === input.apiKey);
+      if (input.asPrimary && added) {
+        const ordered = [added.id, ...existing.map(k => k.id)];
+        const base = existing.length ? Math.min(...existing.map(k => k.sortOrder ?? 0)) : (added.sortOrder ?? 0);
+        await orAccounts.setKeyOrder(ordered, base);
+      }
+      await orAccounts.clearBlocks();
+      balanceCache.clear();
+      return { success: true, remaining: bal.remaining ?? null };
+    }),
+
   // Make one OpenRouter key the 主号: it gets the lowest sortOrder among OpenRouter keys, the rest keep their order.
   setOpenRouterPrimary: adminProcedure
     .input(z.object({ id: z.number() }))

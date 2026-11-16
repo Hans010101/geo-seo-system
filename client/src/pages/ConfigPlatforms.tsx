@@ -1136,7 +1136,7 @@ function KeyCard({ keyObj, canEdit, onEdit, onDelete }: { keyObj: any; canEdit: 
             <h4 className="font-semibold text-sm">{keyObj.name}</h4>
             {provider !== "other" && (
               <Badge variant={isPrimary ? "default" : "secondary"} className="text-[10px]">
-                {providerLabel} · {isPrimary ? "主用" : isHotStandby ? "热备" : "—"}
+                {providerLabel} · {isPrimary ? "当前通道" : isHotStandby ? "备用通道" : "—"}
               </Badge>
             )}
             {orIndex >= 0 && (
