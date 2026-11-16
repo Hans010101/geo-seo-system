@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { appRouter } from "./routers";
 import * as db from "./db";
 import * as claims from "./collection-claims";
+import * as orAccounts from "./openrouter-accounts";
 import type { TrpcContext } from "./_core/context";
 
 type AuthenticatedUser = NonNullable<TrpcContext["user"]>;
@@ -309,6 +310,47 @@ describe("GEO Platform API", () => {
         expect(result.failed).toBe(1);
         expect(update).toHaveBeenCalledWith(7, { status: "failed", errorMessage: "文心一言已停用，不再采集" });
         expect(fetch).not.toHaveBeenCalled();
+      } finally {
+        vi.restoreAllMocks();
+      }
+    });
+  });
+
+  describe("OpenRouter 主号/副号", () => {
+    it("moves a collection to the backup when the primary has no credits, and records it", async () => {
+      const caller = appRouter.createCaller(createDeveloperContext("hans.pan007@gmail.com"));
+      vi.spyOn(db, "getBatchProgress").mockResolvedValue({ total: 1, completed: 0, failed: 0, pending: 1 } as any);
+      vi.spyOn(claims, "claimClient").mockResolvedValue({} as any);
+      vi.spyOn(claims, "expireExhaustedRows").mockResolvedValue(0);
+      vi.spyOn(claims, "claimPendingRows")
+        .mockResolvedValueOnce([{ id: 9, questionId: "Q1", platform: "grok", attempts: 1 }])
+        .mockResolvedValue([]);
+      vi.spyOn(db, "getQuestionById").mockResolvedValue({ questionId: "Q1", text: "Test", language: "zh-CN" } as any);
+      vi.spyOn(db, "getPlatformConfig").mockResolvedValue(undefined as any);
+      vi.spyOn(db, "listGlobalApiKeys").mockResolvedValue([
+        { id: 7, name: "公用", apiKey: "sk-team", baseUrl: "https://openrouter.ai/api/v1", isActive: true, sortOrder: 0 },
+        { id: 3, name: "个人", apiKey: "sk-me", baseUrl: "https://openrouter.ai/api/v1", isActive: true, sortOrder: 1 },
+      ] as any);
+      vi.spyOn(orAccounts, "accountsForModel").mockResolvedValue([
+        { keyId: 7, name: "公用", apiKey: "sk-team", baseUrl: "https://openrouter.ai/api/v1", role: "primary" },
+        { keyId: 3, name: "个人", apiKey: "sk-me", baseUrl: "https://openrouter.ai/api/v1", role: "backup" },
+      ]);
+      const failure = vi.spyOn(orAccounts, "handleAccountFailure").mockResolvedValue();
+      const update = vi.spyOn(db, "updateCollection").mockResolvedValue(undefined);
+      const auth: string[] = [];
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (url: any, init: any) => {
+        if (!String(url).endsWith("/chat/completions")) throw new Error("unexpected request");
+        auth.push(init.headers.Authorization);
+        if (init.headers.Authorization === "Bearer sk-team") {
+          return new Response('{"error":{"message":"Insufficient credits"}}', { status: 402 });
+        }
+        return new Response(JSON.stringify({ model: "x-ai/grok", choices: [{ message: { content: "answer" }, finish_reason: "stop" }], usage: { prompt_tokens: 10, completion_tokens: 20 } }), { status: 200 });
+      });
+      try {
+        await caller.collections.executeNextBatch({ batchId: "b" });
+        expect(auth).toEqual(["Bearer sk-team", "Bearer sk-me"]);
+        expect(failure).toHaveBeenCalledWith(expect.objectContaining({ failover: expect.objectContaining({ reason: "余额不足" }) }));
+        expect(update.mock.calls[0]).toEqual([9, expect.objectContaining({ status: "success", billingKeyId: 3, billingFallback: "公用余额不足" })]);
       } finally {
         vi.restoreAllMocks();
       }

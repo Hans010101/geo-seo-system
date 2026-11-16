@@ -15,6 +15,8 @@ GEO/SEO 内容采集、监控、分析与报告系统。当前生产运行在 Cl
 
 截至 2026-10-10，002 Cron 在北京/新加坡时间 09:00–21:00 每 2 小时、夜间仅 03:00（每天 8 轮：9、11、13、15、17、19、21、3 点）的 `:15` 执行新闻批次、`:40` 执行社交批次（2026-11-08 起），通过 Queue 分片完成采集、分析和写入。新闻与社媒开启；每日/每周 GEO 定时任务、微信采集及 OpenRouter 自动预检关闭，发布时不得自动恢复。浏览器服务、Queue、R2 和 Durable Objects 均使用 002 资源。
 
+OpenRouter 主号 / 副号（2026-11-16）：「全局 API 配置」里所有启用的 OpenRouter Key 按排序依次为主号、副号（配置页「设为主号」调整），`OPENROUTER_API_KEY` 密钥仅在与它们都不同时作为最后兜底。GEO 采集、行业动态分拣、早晚报、行业周报都先走主号；仅在 401/402/403 额度/404 模型不允许/429 时切到副号，整号问题暂停主号 30 分钟、模型问题暂停该模型 24 小时（`sysConfigs` 的 `or_block:*`），空回答、超时、审核、5xx 不切。每条采集记 `collections.billingKeyId` / `billingFallback`（`scripts/openrouter-accounts.sql`）。代码见 `server/openrouter-accounts.ts`。
+
 历史 Cloud Run／Cloud SQL／Hyperdrive 方案本轮未验证，不用于新的 002 发布或运行时兜底；不要沿用旧 007 入口。
 
 ## 技术结构

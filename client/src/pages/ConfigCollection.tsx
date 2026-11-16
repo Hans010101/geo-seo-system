@@ -44,6 +44,7 @@ import {
 import { useRole } from "@/hooks/useRole";
 import CollectionDetailSheet from "@/components/CollectionDetailSheet";
 import { useBatchPoller } from "@/hooks/useBatchPoller";
+import { OpenRouterAccountsBanner } from "@/components/OpenRouterAccountsCard";
 
 const log_warn = (...args: any[]) => console.warn("[ConfigCollection]", ...args);
 
@@ -315,6 +316,8 @@ export default function ConfigCollection() {
           <span>尚未配置 API Key，请先在「<a href="/config/platforms" className="underline font-medium">平台配置 → 全局 API 配置</a>」中添加至少一个 API Key 才能开始采集</span>
         </div>
       )}
+
+      <OpenRouterAccountsBanner />
 
       <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
         <TabsList>

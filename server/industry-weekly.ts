@@ -2,14 +2,12 @@
 // competitor numbers. Periods match the sentiment and GEO reports (Friday–Thursday weeks, calendar
 // months, or a chosen date range, Beijing time); stored in industryWeekly keyed by geoReportKey.
 import { getDb } from "./db";
-import { getCloudflareEnv } from "./_core/cloudflare-env";
-import { ENV } from "./_core/env";
-import { invokeLLM } from "./_core/llm";
 import { CATEGORIES, DAY, HOUR, INDUSTRY_SOURCES, pickTop, type IndustryRow } from "./industry-calc";
 import { topIndustry } from "./industry";
 import { getCompetitorDashboard, getMacroDashboard } from "./industry-metrics";
 import { getBriefSettings } from "./brief";
 import { geoReportKey, reportKindLabel, type ReportPeriod } from "../shared/report-period";
+import { invokeOpenRouter } from "./openrouter-accounts";
 
 type D1Stmt = { bind(...values: unknown[]): D1Stmt; all<T = unknown>(): Promise<{ results: T[] }>; first<T = unknown>(): Promise<T | null>; run(): Promise<unknown> };
 type D1Like = { prepare(sql: string): D1Stmt };
@@ -88,17 +86,14 @@ export async function generateIndustryReport(period: ReportPeriod, now = Date.no
 {"headline":"一句话${term}主线（≤30字）","overview":"3-4 句${term}行业综述","sections":[{"category":"分类key","points":["要点（≤50字，可合并同类事件）"]}],"competitors":[{"key":"binance|solana|tether|circle|ethereum","text":"${term}动向与对 TRON 的含义（1-2句）"}],"tron":["对 TRON 的影响或机会/风险（3条以内）"],"watch":["${next}关注（3条以内）"]}
 sections 只写${term}有事件的分类，分类 key 取自：${CATEGORIES.map(c => `${c.key}(${c.label})`).join("、")}。competitors 只写${term}有动向的。`;
   const user = `${term}（${bjDay(from)} 至 ${bjDay(to - 1)}）重要事件：\n${list}\n\n${term}数据：\n${facts.join("\n")}`;
-
-  const env = getCloudflareEnv();
-  const apiKey = env?.OPENROUTER_API_KEY?.trim() || ENV.openrouterApiKey;
   const model = (await getBriefSettings()).model;
   let parsed: Record<string, unknown> | null = null;
   let lastError = "";
   for (let attempt = 0; attempt < 2 && !parsed; attempt++) {
-    const result = await invokeLLM({
-      apiKey, baseUrl: "https://openrouter.ai/api/v1", model, maxTokens: 5000, timeoutMs: 150_000,
+    const result = await invokeOpenRouter({
+      model, maxTokens: 5000, timeoutMs: 150_000,
       messages: [{ role: "system", content: system }, { role: "user", content: user }],
-    });
+    }, "行业周报");
     const content = result.choices?.[0]?.message?.content;
     const text = typeof content === "string" ? content : Array.isArray(content) ? content.map(c => ("text" in c ? c.text : "")).join("") : "";
     try { parsed = extractJson(text); } catch (error) { lastError = String((error as Error).message); }

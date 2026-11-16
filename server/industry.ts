@@ -1,13 +1,11 @@
 // 行业动态 module: storage, LLM triage, alerts and reads. See industry-calc.ts for the pure parts.
 import { getDb, getSysConfig, setSysConfig } from "./db";
-import { getCloudflareEnv } from "./_core/cloudflare-env";
-import { ENV } from "./_core/env";
-import { invokeLLM } from "./_core/llm";
 import { dispatchNotification } from "./_core/notification";
 import {
   CATEGORIES, DAY, ENTITIES, HOUR, INDUSTRY_SOURCES, fingerprint, findDuplicate, itemId, parseTriage, triagePrompt,
   type Fingerprint, type IndustryRow, type RawIndustryItem, type Triage,
 } from "./industry-calc";
+import { invokeOpenRouter } from "./openrouter-accounts";
 
 type D1Result = { results: unknown[]; meta?: { changes?: number } };
 type D1Stmt = {
@@ -66,14 +64,12 @@ type Pending = { id: string; source: string; title: string; excerpt: string | nu
 type Primary = { id: string; grams: Fingerprint[] };
 
 async function callTriage(model: string, items: Pending[], knownEvents: string[]): Promise<{ triage: Triage[]; tokens: number }> {
-  const env = getCloudflareEnv();
-  const apiKey = env?.OPENROUTER_API_KEY?.trim() || ENV.openrouterApiKey;
   const input = items.map((it, i) => ({ i, source: INDUSTRY_SOURCES[it.source]?.label || it.source, title: it.title, excerpt: it.excerpt || "" }));
   const prompt = triagePrompt(input, knownEvents);
-  const result = await invokeLLM({
-    apiKey, baseUrl: "https://openrouter.ai/api/v1", model, maxTokens: 9000, timeoutMs: 120_000,
+  const result = await invokeOpenRouter({
+    model, maxTokens: 9000, timeoutMs: 120_000,
     messages: [{ role: "system", content: prompt.system }, { role: "user", content: prompt.user }],
-  });
+  }, "行业动态分拣");
   const content = result.choices?.[0]?.message?.content;
   const text = typeof content === "string" ? content : Array.isArray(content) ? content.map(c => ("text" in c ? c.text : "")).join("") : "";
   return {

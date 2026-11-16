@@ -97,6 +97,10 @@ export const collections = mysqlTable(
     // Batch execution claims (server/collection-claims.ts; scripts/collection-claims.sql)
     attempts: int("attempts").default(0).notNull(),
     claimedAt: bigint("claimedAt", { mode: "number" }),
+    // OpenRouter 主号/副号 (server/openrouter-accounts.ts; scripts/openrouter-accounts.sql): globalApiKeys.id
+    // of the account that answered (0 = OPENROUTER_API_KEY secret), and why it was not the first choice.
+    billingKeyId: int("billingKeyId"),
+    billingFallback: text("billingFallback"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   (table) => [

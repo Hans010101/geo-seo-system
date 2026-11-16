@@ -2,9 +2,6 @@
 // call, stored in D1 dailyBriefs, pushed to Telegram as the 5-line decision summary.
 // Prepared by the cron queue at 09:18 / 17:18 and sent at 09:30 / 17:30; runnable by an admin from the page.
 import { getDb, getSysConfig, setSysConfig } from "./db";
-import { getCloudflareEnv } from "./_core/cloudflare-env";
-import { ENV } from "./_core/env";
-import { invokeLLM } from "./_core/llm";
 import { dispatchNotification } from "./_core/notification";
 import { getEmailAlertConfig, sendEmailToEach } from "./monitor/email-alert";
 import { listUsers } from "./db";
@@ -17,6 +14,7 @@ import {
   BRIEF_LABEL, bjDay, bjDayStart, bjHHMM, bjMMDD, briefWindow, buildPrompt, parseDraft, platformCn, pushText,
   toSource, weekday, type BriefDraft, type BriefItem, type BriefKind, type BriefSource, type PreviousEvent,
 } from "./brief-calc";
+import { invokeOpenRouter } from "./openrouter-accounts";
 
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
@@ -320,17 +318,14 @@ export async function generateBrief(opts: { kind?: BriefKind; now?: number; push
   const prevEvents: PreviousEvent[] = (previous?.events || []).filter(e => e.trend !== "closed")
     .map(e => ({ key: e.key, title: e.title, count: e.count, level: e.level }));
   const prompt = buildPrompt({ kind, windowLabel, facts, items, previous: prevEvents, asks, positives: positiveRows.results });
-
-  const env = getCloudflareEnv();
-  const apiKey = env?.OPENROUTER_API_KEY?.trim() || ENV.openrouterApiKey;
   let draft: BriefDraft | null = null;
   let usage: BriefData["usage"];
   let lastError = "";
   for (let attempt = 0; attempt < 2 && !draft; attempt++) {
-    const result = await invokeLLM({
-      apiKey, baseUrl: "https://openrouter.ai/api/v1", model: settings.model, maxTokens: 6000, timeoutMs: 150_000,
+    const result = await invokeOpenRouter({
+      model: settings.model, maxTokens: 6000, timeoutMs: 150_000,
       messages: [{ role: "system", content: prompt.system }, { role: "user", content: prompt.user }],
-    });
+    }, "舆情早晚报");
     const content = result.choices?.[0]?.message?.content;
     const text = typeof content === "string" ? content : Array.isArray(content) ? content.map(c => ("text" in c ? c.text : "")).join("") : "";
     usage = { prompt: result.usage?.prompt_tokens ?? 0, completion: result.usage?.completion_tokens ?? 0 };

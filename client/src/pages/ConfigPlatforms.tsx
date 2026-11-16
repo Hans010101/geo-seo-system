@@ -1,5 +1,6 @@
 import { trpc } from "@/lib/trpc";
 import MonitorSourceKeysCard from "@/components/MonitorSourceKeysCard";
+import OpenRouterAccountsCard, { useOpenRouterAccounts } from "@/components/OpenRouterAccountsCard";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -31,6 +32,8 @@ import {
   PLATFORM_RECOMMENDED_PROVIDER, type Platform, type LLMProvider,
 } from "@shared/geo-types";
 import { useRole } from "@/hooks/useRole";
+
+const MAX_GLOBAL_KEYS = 10;
 
 // All known platforms for coverage selector
 const ALL_PLATFORMS_LIST = PLATFORMS as unknown as Platform[];
@@ -134,6 +137,9 @@ export default function ConfigPlatforms() {
 
       {/* Primary Provider switch + route preview */}
       <PrimaryProviderCard />
+
+      {/* OpenRouter 主号 / 副号 */}
+      <OpenRouterAccountsCard />
 
       {/* Sentiment monitor data-source keys (Serper / Firecrawl) */}
       <MonitorSourceKeysCard />
@@ -787,7 +793,8 @@ function GlobalApiKeysSheet({
             全局 API 配置
           </SheetTitle>
           <SheetDescription>
-            配置聚合平台（OpenRouter、阿里百炼等），最多支持 4 个。每个全局Key可指定覆盖哪些模型。
+            配置聚合平台（OpenRouter、阿里百炼等），最多支持 {MAX_GLOBAL_KEYS} 个。每个全局Key可指定覆盖哪些模型。
+            OpenRouter 可配多个 Key：排第一的是主号，其余为副号，主号不可用时自动改用副号。
           </SheetDescription>
         </SheetHeader>
 
@@ -812,10 +819,10 @@ function GlobalApiKeysSheet({
           ))}
 
           {/* Add new key button */}
-          {globalKeysList.length < 4 && !editingKey && (
+          {globalKeysList.length < MAX_GLOBAL_KEYS && !editingKey && (
             <Button variant="outline" className="w-full gap-2" onClick={handleNew} disabled={!canEdit}>
               <Plus className="h-4 w-4" />
-              添加全局 API Key（{globalKeysList.length}/4）
+              添加全局 API Key（{globalKeysList.length}/{MAX_GLOBAL_KEYS}）
             </Button>
           )}
 
@@ -1088,10 +1095,22 @@ function KeyCard({ keyObj, canEdit, onEdit, onDelete }: { keyObj: any; canEdit: 
   const provider = keyObj.provider as "bai" | "openrouter" | "other";
   const isPrimary = provider !== "other" && provider === primaryProvider;
   const isHotStandby = provider !== "other" && !isPrimary;
+  const utils = trpc.useUtils();
+  const { data: orAccounts } = useOpenRouterAccounts();
+  const orIndex = provider === "openrouter" ? (orAccounts?.accounts.findIndex(a => a.keyId === keyObj.id) ?? -1) : -1;
+  const setPrimaryKey = trpc.globalApiKeys.setOpenRouterPrimary.useMutation({
+    onSuccess: () => {
+      toast.success(`已将「${keyObj.name}」设为 OpenRouter 主号`);
+      utils.globalApiKeys.list.invalidate();
+      utils.globalApiKeys.openrouterAccounts.invalidate();
+      utils.globalApiKeys.routePreview.invalidate();
+    },
+    onError: (err) => toast.error(err.message),
+  });
   const testMutation = trpc.globalApiKeys.testConnection.useMutation({
     onSuccess: (res) => {
       if (res.success) {
-        toast.success(`连接成功，共 ${res.modelCount} 个模型可用`, {
+        toast.success(res.modelCount ? `连接成功，共 ${res.modelCount} 个模型可用` : "连接成功", {
           description: res.sampleModels?.slice(0, 5).join(", ") || undefined,
           duration: 6000,
         });
@@ -1120,6 +1139,11 @@ function KeyCard({ keyObj, canEdit, onEdit, onDelete }: { keyObj: any; canEdit: 
                 {providerLabel} · {isPrimary ? "主用" : isHotStandby ? "热备" : "—"}
               </Badge>
             )}
+            {orIndex >= 0 && (
+              <Badge variant={orIndex === 0 ? "default" : "outline"} className="text-[10px]">
+                {orIndex === 0 ? "主号" : "副号"}
+              </Badge>
+            )}
           </div>
           <div className={`flex items-center gap-1${!canEdit ? " invisible" : ""}`}>
             <Button
@@ -1131,6 +1155,17 @@ function KeyCard({ keyObj, canEdit, onEdit, onDelete }: { keyObj: any; canEdit: 
             >
               {testMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : "测试连接"}
             </Button>
+            {orIndex > 0 && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2 text-xs"
+                onClick={() => setPrimaryKey.mutate({ id: keyObj.id })}
+                disabled={setPrimaryKey.isPending}
+              >
+                {setPrimaryKey.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : "设为主号"}
+              </Button>
+            )}
             <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={onEdit}>
               编辑
             </Button>

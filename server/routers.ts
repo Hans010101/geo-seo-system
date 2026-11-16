@@ -53,6 +53,7 @@ import { getExternalGeoAnswer, getExternalGeoOverview, getExternalGeoSupplier, g
 import { getFactCoverage } from "./fact-coverage";
 import { REASONING_SETTINGS, emptyAnswerError, shouldLimitReasoning } from "./llm-answer";
 import * as claims from "./collection-claims";
+import * as orAccounts from "./openrouter-accounts";
 import { NEW_ROW_MIN_MS, PER_CALL_TIMEOUT_MS, ROUND_BUDGET_MS, SHORT_NEW_ROW_MIN_MS, SHORT_ROUND_BUDGET_MS, RoundDeadlineError, attemptTimeoutMs } from "./collection-claims";
 import { comparisonWindow, dateRangePeriod, formatReportDate, geoReportKey, parsePeriod, reportDateRangeSchema } from "../shared/report-period";
 
@@ -394,6 +395,8 @@ export type LLMCallTelemetry = {
   source: string;
   /** 'openrouter' | 'bai' | 'bailian' | 'other' */
   provider: "openrouter" | "bai" | "bailian" | "other";
+  /** OpenRouter 主号/副号 used for this call (null = not an OpenRouter account call). */
+  billing: orAccounts.Billing | null;
   promptTokens: number | null;
   completionTokens: number | null;
   totalTokens: number | null;
@@ -422,6 +425,16 @@ async function callExternalLLM(
   const maxRetries = 2;
 
   const provider = detectProviderFromBaseUrl(config.baseUrl);
+  // OpenRouter 主号 → 副号: account-level failures (no credits, key limit, model not allowed, rate limit)
+  // move the call to the next account without using up one of the two attempts.
+  let accounts: orAccounts.OpenRouterAccount[] = [];
+  if (provider === "openrouter" && config.source !== "platform") {
+    try { accounts = await orAccounts.accountsForModel(config.model); } catch (e: any) {
+      log.warn(`OpenRouter accounts unavailable, using resolved key: ${e?.message || e}`, { traceId });
+    }
+  }
+  let accountIdx = 0;
+  let fallbackReason: string | null = null;
   let limitReasoning = false;
   const reasoningSettings = REASONING_SETTINGS[platform];
 
@@ -432,22 +445,25 @@ async function callExternalLLM(
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     const t0 = Date.now();
+    const account = accounts[accountIdx] ?? null;
+    const apiKey = account?.apiKey ?? config.apiKey;
+    const baseUrl = account?.baseUrl ?? config.baseUrl;
     try {
       log.info(`Calling external API for ${platform} (attempt ${attempt}/${maxRetries})`, {
-        traceId, source: config.source, model: config.model,
+        traceId, source: config.source, model: config.model, account: account?.name,
       });
 
       // OpenRouter likes HTTP-Referer + X-Title for attribution; BAI / 百炼 don't.
-      const isOpenRouter = config.baseUrl.includes("openrouter.ai");
+      const isOpenRouter = baseUrl.includes("openrouter.ai");
       const headers: Record<string, string> = {
         "Content-Type": "application/json",
-        "Authorization": `Bearer ${config.apiKey}`,
+        "Authorization": `Bearer ${apiKey}`,
       };
       if (isOpenRouter) {
         headers["HTTP-Referer"] = "https://geo-system.app";
         headers["X-Title"] = "GEO System";
       }
-      const response: Response = await fetch(`${config.baseUrl.replace(/\/$/, "")}/chat/completions`, {
+      const response: Response = await fetch(`${baseUrl.replace(/\/$/, "")}/chat/completions`, {
         method: "POST",
         headers,
         body: JSON.stringify({
@@ -464,6 +480,18 @@ async function callExternalLLM(
       if (!response.ok) {
         const errText = await response.text();
         clearTimeout(timer);
+        const failover = account ? orAccounts.classifyFailover(response.status, errText) : null;
+        if (account && failover) {
+          const next = accounts[accountIdx + 1];
+          await orAccounts.handleAccountFailure({ account, next, model: config.model, failover, purpose: `GEO 采集 · ${PLATFORM_LABELS[platform as Platform] || platform}` });
+          if (next) {
+            log.warn(`OpenRouter ${account.name} ${failover.reason} (${response.status}), switching to ${next.name}`, { traceId, platform });
+            fallbackReason = `${account.name}${failover.reason}`;
+            accountIdx++;
+            attempt--; // an account switch is not a retry
+            continue;
+          }
+        }
         // Detect model-not-found errors and give a helpful message
         if (errText.includes("not a valid model") || errText.includes("model_not_found") || errText.includes("does not exist")) {
           const rec = PLATFORM_RECOMMENDED_PROVIDER[platform as Platform];
@@ -509,6 +537,7 @@ async function callExternalLLM(
         latencyMs,
         costUsd,
         rawResponse: data,
+        billing: account ? { keyId: account.keyId, accountName: account.name, role: account.role, fallbackReason } : null,
       };
     } catch (error: any) {
       clearTimeout(timer);
@@ -593,6 +622,8 @@ async function executeCollection(
       latencyMs: telemetry.latencyMs,
       costUsd: telemetry.costUsd != null ? String(telemetry.costUsd) : null,
       rawResponse: telemetry.rawResponse,
+      billingKeyId: telemetry.billing?.keyId ?? null,
+      billingFallback: telemetry.billing?.fallbackReason ?? null,
     });
 
     // Citation extraction (enhanced)
@@ -1800,6 +1831,24 @@ const platformConfigsRouter = router({
     }),
 });
 
+// ==================== OpenRouter account helpers ====================
+const balanceCache = new Map<string, { at: number; value: orAccounts.KeyBalance }>();
+async function cachedBalance(account: orAccounts.OpenRouterAccount, now: number): Promise<orAccounts.KeyBalance> {
+  const hit = balanceCache.get(account.apiKey);
+  if (hit && now - hit.at < 60_000) return hit.value;
+  const value = await orAccounts.fetchKeyBalance(account.apiKey, account.baseUrl);
+  balanceCache.set(account.apiKey, { at: now, value });
+  return value;
+}
+
+async function openRouterUsageSince(since: number) {
+  try {
+    return await orAccounts.usageByAccount(since);
+  } catch {
+    return [];
+  }
+}
+
 // ==================== Global API Keys Router (P3-1: Masked output) ====================
 const globalApiKeysRouter = router({
   list: protectedProcedure.query(async () => {
@@ -1869,6 +1918,13 @@ const globalApiKeysRouter = router({
         baseUrl = existing.baseUrl || "";
       }
       if (!apiKey || !baseUrl) throw new Error("apiKey and baseUrl required");
+      // OpenRouter's /models needs no key, so it can't validate one: ask /key, which also returns the balance.
+      if (detectProvider(baseUrl) === "openrouter") {
+        const bal = await orAccounts.fetchKeyBalance(apiKey, baseUrl);
+        if (!bal.ok) return { success: false, error: bal.error || "key 校验失败", modelCount: 0, sampleModels: [] as string[] };
+        const left = bal.remaining != null ? `剩余 $${bal.remaining.toFixed(2)}` : "未设额度上限";
+        return { success: true, modelCount: 0, sampleModels: [`key 有效 · 已用 $${(bal.usage ?? 0).toFixed(2)} · ${left}`], provider: "openrouter" as const };
+      }
       try {
         const url = `${baseUrl.replace(/\/$/, "")}/models`;
         const resp = await fetch(url, {
@@ -1886,6 +1942,61 @@ const globalApiKeysRouter = router({
         return { success: false, error: String(e?.message || e).slice(0, 300), modelCount: 0, sampleModels: [] as string[] };
       }
     }),
+
+  // OpenRouter 主号/副号: order, balance, pauses, last switch and the last 7 days of GEO spend per account.
+  openrouterAccounts: protectedProcedure.query(async () => {
+    const now = Date.now();
+    const accounts = await orAccounts.listOpenRouterAccounts();
+    const [balances, blocks, lastRaw, usage] = await Promise.all([
+      Promise.all(accounts.map(a => cachedBalance(a, now))),
+      orAccounts.listBlocks(now).catch(() => [] as orAccounts.Block[]),
+      db.getSysConfig(orAccounts.LAST_FAILOVER_KEY).catch(() => null),
+      openRouterUsageSince(now - 7 * 86400_000),
+    ]);
+    let lastFailover: orAccounts.FailoverEvent | null = null;
+    try { lastFailover = lastRaw ? JSON.parse(lastRaw) : null; } catch {}
+    const rows = accounts.map((a, i) => {
+      const u = usage.find(r => r.keyId === a.keyId);
+      return {
+        keyId: a.keyId, name: a.name, role: a.role, apiKeyMasked: maskApiKey(a.apiKey),
+        balance: balances[i],
+        paused: blocks.filter(b => b.keyId === a.keyId).map(b => ({ model: b.model, until: b.until, reason: b.reason })),
+        week: { rows: u?.rows ?? 0, usd: u?.usd ?? 0, fallbackRows: u?.fallbackRows ?? 0 },
+      };
+    });
+    const primary = rows[0];
+    const remaining = primary?.balance.remaining;
+    return {
+      accounts: rows,
+      lastFailover,
+      unrecordedWeek: usage.find(r => r.keyId == null) ?? null,
+      lowBalanceUsd: orAccounts.LOW_BALANCE_USD,
+      primaryLow: remaining != null && remaining < orAccounts.LOW_BALANCE_USD,
+      primaryPaused: !!primary && primary.paused.some(p => p.model === "*"),
+    };
+  }),
+
+  // Make one OpenRouter key the 主号: it gets the lowest sortOrder among OpenRouter keys, the rest keep their order.
+  setOpenRouterPrimary: adminProcedure
+    .input(z.object({ id: z.number() }))
+    .mutation(async ({ input }) => {
+      const keys = (await db.listGlobalApiKeys()).filter(k => detectProvider(k.baseUrl) === "openrouter");
+      const chosen = keys.find(k => k.id === input.id);
+      if (!chosen) throw new Error("不是 OpenRouter Key");
+      const ordered = [chosen, ...keys.filter(k => k.id !== input.id)];
+      const base = Math.min(...keys.map(k => k.sortOrder ?? 0));
+      await orAccounts.setKeyOrder(ordered.map(k => k.id), base);
+      await orAccounts.clearBlocks();
+      balanceCache.clear();
+      return { success: true };
+    }),
+
+  // After topping up the 主号: drop the pauses so the next call tries it again right away.
+  clearOpenRouterPauses: adminProcedure.mutation(async () => {
+    await orAccounts.clearBlocks();
+    balanceCache.clear();
+    return { success: true };
+  }),
 
   // For each platform, compute its current active provider and the fallback one.
   // Used by the ConfigPlatforms route-preview table.
