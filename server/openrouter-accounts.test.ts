@@ -181,3 +181,27 @@ describe("invokeOpenRouter", () => {
     expect(auth).toEqual(["Bearer sk-7"]);
   });
 });
+
+describe("model probe", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("reports served, refused and timed-out models, at most 6 at a time", async () => {
+    let inFlight = 0, peak = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init: any) => {
+      inFlight++; peak = Math.max(peak, inFlight);
+      await new Promise(r => setTimeout(r, 5));
+      inFlight--;
+      const model = JSON.parse(init.body).model;
+      if (model === "refused") return new Response('{"error":{"message":"The request is prohibited due to a violation of provider Terms Of Service."}}', { status: 403 });
+      if (model === "broke") throw new Error("network down");
+      return new Response('{"choices":[{"message":{"content":"OK"}}]}', { status: 200 });
+    });
+    const models = ["a", "refused", "broke", ...Array.from({ length: 10 }, (_, i) => `m${i}`)];
+    const res = await orAccounts.mapLimit(models, 6, m => orAccounts.probeModel(acct(7), m, "topic"));
+    expect(peak).toBeLessThanOrEqual(6);
+    expect(res[0]).toMatchObject({ ok: true, status: 200 });
+    expect(res[1]).toMatchObject({ ok: false, status: 403, error: expect.stringContaining("Terms Of Service") });
+    expect(res[2]).toMatchObject({ ok: false, status: 0, error: "network down" });
+    expect(res.filter(r => r.ok)).toHaveLength(11);
+  });
+});

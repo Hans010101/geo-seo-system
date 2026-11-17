@@ -13,7 +13,7 @@ import { checkMarketAlerts } from "../server/market";
 import { getIndustrySettings, triageIndustry } from "../server/industry";
 import { checkMacroAlerts } from "../server/industry-metrics";
 import { generateIndustryReport } from "../server/industry-weekly";
-import { deliverScheduledBrief, generateBrief, getBriefSettings, runRequestedBrief } from "../server/brief";
+import { catchUpBrief, catchUpKind, deliverScheduledBrief, generateBrief, getBriefSettings, runRequestedBrief } from "../server/brief";
 import { boundedJson } from "./bounded-json";
 import { cycleFailureReason } from "./cycle-failure";
 import {
@@ -233,6 +233,13 @@ type MarketPricesTask = {
   scheduledTime: number;
 };
 
+/** Later rounds re-make a brief whose slot failed (see catchUpBrief). */
+type BriefCatchUpTask = {
+  kind: "brief_catchup";
+  brief: "am" | "pm";
+  scheduledTime: number;
+};
+
 /** 早报 (queued 09:15 + 5 min) / 晚报 (queued 17:40 + 5 min), after the Mac's :05 run and the cloud batch. */
 type DailyBriefTask = {
   kind: "daily_brief";
@@ -329,6 +336,7 @@ export type QueueTask =
   | MaintenanceTask
   | MarketPricesTask
   | DailyBriefTask
+  | BriefCatchUpTask
   | BriefSendTask
   | BriefRequestTask
   | IndustryTriageTask
@@ -2913,6 +2921,11 @@ async function processTask(task: QueueTask, env: QueueEnv): Promise<void> {
     if (brief) console.log(JSON.stringify({ event: "daily_brief.requested", id: brief.id, emailed: brief.emailed, emailError: brief.emailError }));
     return;
   }
+  if (task.kind === "brief_catchup") {
+    const result = await catchUpBrief(task.brief);
+    console.log(JSON.stringify({ event: "daily_brief.catchup", brief: task.brief, ...result }));
+    return;
+  }
   if (task.kind === "brief_send") {
     const result = await deliverScheduledBrief(task.brief);
     console.log(JSON.stringify({ event: "daily_brief.sent", ...result }));
@@ -3125,6 +3138,8 @@ export async function enqueueScheduledMonitor(
     messages.push({ body: { kind: "daily_brief", brief, scheduledTime }, delaySeconds: 180 });
     messages.push({ body: { kind: "brief_send", brief, scheduledTime }, delaySeconds: 900 });
   }
+  const catchUp = catchUpKind(local.hour, local.minute);
+  if (catchUp) messages.push({ body: { kind: "brief_catchup", brief: catchUp, scheduledTime }, delaySeconds: 180 });
   messages.push({ body: { kind: "brief_request", scheduledTime } });
   messages.push({ body: { kind: "industry_triage", scheduledTime } });
   if (messages.length > 0) await env.MONITOR_QUEUE.sendBatch(messages);

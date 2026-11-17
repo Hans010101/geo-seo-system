@@ -370,7 +370,12 @@ export async function generateBrief(opts: { kind?: BriefKind; now?: number; push
   const push = opts.push ?? settings.push;
   const email = opts.email ?? settings.email;
   if (!push && !email) return data;
-  return { ...data, ...(await deliverBrief(data, { push, email })) };
+  const sent = await deliverBrief(data, { push, email });
+  // A brief mailed by hand counts as delivered: the :30 send and the catch-up must not mail it again.
+  if (sent.emailed || (push && !email)) {
+    await client.prepare("UPDATE dailyBriefs SET deliveredAt = ? WHERE id = ? AND deliveredAt IS NULL").bind(Date.now(), data.id).run();
+  }
+  return { ...data, ...sent };
 }
 
 /** Telegram 5-line summary and/or the email to every selected user. Never throws on send errors. */
@@ -416,6 +421,29 @@ export async function deliverScheduledBrief(kind: BriefKind, now = Date.now()) {
   if (!claim.meta?.changes) return { skipped: "already delivered", id };
   const result = await deliverBrief(JSON.parse(row.data) as BriefData, { push: settings.push, email: settings.email });
   return { id, ...result };
+}
+
+/**
+ * Catch-up (早报 at the 11/13/15 o'clock rounds, 晚报 at 19/21): when today's brief failed to generate or
+ * to send at its slot (e.g. every OpenRouter account refused the model), make it now and send it once.
+ */
+export async function catchUpBrief(kind: BriefKind, now = Date.now()) {
+  const settings = await getBriefSettings();
+  if (!settings.enabled) return { skipped: "disabled" };
+  const id = `${bjDay(now)}-${kind}`;
+  const client = await d1();
+  const row = await client.prepare("SELECT deliveredAt FROM dailyBriefs WHERE id = ?").bind(id).first<{ deliveredAt: number | null }>();
+  if (row?.deliveredAt) return { skipped: "already delivered", id };
+  if (!row) await generateBrief({ kind, now, push: false, email: false });
+  return { caughtUp: true, ...(await deliverScheduledBrief(kind, now)) };
+}
+
+/** Which brief a cron round should catch up, if any (Beijing hour at the :15 round). */
+export function catchUpKind(hour: number, minute: number): BriefKind | null {
+  if (minute !== 15) return null;
+  if (hour === 11 || hour === 13 || hour === 15) return "am";
+  if (hour === 19 || hour === 21) return "pm";
+  return null;
 }
 
 export { platformCn };

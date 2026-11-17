@@ -4,7 +4,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { AlertTriangle, Eye, EyeOff, Loader2, Plus, RefreshCw, Wallet } from "lucide-react";
+import { AlertTriangle, Eye, EyeOff, Loader2, Plus, RefreshCw, Stethoscope, Wallet } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { useRole } from "@/hooks/useRole";
@@ -165,6 +165,8 @@ export default function OpenRouterAccountsCard() {
             )}
           </div>
         )}
+        {canEdit && accounts.length > 0 && <OpenRouterProbePanel accounts={accounts.map(a => ({ keyId: a.keyId, name: a.name }))} />}
+
         {form && (
           <form
             className="rounded-md border border-primary/30 p-3 space-y-2"
@@ -214,5 +216,109 @@ export default function OpenRouterAccountsCard() {
         )}
       </CardContent>
     </Card>
+  );
+}
+
+type ProbeRow = { model: string; ok: boolean; status: number; ms: number; error?: string };
+type ProbeRun = Record<string, ProbeRow[] | "running" | { error: string }>;
+
+const statusText = (r: ProbeRow | undefined) => {
+  if (!r) return "—";
+  if (r.ok) return "✓";
+  if (r.status === 402) return "余额不足";
+  if (r.status === 401) return "Key 无效";
+  if (r.status === 403 && /terms of service|prohibited/i.test(r.error || "")) return "被拒（条款）";
+  if (r.status === 403) return "403";
+  if (r.status === 404) return "不可用";
+  if (r.status === 429) return "限流";
+  if (r.status === 0) return "超时";
+  return String(r.status);
+};
+
+/** 检测模型可用性: each account × (neutral prompt, TRON prompt) for every model the system uses. */
+function OpenRouterProbePanel({ accounts }: { accounts: { keyId: number; name: string }[] }) {
+  const { data: models } = trpc.globalApiKeys.openrouterModels.useQuery(undefined, { staleTime: 300_000 });
+  const probe = trpc.globalApiKeys.probeOpenRouter.useMutation();
+  const [run, setRun] = useState<ProbeRun | null>(null);
+  const [at, setAt] = useState<number | null>(null);
+  const kinds = ["neutral", "topic"] as const;
+  const key = (keyId: number, kind: string) => `${keyId}:${kind}`;
+  const running = !!run && Object.values(run).some(v => v === "running");
+
+  const start = async () => {
+    const jobs = accounts.flatMap(a => kinds.map(kind => ({ keyId: a.keyId, kind })));
+    setRun(Object.fromEntries(jobs.map(j => [key(j.keyId, j.kind), "running"])));
+    setAt(Date.now());
+    await Promise.all(jobs.map(async j => {
+      try {
+        const res = await probe.mutateAsync(j);
+        setRun(prev => ({ ...(prev ?? {}), [key(j.keyId, j.kind)]: res.results }));
+      } catch (err) {
+        setRun(prev => ({ ...(prev ?? {}), [key(j.keyId, j.kind)]: { error: (err as Error).message } }));
+      }
+    }));
+  };
+
+  const cell = (keyId: number, kind: string, model: string) => {
+    const v = run?.[key(keyId, kind)];
+    if (!v) return <span className="text-muted-foreground">—</span>;
+    if (v === "running") return <Loader2 className="h-3 w-3 animate-spin inline" />;
+    if (!Array.isArray(v)) return <span className="text-destructive" title={v.error}>出错</span>;
+    const r = v.find(x => x.model === model);
+    return (
+      <span className={r?.ok ? "text-green-600 dark:text-green-400" : "text-destructive"} title={r?.error || (r ? `${r.ms}ms` : "")}>
+        {statusText(r)}
+      </span>
+    );
+  };
+
+  return (
+    <div className="rounded-md border px-3 py-2 space-y-2">
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-xs">
+          <span className="font-medium">检测模型可用性</span>
+          <span className="text-muted-foreground"> · 每个账号对系统用到的每个模型各发两次极短请求：「通用」是一句 OK，「本业务」是一句介绍 TRON / 孙宇晨；合计花费不到 $0.05。</span>
+        </div>
+        <Button variant="outline" size="sm" className="h-7 text-xs gap-1 shrink-0" disabled={running || !models} onClick={start}>
+          {running ? <Loader2 className="h-3 w-3 animate-spin" /> : <Stethoscope className="h-3.5 w-3.5" />}
+          {run ? "重新检测" : "开始检测"}
+        </Button>
+      </div>
+      {run && models && (
+        <div className="overflow-x-auto">
+          <table className="w-full text-[11px]">
+            <thead>
+              <tr className="text-muted-foreground">
+                <th className="text-left font-normal py-1 pr-2">模型 / 用途</th>
+                {accounts.map(a => (
+                  <th key={a.keyId} colSpan={2} className="text-center font-normal px-2">{a.name}</th>
+                ))}
+              </tr>
+              <tr className="text-muted-foreground">
+                <th />
+                {accounts.flatMap(a => [
+                  <th key={`${a.keyId}n`} className="font-normal px-2">通用</th>,
+                  <th key={`${a.keyId}t`} className="font-normal px-2">本业务</th>,
+                ])}
+              </tr>
+            </thead>
+            <tbody>
+              {models.map(m => (
+                <tr key={m.model} className="border-t">
+                  <td className="py-1 pr-2">
+                    <div className="font-mono">{m.model}</div>
+                    <div className="text-muted-foreground">{m.uses.join("、")}</div>
+                  </td>
+                  {accounts.flatMap(a => kinds.map(kind => (
+                    <td key={`${a.keyId}-${kind}`} className="text-center px-2">{cell(a.keyId, kind, m.model)}</td>
+                  )))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {at && <p className="text-[10px] text-muted-foreground mt-1">检测于 {time(at)}。鼠标悬停可看错误原文。</p>}
+        </div>
+      )}
+    </div>
   );
 }

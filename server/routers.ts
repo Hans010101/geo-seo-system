@@ -1,5 +1,5 @@
 import { COOKIE_NAME } from "@shared/const";
-import { getIndustryStatus, listIndustry, setIndustryAlerts, triageIndustry } from "./industry";
+import { getIndustrySettings, getIndustryStatus, listIndustry, setIndustryAlerts, triageIndustry } from "./industry";
 import { getCompetitorDashboard, getIndustryMarkers, getMacroDashboard } from "./industry-metrics";
 import { generateIndustryReport, getIndustryWeekly, listIndustryWeekly } from "./industry-weekly";
 import { getSessionCookieOptions } from "./_core/cookies";
@@ -1841,6 +1841,19 @@ async function cachedBalance(account: orAccounts.OpenRouterAccount, now: number)
   return value;
 }
 
+async function openRouterModelUsage(): Promise<{ model: string; uses: string[] }[]> {
+  const uses = new Map<string, string[]>();
+  const add = (model: string, use: string) => uses.set(model, [...(uses.get(model) ?? []), use]);
+  const [brief, industry] = await Promise.all([getBriefSettings(), getIndustrySettings()]);
+  add(brief.model, "早晚报 / 行业周报");
+  add(industry.model, "行业动态分拣");
+  for (const p of PLATFORMS) {
+    const model = PLATFORM_OPENROUTER_MODELS[p as Platform];
+    if (model) add(model, `GEO 采集 · ${PLATFORM_LABELS[p as Platform] || p}`);
+  }
+  return [...uses].map(([model, list]) => ({ model, uses: list }));
+}
+
 async function openRouterUsageSince(since: number) {
   try {
     return await orAccounts.usageByAccount(since);
@@ -2002,6 +2015,21 @@ const globalApiKeysRouter = router({
       await orAccounts.clearBlocks();
       balanceCache.clear();
       return { success: true, remaining: bal.remaining ?? null };
+    }),
+
+  // 检测模型可用性: the OpenRouter models this system uses, with what each is used for.
+  openrouterModels: protectedProcedure.query(async () => openRouterModelUsage()),
+
+  // Probe every model in use on one account with one prompt (neutral / topic). One request per account×prompt
+  // keeps each call well inside the ~120s Pages limit (13 models, 6 connections at a time, 25s cap each).
+  probeOpenRouter: adminProcedure
+    .input(z.object({ keyId: z.number(), kind: z.enum(["neutral", "topic"]) }))
+    .mutation(async ({ input }) => {
+      const account = (await orAccounts.listOpenRouterAccounts()).find(a => a.keyId === input.keyId);
+      if (!account) throw new Error("找不到这个 OpenRouter 账号");
+      const models = (await openRouterModelUsage()).map(m => m.model);
+      const results = await orAccounts.mapLimit(models, 6, model => orAccounts.probeModel(account, model, input.kind));
+      return { keyId: account.keyId, kind: input.kind, at: Date.now(), results: models.map((model, i) => ({ model, ...results[i] })) };
     }),
 
   // Make one OpenRouter key the 主号: it gets the lowest sortOrder among OpenRouter keys, the rest keep their order.

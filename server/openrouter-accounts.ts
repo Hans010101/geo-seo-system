@@ -233,6 +233,50 @@ export async function invokeOpenRouter(
   throw new Error("OpenRouter 所有账号均不可用");
 }
 
+// ---------------------------------------------------------------- probe
+
+/** Two tiny prompts: one neutral, one on the system's own topic — tells account-wide refusals from topic ones. */
+export const PROBE_PROMPTS = {
+  neutral: "Reply with the single word OK.",
+  topic: "用一句话介绍波场 TRON 和创始人孙宇晨。",
+} as const;
+export type ProbeKind = keyof typeof PROBE_PROMPTS;
+
+export type ProbeResult = { ok: boolean; status: number; ms: number; error?: string };
+
+/** One small chat call. Only the HTTP outcome matters (an empty reasoning-only answer still counts as served). */
+export async function probeModel(account: OpenRouterAccount, model: string, kind: ProbeKind, timeoutMs = 25_000): Promise<ProbeResult> {
+  const t0 = Date.now();
+  try {
+    const res = await fetch(`${account.baseUrl.replace(/\/$/, "")}/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${account.apiKey}`, "HTTP-Referer": "https://geo-system.app", "X-Title": "GEO System" },
+      body: JSON.stringify({ model, messages: [{ role: "user", content: PROBE_PROMPTS[kind] }], max_tokens: 64 }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    const text = await res.text();
+    if (res.ok) return { ok: true, status: res.status, ms: Date.now() - t0 };
+    let message = text;
+    try { message = JSON.parse(text)?.error?.message || text; } catch {}
+    return { ok: false, status: res.status, ms: Date.now() - t0, error: String(message).slice(0, 160) };
+  } catch (error) {
+    return { ok: false, status: 0, ms: Date.now() - t0, error: String((error as Error)?.message || error).slice(0, 160) };
+  }
+}
+
+/** Run tasks with at most `limit` in flight (Workers allow 6 open outbound connections per request). */
+export async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i]);
+    }
+  }));
+  return out;
+}
+
 // ---------------------------------------------------------------- balance
 
 export type KeyBalance = {
