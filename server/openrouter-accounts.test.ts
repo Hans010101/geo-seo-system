@@ -54,6 +54,10 @@ describe("OpenRouter failover rules", () => {
     expect(classifyFailover(403, "Key limit exceeded")).toMatchObject({ scope: "account", ttlMs: ACCOUNT_COOLDOWN_MS });
     expect(classifyFailover(404, "No endpoints found matching your data policy")).toMatchObject({ scope: "model", ttlMs: MODEL_BLOCK_MS });
     expect(classifyFailover(429, "Rate limit exceeded")).toMatchObject({ scope: "model" });
+    // Provider refuses this account for the model (seen on the 公用 org account with Anthropic models).
+    const tos = '{"error":{"message":"The request is prohibited due to a violation of provider Terms Of Service.","code":403,"metadata":{"provider_name":null}}}';
+    expect(classifyFailover(403, tos)).toMatchObject({ scope: "model", ttlMs: MODEL_BLOCK_MS, reason: "被模型提供方拒绝（服务条款限制）" });
+    expect(failoverFromError(new Error(`LLM invoke failed: 403 Forbidden – ${tos}`))).toMatchObject({ scope: "model" });
     // Same result on any account: stay put.
     expect(classifyFailover(403, "Input was flagged by moderation")).toBeNull();
     expect(classifyFailover(400, "not a valid model ID")).toBeNull();

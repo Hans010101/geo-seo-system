@@ -48,6 +48,10 @@ export function classifyFailover(status: number, body: string): Failover | null 
   if (status === 402) return { scope: "account", ttlMs: ACCOUNT_COOLDOWN_MS, reason: "余额不足" };
   if (status === 403) {
     if (/limit|quota|disabled|credit/.test(text)) return { scope: "account", ttlMs: ACCOUNT_COOLDOWN_MS, reason: "key 额度已用完或已停用" };
+    // The model's provider refuses this account (e.g. Anthropic models on an organisation account:
+    // "prohibited due to a violation of provider Terms Of Service" from every endpoint). The same
+    // request works on another account, so move this model there.
+    if (/terms of service|prohibited/.test(text)) return { scope: "model", ttlMs: MODEL_BLOCK_MS, reason: "被模型提供方拒绝（服务条款限制）" };
     return null; // moderation: the same input is flagged on any account
   }
   if (status === 404 && /endpoint|guardrail|policy|allow|privacy|provider/.test(text)) {
