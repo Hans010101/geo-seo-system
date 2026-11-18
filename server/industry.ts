@@ -79,6 +79,31 @@ async function callTriage(model: string, items: Pending[], knownEvents: string[]
 }
 
 /**
+ * 分拣试跑: classify the newest already-triaged items again with `model`, without writing anything,
+ * next to the labels they have now — to judge a model before switching industry_model to it.
+ */
+export async function previewTriage(model: string, limit = 40) {
+  const client = await d1();
+  const rows = (await client.prepare(`SELECT id, source, title, excerpt, publishedAt, attempts, status, category, importance, tron, summary
+    FROM industryNews WHERE status IN ('done', 'skip') AND dupOf IS NULL ORDER BY publishedAt DESC LIMIT ?`).bind(limit)
+    .all<Pending & { status: string; category: string | null; importance: number | null; tron: number | null; summary: string | null }>()).results;
+  const t0 = Date.now();
+  const res = await callTriage(model, rows, []);
+  const byI = new Map(res.triage.map(t => [t.i, t]));
+  return {
+    model, ms: Date.now() - t0, tokens: res.tokens, parsed: res.triage.length, total: rows.length,
+    items: rows.map((r, i) => {
+      const t = byI.get(i);
+      return {
+        title: r.title,
+        now: { keep: r.status === "done", category: r.category, importance: r.importance, tron: r.tron, summary: r.summary },
+        trial: t ? { keep: t.keep, category: t.category, importance: t.importance, tron: t.tron, summary: t.summary } : null,
+      };
+    }),
+  };
+}
+
+/**
  * Cron queue task (every :15 / :40): dedupe new items against the last 48 hours, classify the rest
  * with the LLM, alert on importance-5 events, prune old rows.
  */

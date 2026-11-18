@@ -215,6 +215,38 @@ app.post("/api/geo/execute-round", async (c) => {
   });
 });
 
+// ─── Model trials (streamed) ───
+// 早晚报样稿 / 分拣试跑 call a model for 30–150s; stream like execute-round so the request is not cut at ~120s.
+app.post("/api/model-trial", async (c) => {
+  const user = await authenticateRequestCf(c);
+  const body = (await c.req.json().catch(() => ({}))) as { type?: string; kind?: "am" | "pm"; model?: string; limit?: number };
+  const caller = appRouter.createCaller({ req: c.req.raw, res: null, user, clearSessionCookie: () => {} } as any);
+  const encoder = new TextEncoder();
+  const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
+  const writer = writable.getWriter();
+  const send = (text: string) => writer.write(encoder.encode(text)).catch(() => {});
+  void send(" ");
+  const heartbeat = setInterval(() => void send(" "), 15_000);
+  const model = String(body.model ?? "");
+  const run = body.type === "triage"
+    ? caller.industry.previewTriage({ model, limit: body.limit ?? 40 })
+    : caller.briefs.preview({ kind: body.kind === "pm" ? "pm" : "am", model });
+  const work = Promise.resolve(run)
+    .then(
+      (result) => ({ result }),
+      (error: any) => ({ error: { message: error?.message || String(error), code: error?.code ?? null } }),
+    )
+    .then(async (payload) => {
+      clearInterval(heartbeat);
+      await send(JSON.stringify(payload));
+      await writer.close().catch(() => {});
+    });
+  try { c.executionCtx.waitUntil(work); } catch {}
+  return new Response(readable, {
+    headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store, no-transform", "x-content-type-options": "nosniff" },
+  });
+});
+
 // ─── Cloudflare Cron Triggers ───
 // A once-per-minute dispatcher preserves the user-configurable cron expressions
 // stored in MySQL. ENABLE_CLOUDFLARE_CRON remains false while Cloud Run is the

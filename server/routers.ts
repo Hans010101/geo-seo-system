@@ -1,5 +1,5 @@
 import { COOKIE_NAME } from "@shared/const";
-import { getIndustrySettings, getIndustryStatus, listIndustry, setIndustryAlerts, triageIndustry } from "./industry";
+import { getIndustrySettings, getIndustryStatus, listIndustry, previewTriage, setIndustryAlerts, triageIndustry } from "./industry";
 import { getCompetitorDashboard, getIndustryMarkers, getMacroDashboard } from "./industry-metrics";
 import { generateIndustryReport, getIndustryWeekly, listIndustryWeekly } from "./industry-weekly";
 import { getSessionCookieOptions } from "./_core/cookies";
@@ -48,7 +48,7 @@ import {
 } from "./monitor/telegram-connect";
 import { isCloudflareRuntime } from "./runtime";
 import { getMarketLinkage, getMarketOverview, setMarketAlertSettings } from "./market";
-import { generateBrief, getBrief, getBriefRecipientIds, getBriefSettings, listBriefs, resolveBriefRecipients, setBriefRecipient, setBriefSettings } from "./brief";
+import { generateBrief, getBrief, getBriefRecipientIds, getBriefSettings, listBriefs, previewBriefToOwner, resolveBriefRecipients, setBriefRecipient, setBriefSettings } from "./brief";
 import { getExternalGeoAnswer, getExternalGeoOverview, getExternalGeoSupplier, getGenoptimaTopics, listExternalGeoAnswers, listPercentDailyStats } from "./external";
 import { getFactCoverage } from "./fact-coverage";
 import { REASONING_SETTINGS, emptyAnswerError, shouldLimitReasoning } from "./llm-answer";
@@ -3134,6 +3134,10 @@ const briefsRouter = router({
   setSettings: adminProcedure
     .input(z.object({ enabled: z.boolean(), push: z.boolean(), email: z.boolean() }))
     .mutation(async ({ input }) => { await setBriefSettings(input); return { success: true }; }),
+  // 样稿: current period with another model, mailed to the owner address only; nothing saved.
+  preview: adminProcedure
+    .input(z.object({ kind: z.enum(["am", "pm"]), model: z.string().trim().min(3).max(120) }))
+    .mutation(async ({ input }) => previewBriefToOwner(input.kind, input.model)),
   // Regenerates the current period's brief now (no Telegram push unless asked).
   generate: adminProcedure
     // email omitted → follows the 发送邮件 switch (an old cached page must not silently skip the mail).
@@ -3200,6 +3204,10 @@ const industryRouter = router({
       return { id: report.id, reportPeriod: period.reportPeriod };
     }),
   triageNow: adminProcedure.mutation(async () => triageIndustry({ maxBatches: 3 })),
+  // 分拣试跑: re-classify the newest triaged items with another model; writes nothing.
+  previewTriage: adminProcedure
+    .input(z.object({ model: z.string().trim().min(3).max(120), limit: z.number().int().min(5).max(60).default(40) }))
+    .mutation(async ({ input }) => previewTriage(input.model, input.limit)),
   setAlerts: adminProcedure
     .input(z.object({ enabled: z.boolean() }))
     .mutation(async ({ input }) => {

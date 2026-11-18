@@ -285,7 +285,13 @@ export async function getBrief(id: string) {
 }
 
 /** Build, store and (optionally) push one brief. `kind` defaults from the Beijing hour. */
-export async function generateBrief(opts: { kind?: BriefKind; now?: number; push?: boolean; email?: boolean } = {}): Promise<BriefData & { emailed?: boolean; emailError?: string; emailedTo?: string[] }> {
+export async function generateBrief(opts: {
+  kind?: BriefKind; now?: number; push?: boolean; email?: boolean;
+  /** Model override (样稿); default = 早晚报 setting. */
+  model?: string;
+  /** 样稿: build only — not saved, not sent. */
+  preview?: boolean;
+} = {}): Promise<BriefData & { emailed?: boolean; emailError?: string; emailedTo?: string[] }> {
   const now = opts.now ?? Date.now();
   const kind: BriefKind = opts.kind ?? (new Date(now + 8 * HOUR).getUTCHours() < 13 ? "am" : "pm");
   const client = await d1();
@@ -323,7 +329,7 @@ export async function generateBrief(opts: { kind?: BriefKind; now?: number; push
   let lastError = "";
   for (let attempt = 0; attempt < 2 && !draft; attempt++) {
     const result = await invokeOpenRouter({
-      model: settings.model, maxTokens: 6000, timeoutMs: 150_000,
+      model: opts.model?.trim() || settings.model, maxTokens: 6000, timeoutMs: 150_000,
       messages: [{ role: "system", content: prompt.system }, { role: "user", content: prompt.user }],
     }, "舆情早晚报");
     const content = result.choices?.[0]?.message?.content;
@@ -360,9 +366,10 @@ export async function generateBrief(opts: { kind?: BriefKind; now?: number; push
       high: cur.hi, highPrev: cmp.hi, medium: cur.med, mediumPrev: cmp.med, negative: cur.neg, negativePrev: cmp.neg,
       relevant: cur.rel, published: cur.total, publishedPrev: cmp.total, positive: cur.pos, positivePrev: cmp.pos,
     },
-    market, events, others, trends, outlook: draft.outlook, asks, model: settings.model, usage,
+    market, events, others, trends, outlook: draft.outlook, asks, model: opts.model?.trim() || settings.model, usage,
     ...(industry ? { industry } : {}),
   };
+  if (opts.preview) return data;
   await client.prepare(`INSERT INTO dailyBriefs (id, kind, day, generatedAt, data) VALUES (?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET generatedAt = excluded.generatedAt, data = excluded.data`)
     .bind(data.id, kind, day, data.generatedAt, JSON.stringify(data)).run();
@@ -421,6 +428,26 @@ export async function deliverScheduledBrief(kind: BriefKind, now = Date.now()) {
   if (!claim.meta?.changes) return { skipped: "already delivered", id };
   const result = await deliverBrief(JSON.parse(row.data) as BriefData, { push: settings.push, email: settings.email });
   return { id, ...result };
+}
+
+/**
+ * 样稿: generate the current period with another model and mail it to the owner address only
+ * (alert recipient / AUTH_ALLOWED_EMAIL). Nothing is saved; the real brief and its recipients are untouched.
+ */
+export async function previewBriefToOwner(kind: BriefKind, model: string) {
+  const t0 = Date.now();
+  const data = await generateBrief({ kind, model, preview: true });
+  const ms = Date.now() - t0;
+  const { recipient } = await getEmailAlertConfig();
+  const mail = buildBriefEmail(data, `${SITE}/briefs`);
+  const subject = `【样稿 · ${model}】${mail.subject}`;
+  const result = recipient
+    ? await sendEmailToEach([recipient], subject, mail.html, mail.text)
+    : { sent: [] as string[], failed: [{ to: "", error: "未配置收件邮箱" }] };
+  return {
+    model, ms, to: result.sent, error: result.failed.map(f => f.error).join("; ") || null,
+    level: data.verdict.level, lead: data.verdict.lead, events: data.events.map(e => e.title), usage: data.usage,
+  };
 }
 
 /**
