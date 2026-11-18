@@ -7,7 +7,7 @@ import { getEmailAlertConfig, sendEmailToEach } from "./monitor/email-alert";
 import { listUsers } from "./db";
 import { buildBriefEmail } from "./brief-email";
 import { briefIndustrySection, type BriefIndustry } from "./industry-calc";
-import { topIndustry } from "./industry";
+import { previewIndustryRows, topIndustry } from "./industry";
 import { getMacroDashboard } from "./industry-metrics";
 import { BENCHMARK_LABEL, excessReturn, priceAt, toSeries } from "./market-calc";
 import {
@@ -69,9 +69,12 @@ export type BriefData = {
 };
 
 /** 行业动态 for the brief window: top 5–8 triaged items plus the macro strip. Never throws. */
-export async function industryBlock(start: number, end: number): Promise<BriefIndustry | null> {
+export async function industryBlock(start: number, end: number, triageModel?: string): Promise<BriefIndustry | null> {
   try {
-    const [rows, macro] = await Promise.all([topIndustry(start, end), getMacroDashboard(end)]);
+    const [rows, macro] = await Promise.all([
+      triageModel ? previewIndustryRows(triageModel, start, end) : topIndustry(start, end),
+      getMacroDashboard(end),
+    ]);
     if (!rows.length) return null;
     const fng = macro.fng.length ? Number(macro.fng[macro.fng.length - 1].value) : null;
     return briefIndustrySection(rows, macro.macro, macro.fed, fng);
@@ -291,6 +294,8 @@ export async function generateBrief(opts: {
   model?: string;
   /** 样稿: build only — not saved, not sent. */
   preview?: boolean;
+  /** 样稿 only: re-triage the window's 行业动态 with this model instead of using the stored labels. */
+  triageModel?: string;
 } = {}): Promise<BriefData & { emailed?: boolean; emailError?: string; emailedTo?: string[] }> {
   const now = opts.now ?? Date.now();
   const kind: BriefKind = opts.kind ?? (new Date(now + 8 * HOUR).getUTCHours() < 13 ? "am" : "pm");
@@ -312,7 +317,9 @@ export async function generateBrief(opts: {
   const [market, trends, geo, asks, industryOn] = await Promise.all([
     marketBlock(client, now), trendBlock(client, now), geoLine(client, now), findAsks(now), getSysConfig(KEYS.industry),
   ]);
-  const industry = industryOn === "true" ? await industryBlock(win.start, win.end) : null;
+  const industry = industryOn === "true"
+    ? await industryBlock(win.start, win.end, opts.preview ? opts.triageModel?.trim() || undefined : undefined)
+    : null;
 
   const windowLabel = `${bjMMDD(win.start)} ${bjHHMM(win.start)} → ${bjMMDD(win.end)} ${bjHHMM(win.end)}`;
   const facts = [
@@ -434,19 +441,20 @@ export async function deliverScheduledBrief(kind: BriefKind, now = Date.now()) {
  * 样稿: generate the current period with another model and mail it to the owner address only
  * (alert recipient / AUTH_ALLOWED_EMAIL). Nothing is saved; the real brief and its recipients are untouched.
  */
-export async function previewBriefToOwner(kind: BriefKind, model: string) {
+export async function previewBriefToOwner(kind: BriefKind, model: string, triageModel?: string) {
   const t0 = Date.now();
-  const data = await generateBrief({ kind, model, preview: true });
+  const data = await generateBrief({ kind, model, preview: true, triageModel });
   const ms = Date.now() - t0;
   const { recipient } = await getEmailAlertConfig();
   const mail = buildBriefEmail(data, `${SITE}/briefs`);
-  const subject = `【样稿 · ${model}】${mail.subject}`;
+  const subject = `【样稿 · ${triageModel ? `分拣 ${triageModel} + 报告 ` : ""}${model}】${mail.subject}`;
   const result = recipient
     ? await sendEmailToEach([recipient], subject, mail.html, mail.text)
     : { sent: [] as string[], failed: [{ to: "", error: "未配置收件邮箱" }] };
   return {
     model, ms, to: result.sent, error: result.failed.map(f => f.error).join("; ") || null,
     level: data.verdict.level, lead: data.verdict.lead, events: data.events.map(e => e.title), usage: data.usage,
+    industry: data.industry ? { total: data.industry.total, items: data.industry.items.map(i => i.summary) } : null,
   };
 }
 

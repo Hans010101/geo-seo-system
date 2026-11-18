@@ -25,6 +25,8 @@ const BATCH = 40;
 export const INDUSTRY_FETCH_KEY = "industry_last_fetch";
 const TRIAGE_STATUS_KEY = "industry_last_triage";
 const MODEL_KEY = "industry_model";
+// One triage call (a batch of up to 40 items). 通义 / Grok take ~105–110s per batch, so 120s was too tight.
+export const TRIAGE_TIMEOUT_MS = 180_000;
 const DEFAULT_MODEL = "anthropic/claude-haiku-5.5";
 const ALERTS_KEY = "industry_alerts_enabled";
 const LOCK_KEY = "industry_triage_lock";
@@ -67,7 +69,7 @@ async function callTriage(model: string, items: Pending[], knownEvents: string[]
   const input = items.map((it, i) => ({ i, source: INDUSTRY_SOURCES[it.source]?.label || it.source, title: it.title, excerpt: it.excerpt || "" }));
   const prompt = triagePrompt(input, knownEvents);
   const result = await invokeOpenRouter({
-    model, maxTokens: 9000, timeoutMs: 120_000,
+    model, maxTokens: 9000, timeoutMs: TRIAGE_TIMEOUT_MS,
     messages: [{ role: "system", content: prompt.system }, { role: "user", content: prompt.user }],
   }, "行业动态分拣");
   const content = result.choices?.[0]?.message?.content;
@@ -76,6 +78,39 @@ async function callTriage(model: string, items: Pending[], knownEvents: string[]
     triage: parseTriage(text, new Set(input.map(x => x.i))),
     tokens: (result.usage?.prompt_tokens ?? 0) + (result.usage?.completion_tokens ?? 0),
   };
+}
+
+/**
+ * 样稿 with another 分拣 model: re-classify every non-duplicate item of the brief window with `model`, in
+ * memory, and return the rows it would keep (importance ≥ 3) in the shape topIndustry returns. Writes nothing.
+ */
+export async function previewIndustryRows(model: string, from: number, to: number, cap = 320): Promise<IndustryItem[]> {
+  const client = await d1();
+  const rows = (await client.prepare(`SELECT ${ROW_COLUMNS}, excerpt, attempts FROM industryNews
+    WHERE status IN ('done', 'skip', 'new') AND dupOf IS NULL AND publishedAt >= ? AND publishedAt < ?
+    ORDER BY publishedAt DESC LIMIT ?`).bind(from, to, cap).all<IndustryItem & { excerpt: string | null; attempts: number }>()).results;
+  const chunks: (typeof rows)[] = [];
+  for (let i = 0; i < rows.length; i += BATCH) chunks.push(rows.slice(i, i + BATCH));
+  const out: IndustryItem[] = [];
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(4, chunks.length) }, async () => {
+    while (next < chunks.length) {
+      const chunk = chunks[next++];
+      let triage: Triage[] = [];
+      try { triage = (await callTriage(model, chunk, [])).triage; } catch (error) {
+        console.log(JSON.stringify({ event: "industry.preview_triage_failed", error: String((error as Error).message).slice(0, 200) }));
+      }
+      for (const t of triage) {
+        const r = chunk[t.i];
+        if (!r || !t.keep || t.importance < 3) continue;
+        out.push({
+          ...r, category: t.category, importance: t.importance, entities: JSON.stringify(t.entities), tron: t.tron,
+          tronNote: t.tronNote || null, summary: t.summary || r.title,
+        });
+      }
+    }
+  }));
+  return out;
 }
 
 /**

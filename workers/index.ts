@@ -219,7 +219,7 @@ app.post("/api/geo/execute-round", async (c) => {
 // 早晚报样稿 / 分拣试跑 call a model for 30–150s; stream like execute-round so the request is not cut at ~120s.
 app.post("/api/model-trial", async (c) => {
   const user = await authenticateRequestCf(c);
-  const body = (await c.req.json().catch(() => ({}))) as { type?: string; kind?: "am" | "pm"; model?: string; limit?: number };
+  const body = (await c.req.json().catch(() => ({}))) as { type?: string; kind?: "am" | "pm"; model?: string; triageModel?: string; limit?: number };
   const caller = appRouter.createCaller({ req: c.req.raw, res: null, user, clearSessionCookie: () => {} } as any);
   const encoder = new TextEncoder();
   const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
@@ -230,7 +230,7 @@ app.post("/api/model-trial", async (c) => {
   const model = String(body.model ?? "");
   const run = body.type === "triage"
     ? caller.industry.previewTriage({ model, limit: body.limit ?? 40 })
-    : caller.briefs.preview({ kind: body.kind === "pm" ? "pm" : "am", model });
+    : caller.briefs.preview({ kind: body.kind === "pm" ? "pm" : "am", model, triageModel: body.triageModel || undefined });
   const work = Promise.resolve(run)
     .then(
       (result) => ({ result }),

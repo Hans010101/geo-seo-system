@@ -3136,8 +3136,8 @@ const briefsRouter = router({
     .mutation(async ({ input }) => { await setBriefSettings(input); return { success: true }; }),
   // 样稿: current period with another model, mailed to the owner address only; nothing saved.
   preview: adminProcedure
-    .input(z.object({ kind: z.enum(["am", "pm"]), model: z.string().trim().min(3).max(120) }))
-    .mutation(async ({ input }) => previewBriefToOwner(input.kind, input.model)),
+    .input(z.object({ kind: z.enum(["am", "pm"]), model: z.string().trim().min(3).max(120), triageModel: z.string().trim().min(3).max(120).optional() }))
+    .mutation(async ({ input }) => previewBriefToOwner(input.kind, input.model, input.triageModel)),
   // Regenerates the current period's brief now (no Telegram push unless asked).
   generate: adminProcedure
     // email omitted → follows the 发送邮件 switch (an old cached page must not silently skip the mail).
