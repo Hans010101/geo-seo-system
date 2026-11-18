@@ -186,7 +186,7 @@ async function marketBlock(client: D1Like, now: number): Promise<BriefData["mark
   const trxPrices = trxSeries.map(p => p[1]);
   const trx24 = change("TRX");
   const note = trxPrices.length
-    ? `24 小时在 ${fmtPrice(Math.min(...trxPrices))}–${fmtPrice(Math.max(...trxPrices))} 之间，较 ${bjMMDD(from)} ${bjHHMM(from)} ${trx24 !== null && trx24 < 0 ? "跌" : "涨"} ${Math.abs(trx24 ?? 0).toFixed(2)}%；同期大盘（${BENCHMARK_LABEL}）${signed(move.benchmark)}，TRX ${(move.excess ?? 0) >= 0 ? "相对抗跌" : "跑输大盘"}（超额 ${signed(move.excess)}）。`
+    ? `24 小时在 ${fmtPrice(Math.min(...trxPrices))}–${fmtPrice(Math.max(...trxPrices))} 之间，较 ${bjMMDD(from)} ${bjHHMM(from)} ${trx24 !== null && trx24 < 0 ? "跌" : "涨"} ${Math.abs(trx24 ?? 0).toFixed(2)}%；大盘（${BENCHMARK_LABEL}）${signed(move.benchmark)}，TRX ${(move.excess ?? 0) >= 0 ? "相对抗跌" : "跑输大盘"}（超额 ${signed(move.excess)}）。`
     : "";
   const coins = COINS.map(([symbol, name]) => {
     const s = window(symbol);

@@ -127,7 +127,7 @@ export function buildBriefEmail(b: BriefData, link: string): { subject: string; 
       <div style="font-size:12px;color:${MUTED}">${esc(sub)}</div></td></tr></table></td>`;
 
   const coinCell = (c: NonNullable<BriefData["market"]>["coins"][number]) => `<td width="50%" valign="top" style="padding:10px 10px 12px">
-      <div style="font-size:14px;white-space:nowrap"><b>${esc(c.symbol)}</b> <span style="font-size:11.5px;color:${MUTED}">${esc(c.name)}</span>
+      <div style="font-size:14px;white-space:nowrap"><b>${esc(c.symbol)}</b>
         <span style="float:right;color:${tone(c.change24h)};font-weight:700;font-family:${MONO};font-size:12.5px">${signed(c.change24h)}</span></div>
       <div style="font-size:14px;font-weight:700;font-family:${MONO};white-space:nowrap">${price(c.price)}</div>
       ${c.series.length > 1 ? `<img src="${spark(c.series as [number, number][], (c.change24h ?? 0) >= 0)}" width="150" height="44" alt="${esc(c.symbol)} 近 24 小时" style="display:block;margin-top:6px;border:0;width:100%;max-width:150px;height:auto">` : ""}</td>`;
@@ -194,7 +194,7 @@ export function buildBriefEmail(b: BriefData, link: string): { subject: string; 
     ${kpi("高威胁舆情", String(k.high), `中威胁 ${k.medium}（昨同时段 ${k.mediumPrev}）`)}
     ${kpi("负面舆情", String(k.negative), `昨同时段 ${k.negativePrev} · 相关 ${k.relevant} 条`)}
     ${kpi("新发表舆情", String(k.published), `昨同时段 ${k.publishedPrev} · 正面 ${k.positive} 条`)}
-    ${kpi("TRX 相对大盘", signed(m?.excess24h), `24h 超额；同期大盘 ${signed(m?.benchmark24h)}`, tone(m?.excess24h))}
+    ${kpi("TRX 相对大盘", signed(m?.excess24h), `24h 超额；大盘 ${signed(m?.benchmark24h)}`, tone(m?.excess24h))}
   </tr></table></td></tr>
   ${m ? `${heading("市场走势")}
   <tr><td><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 -4px"><tr>
@@ -216,7 +216,7 @@ export function buildBriefEmail(b: BriefData, link: string): { subject: string; 
   const figures = [
     `负面舆情 ${k.negative} 条（昨同时段 ${k.negativePrev}），高威胁 ${k.high}，中威胁 ${k.medium}（昨同时段 ${k.mediumPrev}）`,
     `新发表 ${k.published} 条（昨同时段 ${k.publishedPrev}），正面 ${k.positive} 条`,
-    ...(m ? [`TRX ${price(m.trx.price)}，24h ${signed(m.trx.change24h)}；同期大盘 ${signed(m.benchmark24h)}，TRX 相对大盘 ${signed(m.excess24h)}`,
+    ...(m ? [`TRX ${price(m.trx.price)}，24h ${signed(m.trx.change24h)}；大盘 ${signed(m.benchmark24h)}，TRX 相对大盘 ${signed(m.excess24h)}`,
       `生态币 24h：${m.coins.map(c => `${c.symbol} ${signed(c.change24h)}`).join("，")}`] : []),
   ];
   const text = [

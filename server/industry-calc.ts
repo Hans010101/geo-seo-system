@@ -158,13 +158,37 @@ export function triagePrompt(items: TriageInput[], knownEvents: string[] = []) {
   return { system, user };
 }
 
-function extractJsonArray(text: string): unknown[] {
+export function extractJsonArray(text: string): unknown[] {
   const start = text.indexOf("[");
+  if (start < 0) throw new Error("no JSON array");
   const end = text.lastIndexOf("]");
-  if (start < 0 || end <= start) throw new Error("no JSON array");
-  const parsed = JSON.parse(text.slice(start, end + 1));
-  if (!Array.isArray(parsed)) throw new Error("not an array");
-  return parsed;
+  if (end > start) {
+    try {
+      const parsed = JSON.parse(text.slice(start, end + 1));
+      if (Array.isArray(parsed)) return parsed;
+    } catch { /* fall through: an answer cut off at max_tokens ends mid-object */ }
+  }
+  // Salvage: every complete top-level {...} after the opening bracket (a cut-off answer would otherwise
+  // throw away the whole paid-for batch; its last "]" is often an inner entities list).
+  const out: unknown[] = [];
+  let depth = 0, from = -1, inString = false, escaped = false;
+  for (let i = start + 1; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === "{") { if (depth++ === 0) from = i; }
+    else if (ch === "}" && depth > 0 && --depth === 0 && from >= 0) {
+      try { out.push(JSON.parse(text.slice(from, i + 1))); } catch { /* skip a malformed object */ }
+      from = -1;
+    } else if (ch === "]" && depth === 0) break;
+  }
+  if (!out.length) throw new Error("no JSON array");
+  return out;
 }
 
 export function parseTriage(text: string, ids: Set<number>): Triage[] {

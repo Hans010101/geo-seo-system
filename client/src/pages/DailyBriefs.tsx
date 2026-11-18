@@ -147,7 +147,7 @@ function BriefView({ brief }: { brief: Brief }) {
           ["高威胁舆情", String(k.high), `中威胁 ${k.medium}（上一日同时段 ${k.mediumPrev}）`, ""],
           ["负面舆情", String(k.negative), `上一日同时段 ${k.negativePrev} · 相关 ${k.relevant} 条`, ""],
           ["新发表舆情", String(k.published), `上一日同时段 ${k.publishedPrev} · 正面 ${k.positive} 条`, ""],
-          ["TRX 相对大盘", signed(m?.excess24h), `24h 超额；同期大盘 ${signed(m?.benchmark24h)}`, tone(m?.excess24h)],
+          ["TRX 相对大盘", signed(m?.excess24h), `24h 超额；大盘 ${signed(m?.benchmark24h)}`, tone(m?.excess24h)],
         ].map(([label, value, sub, cls]) => (
           <div key={label} className="border bg-card px-3.5 py-3 grid gap-0.5 min-w-0">
             <span className="text-xs text-muted-foreground">{label}</span>
@@ -167,8 +167,7 @@ function BriefView({ brief }: { brief: Brief }) {
           <div className="border bg-card px-3.5 py-4 grid grid-cols-2 gap-x-4 gap-y-5 content-evenly min-w-0">
             {m.coins.map(c => (
               <div key={c.symbol} className="grid min-w-0">
-                <div className="flex items-baseline gap-1.5"><b className="text-sm">{c.symbol}</b>
-                  <span className="text-[11px] text-muted-foreground flex-1 truncate">{c.name}</span>
+                <div className="flex items-baseline gap-1.5"><b className="text-sm flex-1">{c.symbol}</b>
                   <span className={`text-xs font-semibold tabular-nums ${tone(c.change24h)}`}>{signed(c.change24h)}</span></div>
                 <div className="text-[15px] font-semibold tabular-nums">{price(c.price)}</div>
                 <div className="mt-1"><Spark series={c.series as Series} up={(c.change24h ?? 0) >= 0} /></div>

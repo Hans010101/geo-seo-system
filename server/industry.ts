@@ -21,7 +21,8 @@ async function d1(): Promise<D1Like> {
 }
 
 const RETENTION_DAYS = 120;
-const BATCH = 40;
+// 20 per call: a Chinese answer for 40 items ran into the 9000-token cap and the cut-off batch was lost.
+const BATCH = 20;
 export const INDUSTRY_FETCH_KEY = "industry_last_fetch";
 const TRIAGE_STATUS_KEY = "industry_last_triage";
 const MODEL_KEY = "industry_model";
@@ -65,7 +66,7 @@ export async function setIndustryAlerts(enabled: boolean) {
 type Pending = { id: string; source: string; title: string; excerpt: string | null; publishedAt: number; attempts: number };
 type Primary = { id: string; grams: Fingerprint[] };
 
-async function callTriage(model: string, items: Pending[], knownEvents: string[]): Promise<{ triage: Triage[]; tokens: number }> {
+async function callTriage(model: string, items: Pending[], knownEvents: string[]): Promise<{ triage: Triage[]; tokens: number; error?: string }> {
   const input = items.map((it, i) => ({ i, source: INDUSTRY_SOURCES[it.source]?.label || it.source, title: it.title, excerpt: it.excerpt || "" }));
   const prompt = triagePrompt(input, knownEvents);
   const result = await invokeOpenRouter({
@@ -74,10 +75,14 @@ async function callTriage(model: string, items: Pending[], knownEvents: string[]
   }, "行业动态分拣");
   const content = result.choices?.[0]?.message?.content;
   const text = typeof content === "string" ? content : Array.isArray(content) ? content.map(c => ("text" in c ? c.text : "")).join("") : "";
-  return {
-    triage: parseTriage(text, new Set(input.map(x => x.i))),
-    tokens: (result.usage?.prompt_tokens ?? 0) + (result.usage?.completion_tokens ?? 0),
-  };
+  const tokens = (result.usage?.prompt_tokens ?? 0) + (result.usage?.completion_tokens ?? 0);
+  try {
+    return { triage: parseTriage(text, new Set(input.map(x => x.i))), tokens };
+  } catch (error) {
+    // Billed but unusable: report it with the tokens so the summary shows what was spent.
+    const finish = (result.choices?.[0] as { finish_reason?: string } | undefined)?.finish_reason ?? "?";
+    return { triage: [], tokens, error: `${(error as Error).message}（finish=${finish}，输出 ${result.usage?.completion_tokens ?? "?"} token）` };
+  }
 }
 
 /**
@@ -93,7 +98,7 @@ export async function previewIndustryRows(model: string, from: number, to: numbe
   for (let i = 0; i < rows.length; i += BATCH) chunks.push(rows.slice(i, i + BATCH));
   const out: IndustryItem[] = [];
   let next = 0;
-  await Promise.all(Array.from({ length: Math.min(4, chunks.length) }, async () => {
+  await Promise.all(Array.from({ length: Math.min(5, chunks.length) }, async () => {
     while (next < chunks.length) {
       const chunk = chunks[next++];
       let triage: Triage[] = [];
@@ -152,7 +157,7 @@ export async function triageIndustry(opts: { now?: number; maxBatches?: number }
     WHERE CAST(sysConfigs.configValue AS INTEGER) < ?`).bind(LOCK_KEY, String(now), Math.floor(now / 1000), now - LOCK_TTL_MS).run();
   if (!lock.meta?.changes) return { at: now, busy: true, pending: 0, dups: 0, kept: 0, skipped: 0, failed: 0, tokens: 0, alertsSent: 0, model: "" };
   try {
-    return await triageLocked(client, now, opts.maxBatches ?? 8);
+    return await triageLocked(client, now, opts.maxBatches ?? 12);
   } finally {
     await client.prepare("UPDATE sysConfigs SET configValue = '0' WHERE configKey = ?").bind(LOCK_KEY).run();
   }
@@ -200,6 +205,7 @@ async function triageLocked(client: D1Like, now: number, maxBatches: number) {
 
   // 2) LLM triage in batches.
   let kept = 0, skipped = 0, failed = 0, tokens = 0;
+  let lastError: string | undefined;
   const alerts: string[] = [];
   for (let b = 0; b < fresh.length; b += BATCH) {
     const chunk = fresh.slice(b, b + BATCH);
@@ -209,8 +215,13 @@ async function triageLocked(client: D1Like, now: number, maxBatches: number) {
         const res = await callTriage(settings.model, chunk, Array.from(eventOwner.keys()).slice(-200));
         triage = res.triage;
         tokens += res.tokens;
+        if (res.error) {
+          lastError = res.error;
+          console.log(JSON.stringify({ event: "industry.triage_failed", attempt, error: res.error }));
+        }
       } catch (error) {
-        console.log(JSON.stringify({ event: "industry.triage_failed", attempt, error: String((error as Error).message).slice(0, 200) }));
+        lastError = String((error as Error).message).slice(0, 200);
+        console.log(JSON.stringify({ event: "industry.triage_failed", attempt, error: lastError }));
       }
     }
     const byI = new Map(triage.map(t => [t.i, t]));
@@ -248,7 +259,7 @@ async function triageLocked(client: D1Like, now: number, maxBatches: number) {
 
   let alertsSent = 0;
   if (settings.alertsEnabled && alerts.length) alertsSent = await sendIndustryAlerts(client, alerts);
-  const summary = { at: now, busy: false, pending: pending.length, dups, kept, skipped, failed, tokens, alertsSent, model: settings.model };
+  const summary = { at: now, busy: false, pending: pending.length, dups, kept, skipped, failed, tokens, alertsSent, model: settings.model, ...(lastError ? { lastError } : {}) };
   await setSysConfig(TRIAGE_STATUS_KEY, JSON.stringify(summary));
   return summary;
 }
