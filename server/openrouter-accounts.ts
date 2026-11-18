@@ -183,10 +183,21 @@ export function orderAccounts(accounts: OpenRouterAccount[], blocks: Block[], mo
   return [...open, ...paused];
 }
 
-export async function accountsForModel(model: string, now = Date.now()): Promise<OpenRouterAccount[]> {
+export async function accountsForModel(model: string, now = Date.now(), opts: { preferBackup?: boolean } = {}): Promise<OpenRouterAccount[]> {
   const [accounts, blocks] = await Promise.all([listOpenRouterAccounts(), listBlocks(now).catch(() => [] as Block[])]);
-  return orderAccounts(accounts, blocks, model);
+  return orderAccounts(opts.preferBackup ? backupFirst(accounts) : accounts, blocks, model);
 }
+
+/** 副号 before 主号 (a module the user put on the 副号; the 主号 stays a last resort). */
+export function backupFirst(accounts: OpenRouterAccount[]): OpenRouterAccount[] {
+  return [...accounts.filter(a => a.role !== "primary"), ...accounts.filter(a => a.role === "primary")];
+}
+
+/**
+ * Modules that run on the 副号 first. 早晚报 / 行业周报 / 行业动态分拣 use Claude, which the 公用 主号 refuses
+ * (provider Terms of Service), so the user moved the whole module to the 副号 (2026-11-18).
+ */
+export const BACKUP_FIRST_PURPOSES = new Set(["舆情早晚报", "行业周报", "行业动态分拣"]);
 
 /**
  * Note a failed account and say whether the call should move on. Records the block and, when the call
@@ -212,7 +223,7 @@ export async function invokeOpenRouter(
   purpose: string,
 ): Promise<InvokeResult & { billing: Billing }> {
   const model = params.model || "";
-  const accounts = await accountsForModel(model);
+  const accounts = await accountsForModel(model, Date.now(), { preferBackup: BACKUP_FIRST_PURPOSES.has(purpose) });
   if (!accounts.length) throw new Error("未配置 OpenRouter API Key（全局 API 配置）");
   let fallbackReason: string | null = null;
   for (let i = 0; i < accounts.length; i++) {

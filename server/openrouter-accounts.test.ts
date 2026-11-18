@@ -205,3 +205,28 @@ describe("model probe", () => {
     expect(res.filter(r => r.ok)).toHaveLength(11);
   });
 });
+
+describe("modules on the 副号", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("早晚报 / 分拣 / 行业周报 try the 副号 first; other purposes keep the 主号 first", async () => {
+    const { db, client } = makeDb();
+    db.exec(`INSERT INTO globalApiKeys VALUES
+      (3, '个人', 'sk-3', 'https://openrouter.ai/api/v1', 1, 2),
+      (10, '公用', 'sk-10', 'https://openrouter.ai/api/v1', 1, 1)`);
+    holder.client = client;
+    await clearBlocks();
+    const auth: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init: any) => {
+      auth.push(init.headers.authorization);
+      return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), { status: 200 });
+    });
+    for (const purpose of ["舆情早晚报", "行业动态分拣", "行业周报"]) {
+      const res = await orAccounts.invokeOpenRouter({ model: "anthropic/claude-haiku-5.5", messages: [{ role: "user", content: "hi" }] }, purpose);
+      expect(res.billing).toMatchObject({ keyId: 3, role: "backup", fallbackReason: null });
+    }
+    await orAccounts.invokeOpenRouter({ model: "qwen/qwen3.7-plus", messages: [{ role: "user", content: "hi" }] }, "其他");
+    expect(auth).toEqual(["Bearer sk-3", "Bearer sk-3", "Bearer sk-3", "Bearer sk-10"]);
+    expect(orAccounts.backupFirst([acct(10, "primary"), acct(3)]).map(a => a.keyId)).toEqual([3, 10]);
+  });
+});

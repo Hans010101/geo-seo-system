@@ -339,7 +339,8 @@ export async function generateBrief(opts: {
     // tokens a long draft could be cut off mid-JSON, and both attempts failed.
     const result = await invokeOpenRouter({
       model: opts.model?.trim() || settings.model, maxTokens: 10_000, timeoutMs: 150_000,
-      responseFormat: { type: "json_object" },
+      // JSON mode for non-Claude models only; Claude has always returned clean JSON here without it.
+      ...(!(opts.model?.trim() || settings.model).startsWith("anthropic/") ? { responseFormat: { type: "json_object" as const } } : {}),
       messages: [{ role: "system", content: prompt.system }, { role: "user", content: prompt.user }],
     }, "舆情早晚报");
     const content = result.choices?.[0]?.message?.content;
