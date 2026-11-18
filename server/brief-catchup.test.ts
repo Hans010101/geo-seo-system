@@ -7,3 +7,16 @@ describe("brief catch-up rounds", () => {
     expect(catchUpKind(11, 40)).toBeNull();
   });
 });
+
+import { parseDraft } from "./brief-calc";
+
+describe("brief draft parsing", () => {
+  it("accepts JSON with trailing commas and full-width quoted keys", () => {
+    const text = '```json\n{"level":"平稳","change":"降","lead":"无事",“points”:["a",],"events":[],"others":{},"outlook":"x",}\n```';
+    const d = parseDraft(text, new Set());
+    expect(d).toMatchObject({ level: "平稳", change: "降", lead: "无事", points: ["a"], outlook: "x" });
+  });
+  it("still rejects text without JSON", () => {
+    expect(() => parseDraft("抱歉，无法生成", new Set())).toThrow("模型未返回有效 JSON");
+  });
+});

@@ -335,14 +335,21 @@ export async function generateBrief(opts: {
   let usage: BriefData["usage"];
   let lastError = "";
   for (let attempt = 0; attempt < 2 && !draft; attempt++) {
+    // JSON mode + room for reasoning models (通义 / Grok spend part of the budget thinking): with 6000
+    // tokens a long draft could be cut off mid-JSON, and both attempts failed.
     const result = await invokeOpenRouter({
-      model: opts.model?.trim() || settings.model, maxTokens: 6000, timeoutMs: 150_000,
+      model: opts.model?.trim() || settings.model, maxTokens: 10_000, timeoutMs: 150_000,
+      responseFormat: { type: "json_object" },
       messages: [{ role: "system", content: prompt.system }, { role: "user", content: prompt.user }],
     }, "舆情早晚报");
     const content = result.choices?.[0]?.message?.content;
     const text = typeof content === "string" ? content : Array.isArray(content) ? content.map(c => ("text" in c ? c.text : "")).join("") : "";
     usage = { prompt: result.usage?.prompt_tokens ?? 0, completion: result.usage?.completion_tokens ?? 0 };
-    try { draft = parseDraft(text, new Set(byId.keys())); } catch (error) { lastError = String((error as Error).message); }
+    try { draft = parseDraft(text, new Set(byId.keys())); } catch (error) {
+      const finish = (result.choices?.[0] as { finish_reason?: string } | undefined)?.finish_reason ?? "?";
+      lastError = `${(error as Error).message}（finish=${finish}，输出 ${text.length} 字，${usage.completion} token）`;
+      console.log(JSON.stringify({ event: "brief.parse_failed", attempt, model: opts.model || settings.model, finish, length: text.length, tail: text.slice(-200) }));
+    }
   }
   if (!draft) throw new Error(`早晚报生成失败：${lastError}`);
 

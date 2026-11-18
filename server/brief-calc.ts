@@ -137,7 +137,11 @@ const str = (v: unknown, n: number) =>
 export function parseDraft(text: string, validIds: Set<number>): BriefDraft {
   const json = text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1);
   let raw: Record<string, unknown>;
-  try { raw = JSON.parse(json); } catch { throw new Error("模型未返回有效 JSON"); }
+  try { raw = JSON.parse(json); } catch {
+    // Common slips from some models: trailing commas, full-width quotes used as JSON delimiters.
+    const repaired = json.replace(/,\s*([}\]])/g, "$1").replace(/([{,\[]\s*)“([^”"]*)”(\s*:)/g, '$1"$2"$3');
+    try { raw = JSON.parse(repaired); } catch { throw new Error("模型未返回有效 JSON"); }
+  }
   const ids = (v: unknown) => (Array.isArray(v) ? v : []).map(Number).filter(n => validIds.has(n));
   const events = (Array.isArray(raw.events) ? raw.events : []).slice(0, 6).map((e: any) => ({
     key: str(e?.key, 48).toLowerCase().replace(/[^a-z0-9-]/g, "-") || "event",
