@@ -10,6 +10,17 @@ export const OUTAGE_HOURS = 48;
 export const ACTIVE_WITHIN_HOURS = 24;
 /** While a source stays down, remind again after this long. */
 export const REMIND_EVERY_HOURS = 7 * 24;
+/**
+ * A Mac-collector source whose latest heartbeat says it must log in again is down at once — no
+ * 48-hour wait (百分点 was off for 18 hours on 2026-11-17 before anyone noticed).
+ */
+export const LOGIN_ERROR = /重新登录|登录已失效|登录失效|会话失效|需要登录|未登录|login/i;
+export const LOGIN_FRESH_HOURS = 6;
+
+export function needsLogin(entry: SourceHealthEntry, now: number): boolean {
+  return Boolean(entry.external && entry.lastError && LOGIN_ERROR.test(entry.lastError)
+    && now - entry.lastRunAt <= LOGIN_FRESH_HOURS * HOUR);
+}
 
 export const SOURCE_LABELS: Record<string, string> = {
   serper: "Serper 搜索新闻", rss: "RSS 媒体", wechat: "微信公众号",
@@ -49,6 +60,8 @@ export type OutageItem = {
   name: string;
   label: string;
   silentHours: number;
+  /** Down because it must log in again (not because it has been silent for 48 hours). */
+  login?: boolean;
   lastDiscoveredAt?: number;
   lastError?: string;
 };
@@ -122,6 +135,7 @@ function silentHours(entry: SourceHealthEntry, now: number): number {
 }
 
 export function isDown(entry: SourceHealthEntry, now: number): boolean {
+  if (needsLogin(entry, now)) return true;
   return (entry.external || now - entry.lastRunAt <= ACTIVE_WITHIN_HOURS * HOUR)
     && silentHours(entry, now) >= OUTAGE_HOURS;
 }
@@ -131,6 +145,7 @@ function item(name: string, entry: SourceHealthEntry, now: number): OutageItem {
     name,
     label: SOURCE_LABELS[name] || name,
     silentHours: Math.floor(silentHours(entry, now)),
+    ...(needsLogin(entry, now) ? { login: true } : {}),
     ...(entry.lastDiscoveredAt ? { lastDiscoveredAt: entry.lastDiscoveredAt } : {}),
     ...(entry.lastError ? { lastError: entry.lastError } : {}),
   };
@@ -190,15 +205,26 @@ export function buildOutageMessage(
   recovered: OutageItem[],
 ): { title: string; content: string } {
   const lines: string[] = [];
-  if (down.length > 0) {
+  const login = down.filter(source => source.login);
+  const silent = down.filter(source => !source.login);
+  if (login.length > 0) {
+    lines.push("以下本机采集信源需要重新登录，期间采不到内容：");
+    for (const source of login) {
+      lines.push(`· ${source.label}：${(source.lastError || "登录已失效").slice(0, 140)}`);
+    }
+    const commands = login.map(source => source.name.replace(/^local_/, "")).filter(n => /^(weibo|xiaohongshu|percent|genoptima)$/.test(n));
+    lines.push(`在 Mac 上运行 collector.py login-browser${commands.length ? ` --sites ${commands.join(",")}` : ""}，登录后按 ⌘Q 退出那个 Chrome。`);
+  }
+  if (silent.length > 0) {
+    if (lines.length > 0) lines.push("");
     lines.push(`以下信源仍在按计划运行，但已连续 ${OUTAGE_HOURS} 小时以上没有采集到任何内容：`);
-    for (const source of down) {
+    for (const source of silent) {
       const last = source.lastDiscoveredAt ? `最近一次 ${beijing(source.lastDiscoveredAt)}` : "开始监测以来从未采到";
       lines.push(`· ${source.label}：已 ${duration(source.silentHours)}无内容（${last}）`);
       if (source.lastError) lines.push(`  最近错误：${source.lastError.slice(0, 140)}`);
     }
     lines.push("常见原因：登录失效、接口额度用尽、浏览器容量不足。请到运维中心查看。");
-    if (down.some(source => source.name.startsWith("local_"))) {
+    if (silent.some(source => source.name.startsWith("local_"))) {
       lines.push("本机采集：请确认 Mac 已开机未睡眠；若提示登录，运行 collector.py login weibo（或 xiaohongshu、percent、genoptima）重新登录。");
     }
   }
@@ -206,7 +232,9 @@ export function buildOutageMessage(
     if (lines.length > 0) lines.push("");
     lines.push(`已恢复采集：${recovered.map(source => source.label).join("、")}`);
   }
-  const title = down.length > 0
+  const title = login.length > 0
+    ? `需要重新登录 · ${login.map(source => source.label).join("、")}`
+    : down.length > 0
     ? `信源断流提醒 · ${down.map(source => source.label).join("、")}`
     : `信源已恢复 · ${recovered.map(source => source.label).join("、")}`;
   return { title, content: lines.join("\n") };

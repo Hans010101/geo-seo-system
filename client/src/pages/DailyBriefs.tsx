@@ -39,7 +39,7 @@ function Heading({ children }: { children: React.ReactNode }) {
 /** TRX 24h line with high / low / latest marks. */
 function PriceChart({ series }: { series: Series }) {
   if (series.length < 2) return <p className="text-sm text-muted-foreground">暂无价格数据</p>;
-  const w = 560, h = 220, l = 50, r = 12, t = 16, b = 24;
+  const w = 560, h = 244, l = 50, r = 12, t = 16, b = 24;
   const vals = series.map(p => p[1]);
   let lo = Math.min(...vals), hi = Math.max(...vals);
   const pad = (hi - lo || hi * 0.01) * 0.15;
@@ -90,7 +90,8 @@ function Mini({ title, days, series, kind, unit = "", note }: {
   title: string; days: string[]; series: { name: string; values: number[]; cls: string; text: string }[];
   kind: "bar" | "line"; unit?: string; note?: string;
 }) {
-  const w = 260, h = 120, l = 32, r = 8, t = 12, b = 20;
+  // Cards without a note line get a taller chart so both cards of a row end level.
+  const w = 260, h = note ? 120 : 134, l = 32, r = 8, t = 12, b = 20;
   const max = Math.max(1, ...series.flatMap(s => s.values)) * 1.15;
   const X = (i: number) => l + ((w - l - r) * (i + 0.5)) / days.length;
   const Y = (v: number) => t + (h - t - b) * (1 - v / max);
@@ -292,7 +293,7 @@ export default function DailyBriefs() {
   const [, navigate] = useLocation();
   const { data: list, isLoading: listLoading } = trpc.briefs.list.useQuery(undefined, { staleTime: 60_000 });
   const id = params?.id || list?.[0]?.id;
-  const { data: brief, isLoading } = trpc.briefs.get.useQuery({ id: id || "" }, { enabled: !!id });
+  const { data: brief, isError } = trpc.briefs.get.useQuery({ id: id || "" }, { enabled: !!id });
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-end justify-between gap-3">
@@ -312,7 +313,8 @@ export default function DailyBriefs() {
         ) : null}
       </div>
       <AdminBar />
-      {brief ? <BriefView brief={brief} /> : listLoading || (isLoading && id) ? <p className="text-sm text-muted-foreground">加载中…</p>
+      {/* Between the list arriving and the brief query starting, isLoading is briefly false: key off the id instead, so "还没有早晚报" never flashes. */}
+      {brief ? <BriefView brief={brief} /> : listLoading || (id && !isError) ? <p className="text-sm text-muted-foreground">加载中…</p>
         : <div className="border bg-card p-6 text-sm text-muted-foreground">还没有早晚报。系统会在每天 09:30、17:30 自动生成并发送；管理员也可以点上方按钮立即生成。</div>}
       {brief ? <Badge variant="outline" className="text-muted-foreground font-normal">{brief.model} · {brief.events.length} 个事件</Badge> : null}
     </div>

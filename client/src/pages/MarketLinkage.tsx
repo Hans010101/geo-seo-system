@@ -113,7 +113,7 @@ function Overview() {
         </div>
       ))}
       <p className="text-xs text-muted-foreground">
-        数据来自 CoinGecko，云端每轮定时任务（北京时间 9–21 点每 2 小时及 3 点）同步小时级价格；
+        小时级价格由本机采集器从币安和 CoinGecko 获取（云端出口会被这两家拒绝），随采集时刻表（北京时间 9–21 点每 2 小时及 3 点）更新；
         最近更新 {data.updatedAt ? bjTime(data.updatedAt) : "—"}。生态指数 = {data.tronIndex.join("/")} 等权（USDD 为稳定币不计入），大盘 = {data.benchmark.join("/")} 等权，超额收益 = TRX − 大盘。小图为近 7 天走势。
       </p>
     </div>

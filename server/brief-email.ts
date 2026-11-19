@@ -67,7 +67,7 @@ function trxChart(series: [number, number][]) {
         yAxes: [{ ticks: { ...AXIS, maxTicksLimit: 5 }, gridLines: GRID }],
       },
     },
-  }, 560, 230)
+  }, 560, 244)
     // QuickChart evaluates function strings; inject the label formatter after JSON encoding.
     .replace(encodeURIComponent('"__FMT__"'), encodeURIComponent(
       `function(v,ctx){var n=${JSON.stringify(names)};return v===null?'':(n[ctx.dataIndex]+' '+v.toFixed(4));}`));
@@ -82,7 +82,7 @@ function spark(series: [number, number][], up: boolean) {
   }, 220, 64);
 }
 
-function trendChart(kind: "bar" | "line", days: string[], sets: { name: string; values: number[]; color: string }[], unit = "") {
+function trendChart(kind: "bar" | "line", days: string[], sets: { name: string; values: number[]; color: string }[], unit = "", h = 140) {
   return chartUrl({
     type: kind,
     data: {
@@ -94,17 +94,27 @@ function trendChart(kind: "bar" | "line", days: string[], sets: { name: string; 
     options: {
       legend: { display: sets.length > 1, position: "top", labels: { boxWidth: 10, fontSize: 10, fontColor: MUTED } },
       plugins: { datalabels: kind === "bar" ? { anchor: "end", align: "top", color: INK, font: { size: 9 } } : { display: false } },
-      layout: { padding: { top: 14 } },
+      // Room for the value label above the tallest bar (it was clipped at 14).
+      layout: { padding: { top: kind === "bar" ? 24 : 14 } },
       scales: {
         xAxes: [{ ticks: AXIS, gridLines: { display: false } }],
         yAxes: [{ ticks: { ...AXIS, beginAtZero: true, maxTicksLimit: 4, callback: unit ? `__UNIT__` : undefined }, gridLines: GRID }],
       },
     },
-  }, 260, 140).replace(encodeURIComponent('"__UNIT__"'), encodeURIComponent(`function(v){return v+'${unit}';}`));
+  }, 260, h).replace(encodeURIComponent('"__UNIT__"'), encodeURIComponent(`function(v){return v+'${unit}';}`));
 }
 
 const heading = (text: string) =>
   `<tr><td style="padding:22px 0 10px;font-size:17px;font-weight:700;color:${INK}"><span style="display:inline-block;width:4px;height:17px;background:${RED};vertical-align:-3px;margin-right:8px"></span>${esc(text)}</td></tr>`;
+/**
+ * Side-by-side cards are bordered table cells in one row (cellspacing gives the gap), so both always
+ * share the row's height and their bottom edges line up in every mail client.
+ */
+const cellCard = (inner: string, width: string) =>
+  `<td width="${width}" valign="top" style="border:1px solid ${LINE};background:#ffffff">${inner}</td>`;
+const pairRow = (cells: string) =>
+  `<table role="presentation" width="100%" cellpadding="0" cellspacing="8" style="margin:-8px 0;border-collapse:separate"><tr>${cells}</tr></table>`;
+
 const card = (inner: string, extra = "") =>
   `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid ${LINE};background:#ffffff;border-collapse:collapse;${extra}">${inner}</table>`;
 
@@ -165,18 +175,19 @@ export function buildBriefEmail(b: BriefData, link: string): { subject: string; 
   <tr><td>${card(`${macroStrip ? `<tr><td style="padding:9px 14px;font-size:13px;background:#f8f6f1;border-bottom:1px solid ${LINE}">${macroStrip}</td></tr>` : ""}${industryRows}`)}</td></tr>` : "";
 
   const t = b.trends;
-  const trendCell = (title: string, url: string, note = "") => `<td width="50%" valign="top" style="padding:0 4px 8px">${card(`<tr><td style="padding:10px 12px">
+  const trendCell = (title: string, url: string, note = "") => cellCard(`<div style="padding:10px 12px">
       <div style="font-size:13px;font-weight:600;margin-bottom:4px">${esc(title)}</div>
       <img src="${url}" width="300" alt="${esc(title)}" style="display:block;width:100%;max-width:300px;height:auto;border:0">
-      ${note ? `<div style="font-size:12px;color:${MUTED};margin-top:4px">${esc(note)}</div>` : ""}</td></tr>`)}</td>`;
+      ${note ? `<div style="font-size:12px;color:${MUTED};margin-top:4px">${esc(note)}</div>` : ""}</div>`, "50%");
+  // A card without a note line gets a taller chart, so both charts of a row end at about the same height.
+  const NOTELESS = 156;
   const trends = t.days.length ? `${heading("舆情趋势（近 7 日）")}
-  <tr><td><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 -4px"><tr>
+  <tr><td>${pairRow(`
     ${trendCell("每日新发表条数", trendChart("bar", t.days, [{ name: "新发表", values: t.published, color: RED }]), "最后一天截至本期（浅色）")}
-    ${trendCell("负面内容占比", trendChart("line", t.days, [{ name: "负面占比", values: t.negativeShare, color: RED }], "%"))}
-  </tr><tr>
-    ${trendCell("中威胁条数", trendChart("bar", t.days, [{ name: "中威胁", values: t.medium, color: RED }]))}
-    ${trendCell("AI 回答负面率", trendChart("line", t.days, [{ name: "豆包", values: t.geoDoubao, color: RED }, { name: "DeepSeek", values: t.geoDeepseek, color: BLUE }], "%"), "智推时代 · 每日约 195 条回答 / 平台")}
-  </tr></table></td></tr>` : "";
+    ${trendCell("负面内容占比", trendChart("line", t.days, [{ name: "负面占比", values: t.negativeShare, color: RED }], "%", NOTELESS))}`)}</td></tr>
+  <tr><td style="padding-top:8px">${pairRow(`
+    ${trendCell("中威胁条数", trendChart("bar", t.days, [{ name: "中威胁", values: t.medium, color: RED }], "", NOTELESS))}
+    ${trendCell("AI 回答负面率", trendChart("line", t.days, [{ name: "豆包", values: t.geoDoubao, color: RED }, { name: "DeepSeek", values: t.geoDeepseek, color: BLUE }], "%"), "智推时代 · 每日约 195 条回答 / 平台")}`)}</td></tr>` : "";
 
   const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${esc(subject)}</title></head>
 <body style="margin:0;background:${BG};color:${INK};font-family:-apple-system,'PingFang SC','Microsoft YaHei','Noto Sans SC',sans-serif;line-height:1.7">
@@ -197,12 +208,11 @@ export function buildBriefEmail(b: BriefData, link: string): { subject: string; 
     ${kpi("TRX 相对大盘", signed(m?.excess24h), `24h 超额；大盘 ${signed(m?.benchmark24h)}`, tone(m?.excess24h))}
   </tr></table></td></tr>
   ${m ? `${heading("市场走势")}
-  <tr><td><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:0 -4px"><tr>
-    <td width="60%" valign="top" style="padding:0 4px">${card(`<tr><td style="padding:12px 14px">
+  <tr><td>${pairRow(`
+    ${cellCard(`<div style="padding:12px 14px">
       <div style="font-size:13.5px;font-weight:600;margin-bottom:6px">TRX 近 24 小时（小时价，USD）</div>
-      ${m.trx.series.length > 1 ? `<img src="${trxChart(m.trx.series as [number, number][])}" width="440" alt="TRX 近 24 小时走势" style="display:block;width:100%;max-width:440px;height:auto;border:0">` : ""}</td></tr>`)}</td>
-    <td width="40%" valign="top" style="padding:0 4px">${card(`<tr><td style="padding:6px 4px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0">${coinRows}</table></td></tr>`)}</td>
-  </tr></table></td></tr>` : ""}
+      ${m.trx.series.length > 1 ? `<img src="${trxChart(m.trx.series as [number, number][])}" width="440" alt="TRX 近 24 小时走势" style="display:block;width:100%;max-width:440px;height:auto;border:0">` : ""}</div>`, "60%")}
+    ${cellCard(`<div style="padding:6px 4px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0">${coinRows}</table></div>`, "40%")}`)}</td></tr>` : ""}
   ${industry}
   ${heading("事件追踪")}
   ${events || `<tr><td style="font-size:14px;color:${MUTED}">本时段没有需要追踪的事件。</td></tr>`}

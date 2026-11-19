@@ -116,3 +116,30 @@ describe("source health", () => {
     expect(state.sources.local_weibo.alertedAt).toBe(T0 + 49 * H);
   });
 });
+
+describe("login needed on the Mac collector", () => {
+  const base = parseSourceHealthState(null);
+  it("alerts at once when the latest heartbeat asks to log in again, then reports recovery", () => {
+    const fresh = mergeLocalHealth(base, {
+      percent: { lastRunAt: T0, lastDiscoveredAt: T0 - 2 * H, lastError: "百分点舆情页没有发出查询，可能需要重新登录" },
+      weibo: { lastRunAt: T0, lastDiscoveredAt: T0 },
+    }, T0);
+    const first = evaluateOutages(fresh, T0);
+    expect(first.due.map(i => i.name)).toEqual(["local_percent"]);
+    expect(first.due[0]!.login).toBe(true);
+    const msg = buildOutageMessage(first.down, []);
+    expect(msg.title).toBe("需要重新登录 · 百分点舆情（本机采集）");
+    expect(msg.content).toContain("login-browser --sites percent");
+    expect(msg.content).not.toContain("48 小时");
+
+    const notified = markNotified(fresh, ["local_percent"], [], T0);
+    expect(evaluateOutages(notified, T0 + H).due).toEqual([]); // no repeat within the reminder window
+    const back = mergeLocalHealth(notified, { percent: { lastRunAt: T0 + 2 * H, lastDiscoveredAt: T0 + 2 * H } }, T0 + 2 * H);
+    expect(evaluateOutages(back, T0 + 2 * H).recovered.map(i => i.name)).toEqual(["local_percent"]);
+  });
+
+  it("ignores a login error from a heartbeat older than 6 hours (Mac asleep is the 48h rule's job)", () => {
+    const stale = mergeLocalHealth(base, { percent: { lastRunAt: T0 - 7 * H, lastDiscoveredAt: T0 - 8 * H, lastError: "需要重新登录" } }, T0);
+    expect(evaluateOutages(stale, T0).down).toEqual([]);
+  });
+});
