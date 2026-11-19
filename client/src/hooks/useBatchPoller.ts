@@ -42,7 +42,8 @@ export function useBatchPoller() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           credentials: "include",
-          body: JSON.stringify({ batchId: id, concurrency: 5 }),
+          // 8 slots: a batch spreads over 11 providers, so this stays far below any one provider's limit.
+          body: JSON.stringify({ batchId: id, concurrency: 8 }),
         });
         const json = parseRoundResponse(await res.text());
         const result = json?.result;

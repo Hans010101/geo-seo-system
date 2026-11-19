@@ -10,8 +10,9 @@
 import { d1 } from "./external";
 
 export const MAX_COLLECTION_ATTEMPTS = 2;
-// A claim older than this is considered abandoned. Must exceed the round budget plus post-processing.
-export const CLAIM_LEASE_MS = 7 * 60_000;
+// A claim older than this is considered abandoned. Must exceed the longest streamed round: last claim at
+// ROUND_BUDGET_MS - NEW_ROW_MIN_MS, plus a full PER_CALL_TIMEOUT_MS call, plus post-processing (~6.5 min).
+export const CLAIM_LEASE_MS = 8 * 60_000;
 // Model calls in one executeNextBatch round must finish by this budget (round start + budget).
 export const ROUND_BUDGET_MS = 240_000;
 export const PER_CALL_TIMEOUT_MS = 150_000;
@@ -92,9 +93,11 @@ export class RoundDeadlineError extends Error {
   }
 }
 
-// A worker slot only claims a new row while at least this much of the round is left, so the first
-// attempt of every row it starts gets a reasonable time budget.
-export const NEW_ROW_MIN_MS = 100_000;
+// A worker slot only claims a new row while at least this much of the round is left. Streamed rounds
+// let a started call run its full PER_CALL_TIMEOUT_MS past the deadline (no 524 to beat), so this only
+// bounds how long a round can overrun; it was 100s, which left slots idle for the last ~2 minutes of
+// every round.
+export const NEW_ROW_MIN_MS = 60_000;
 
 // Rounds requested over plain (non-streamed) tRPC must end, post-processing included, before the ~120s 524.
 export const SHORT_ROUND_BUDGET_MS = 80_000;

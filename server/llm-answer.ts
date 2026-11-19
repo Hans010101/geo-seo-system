@@ -2,16 +2,28 @@
 // the whole output budget on hidden reasoning and return an empty message with finish_reason
 // "length"; storing that as a successful answer silently corrupts every GEO metric downstream.
 export function emptyAnswerError(content: string, finishReason: string | null | undefined): string | null {
-  if (content.trim().length > 0) return null;
-  if (finishReason === "length") {
-    return "模型未返回正文：输出上限被推理过程耗尽（finish_reason=length）";
+  if (reasoningExhausted(finishReason, content)) {
+    return content.trim().length > 0
+      ? `模型只返回了 ${content.trim().length} 字就被截断：输出上限几乎被推理过程耗尽（finish_reason=length）`
+      : "模型未返回正文：输出上限被推理过程耗尽（finish_reason=length）";
   }
+  if (content.trim().length > 0) return null;
   return `模型未返回正文（finish_reason=${finishReason || "unknown"}）`;
 }
 
-// After a reasoning-exhausted empty answer, retry with low reasoning effort so the visible answer fits.
+/**
+ * Cut at the output limit with (almost) no visible text: the budget went to hidden reasoning. 2026-11-19
+ * Kimi K2.6 returned 42 characters for 4,096 tokens and DeepSeek a one-line fragment; both used to be
+ * stored as successful answers. A real answer cut at the limit is thousands of characters long.
+ */
+export const MIN_CUT_ANSWER_CHARS = 300;
+function reasoningExhausted(finishReason: string | null | undefined, content: string): boolean {
+  return finishReason === "length" && content.trim().length < MIN_CUT_ANSWER_CHARS;
+}
+
+// After a reasoning-exhausted answer, retry with low reasoning effort so the visible answer fits.
 export function shouldLimitReasoning(finishReason: string | null | undefined, content: string): boolean {
-  return finishReason === "length" && content.trim().length === 0;
+  return reasoningExhausted(finishReason, content);
 }
 
 // Platforms whose OpenRouter model reasons by default and, at default effort, tends to spend the output

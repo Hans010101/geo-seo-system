@@ -626,14 +626,13 @@ async function executeCollection(
       billingFallback: telemetry.billing?.fallbackReason ?? null,
     });
 
-    // Citation extraction (enhanced)
+    // Citation extraction and AI analysis are independent Workers AI calls (~10s each): run them side
+    // by side so a row's post-processing no longer takes as long as the model answer itself.
     if (!isCancelled(collectionId)) {
-      await extractCitations(collectionId, responseText, traceId);
-    }
-
-    // AI analysis
-    if (!isCancelled(collectionId)) {
-      await analyzeCollection(collectionId, question.text, responseText, traceId);
+      await Promise.all([
+        extractCitations(collectionId, responseText, traceId),
+        analyzeCollection(collectionId, question.text, responseText, traceId),
+      ]);
     }
 
     // Alert checking
@@ -1288,6 +1287,11 @@ const collectionsRouter = router({
       const budget = input.streamed ? ROUND_BUDGET_MS : SHORT_ROUND_BUDGET_MS;
       const newRowMin = input.streamed ? NEW_ROW_MIN_MS : SHORT_NEW_ROW_MIN_MS;
       const deadline = roundStart + budget;
+      // Streamed rounds have no 524 to beat, so the round deadline only stops new claims: a model call
+      // started before it keeps its full PER_CALL_TIMEOUT_MS. Cutting a call at the round deadline
+      // threw away an answer OpenRouter had already billed (slow models — Grok, 通义, Kimi — were
+      // re-run in the next round and paid twice).
+      const callDeadline = input.streamed ? deadline + Math.max(0, PER_CALL_TIMEOUT_MS - newRowMin) : deadline;
       const expired = await claims.expireExhaustedRows(client, input.batchId, roundStart);
 
       let completed = 0;
@@ -1311,7 +1315,7 @@ const collectionsRouter = router({
             row.platform,
             "openrouter",
             undefined,
-            deadline,
+            callDeadline,
           );
           if (r.success) completed++;
           else if (r.deferred) { deferred++; return; }
