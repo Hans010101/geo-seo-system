@@ -189,7 +189,7 @@ export function buildBriefEmail(b: BriefData, link: string): { subject: string; 
     ${trendCell("中威胁条数", trendChart("bar", t.days, [{ name: "中威胁", values: t.medium, color: RED }], "", NOTELESS))}
     ${trendCell("AI 回答负面率", trendChart("line", t.days, [{ name: "豆包", values: t.geoDoubao, color: RED }, { name: "DeepSeek", values: t.geoDeepseek, color: BLUE }], "%"), "智推时代 · 每日约 195 条回答 / 平台")}`)}</td></tr>` : "";
 
-  const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${esc(subject)}</title></head>
+  const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${esc(subject)}</title></head>
 <body style="margin:0;background:${BG};color:${INK};font-family:-apple-system,'PingFang SC','Microsoft YaHei','Noto Sans SC',sans-serif;line-height:1.7">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${BG}"><tr><td align="center" style="padding:24px 12px">
 <table role="presentation" width="760" cellpadding="0" cellspacing="0" style="max-width:760px;width:100%">
