@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { briefWindow, buildPrompt, parseDraft, pushText, toSource, type BriefItem } from "./brief-calc";
+import { briefWindow, buildPrompt, parseDraft, plain, pushText, toSource, type BriefItem } from "./brief-calc";
 
 const H = 3_600_000;
 const at = (d: number, h: number, m = 0) => Date.UTC(2026, 10, d, h - 8, m); // Beijing time
@@ -65,5 +65,29 @@ describe("daily brief", () => {
       "▼景甜纠纷 ▲资金链｜TRX $0.3172（24h -0.99%，相对大盘 +3.25%）",
       "📄 https://trongeo.asia/briefs/2026-11-09-pm",
     ]);
+  });
+});
+
+describe("plain (no 'no action needed' boilerplate)", () => {
+  it("drops the boilerplate clause and keeps the rest", () => {
+    expect(plain("“京东不如波场”争议仍占负面七成但在降温，孙宇晨已道歉，无需负责人决定或处理。"))
+      .toBe("“京东不如波场”争议仍占负面七成但在降温，孙宇晨已道歉。");
+    expect(plain("孙宇晨已缓和表态。暂无需您决策，请先安排人重新登录百分点。")).toBe("孙宇晨已缓和表态。请先安排人重新登录百分点。");
+    expect(plain("当前无需负责人介入，继续观察即可。")).toBe("");
+  });
+
+  it("drops a conditional sentence whole", () => {
+    expect(plain("预计继续降温。若无新指控，不需要负责人介入。关注二次转载。")).toBe("预计继续降温。关注二次转载。");
+  });
+
+  it("keeps real content and real asks", () => {
+    expect(plain("多为二手转述，暂不涉及波场业务。")).toBe("多为二手转述，暂不涉及波场业务。");
+    expect(plain("建议负责人决定是否回应。")).toBe("建议负责人决定是否回应。");
+  });
+
+  it("is applied to the parsed draft", () => {
+    const draft = parseDraft(JSON.stringify({ level: "关注", change: "降", lead: "争议在降温，无需负责人处理。", points: [], events: [], others: {}, outlook: "预计回落。目前无需负责人介入。" }), new Set());
+    expect(draft.lead).toBe("争议在降温。");
+    expect(draft.outlook).toBe("预计回落。");
   });
 });

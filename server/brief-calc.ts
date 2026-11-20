@@ -67,7 +67,8 @@ export function buildPrompt(input: {
   const system = `你是 TRON（波场）舆情负责人的编辑。读者是非技术的负责人，要在 1 分钟内判断“有没有事、要不要我管”。
 只输出一个 JSON 对象，不要任何其他文字。所有文字用简体中文，平实、具体，不用内部术语（UGC、落盘、SERP 等）。
 口径红线：不把指控写成事实；不写脱锚/资不抵债/跑路已成立；链上路径经过波场 ≠ 协议被攻破 ≠ 孙宇晨涉案。
-只能依据给你的条目和数字，不得编造事实、数字或来源。条目编号（#数字）只用于 ids / sourceIds，正文里不要写编号。`;
+只能依据给你的条目和数字，不得编造事实、数字或来源。条目编号（#数字）只用于 ids / sourceIds，正文里不要写编号。
+不写“没事”的套话：正常情况下不要写“无需负责人决定/处理/介入”“暂不需要回应/跟进”“继续观察即可”之类的话（任何字段都不要）。只有【需要负责人处理的事项】不为空、或确实需要负责人拍板/介入时，才明确写出要做什么。`;
   const items = input.items.map(i =>
     `#${i.id} | ${bjHHMM(i.publishedAt)} | ${platformCn(i.sourcePlatform)} | ${i.threatLevel || "-"} | ${clip(i.title, 56)} | ${clip(i.summary, 40)}`).join("\n");
   const positives = (input.positives || []).map(i => `- ${platformCn(i.sourcePlatform)}：${clip(i.title, 56)}`).join("\n");
@@ -95,7 +96,7 @@ ${positives || "（无）"}
 {
   "level": "平稳|关注|警戒|危机",          // 总体态势：有高威胁或官方/执法一手信息才用 警戒/危机
   "change": "升|降|持平",                  // 较上期
-  "lead": "一句话结论，≤50 字，必须说明是否需要负责人决定或处理；有【需要负责人处理的事项】时要点名",
+  "lead": "一句话结论，≤50 字，讲清当前最重要的态势；有【需要负责人处理的事项】或确需负责人介入时要点名要做什么，否则不提",
   "points": ["≤3 条，每条以“事件名：”开头，≤60 字"],
   "events": [                              // 2–5 个，按重要性排序；同一件事只出现一次
     {
@@ -133,6 +134,28 @@ const TRENDS = new Set(["up", "down", "flat", "new", "closed"]);
 const str = (v: unknown, n: number) =>
   (typeof v === "string" ? v.replace(/[（(]?\s*#\d+(?:\s*[、,，/]\s*#\d+)*\s*[）)]?/g, "").replace(/\s{2,}/g, " ").trim().slice(0, n) : "");
 
+/**
+ * "No action needed" boilerplate ("无需负责人介入", "暂不需要回应", "继续观察即可"). The reader only wants to
+ * hear about intervention when it is needed (2026-11-20), so such clauses are dropped even if the model
+ * still writes them. A sentence that makes it conditional ("若无…，无需介入") is dropped whole.
+ */
+const NO_ACTION = /(?:无需|无须|不需要|不必|暂不需|暂无需|暂不|不用)(?:由)?(?:负责人|您|你|我们)?(?:单独|额外|立即|马上|特别|专门)?(?:决定|决策|拍板|处理|介入|回应|跟进|干预|操作|行动)|(?:继续|保持)?观察即可|照常即可|维持现状即可/;
+const CONDITIONAL = /若|如果|如无|如重新|除非|否则|只要/;
+export function plain(text: string): string {
+  if (!text || !NO_ACTION.test(text)) return text;
+  return (text.match(/[^。！？；!?;]+[。！？；!?;]?/g) || [])
+    .map(sentence => {
+      if (!NO_ACTION.test(sentence)) return sentence;
+      if (CONDITIONAL.test(sentence)) return "";
+      const end = /[。！？；!?;]$/.test(sentence) ? sentence.slice(-1) : "";
+      const body = end ? sentence.slice(0, -1) : sentence;
+      const kept = body.split(/[，,]/).map(c => c.trim()).filter(c => c && !NO_ACTION.test(c));
+      return kept.length ? `${kept.join("，")}${end || "。"}` : "";
+    })
+    .join("")
+    .trim();
+}
+
 /** Parse and sanitize the model's JSON; ids not in this window are dropped. */
 export function parseDraft(text: string, validIds: Set<number>): BriefDraft {
   const json = text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1);
@@ -147,19 +170,19 @@ export function parseDraft(text: string, validIds: Set<number>): BriefDraft {
     key: str(e?.key, 48).toLowerCase().replace(/[^a-z0-9-]/g, "-") || "event",
     short: str(e?.short, 12), level: ELEVELS.has(e?.level) ? e.level : "P3", title: str(e?.title, 40),
     trend: TRENDS.has(e?.trend) ? e.trend : "flat",
-    state: str(e?.state, 120), escalate: str(e?.escalate, 120), happened: str(e?.happened, 200),
-    view: str(e?.view, 200), unconfirmed: str(e?.unconfirmed, 160), next: str(e?.next, 160),
+    state: plain(str(e?.state, 120)), escalate: str(e?.escalate, 120), happened: str(e?.happened, 200),
+    view: plain(str(e?.view, 200)), unconfirmed: str(e?.unconfirmed, 160), next: plain(str(e?.next, 160)),
     ids: Array.from(new Set(ids(e?.ids))), sourceIds: Array.from(new Set(ids(e?.sourceIds))).slice(0, 3),
   })).filter((e: BriefEventDraft) => e.title && (e.ids.length > 0 || e.trend === "closed"));
   const others = (raw.others || {}) as Record<string, unknown>;
   return {
     level: LEVELS.has(raw.level as string) ? raw.level as BriefDraft["level"] : "关注",
     change: CHANGES.has(raw.change as string) ? raw.change as BriefDraft["change"] : "持平",
-    lead: str(raw.lead, 120) || "本时段无需负责人决定的事项。",
-    points: (Array.isArray(raw.points) ? raw.points : []).map(p => str(p, 90)).filter(Boolean).slice(0, 3),
+    lead: plain(str(raw.lead, 120)) || "本时段无重大变化。",
+    points: (Array.isArray(raw.points) ? raw.points : []).map(p => plain(str(p, 90))).filter(Boolean).slice(0, 3),
     events,
-    others: { positive: str(others.positive, 200), narrative: str(others.narrative, 200), watch: str(others.watch, 200), funds: str(others.funds, 200) },
-    outlook: str(raw.outlook, 300),
+    others: { positive: str(others.positive, 200), narrative: plain(str(others.narrative, 200)), watch: plain(str(others.watch, 200)), funds: str(others.funds, 200) },
+    outlook: plain(str(raw.outlook, 300)),
   };
 }
 
