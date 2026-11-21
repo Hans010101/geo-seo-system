@@ -17,7 +17,9 @@ Commands:
   collector.py run              one collection run (launchd: 9/11/13/15/17/19/21/3 o'clock)
   collector.py login weibo      open a visible Chrome window and wait for a QR-code login
   collector.py login xiaohongshu
-  collector.py login percent    百分点 Mediaforce (WeChat QR / SMS code, entered by the user)
+  collector.py login percent    百分点 Mediaforce (WeChat QR / SMS code, entered by the user).
+                                The account is shared: a login elsewhere signs this one out, so
+                                it needs logging in again every few days unless it gets its own account.
   collector.py login genoptima  智推时代 GenOptima (SMS code, entered by the user)
   collector.py login-browser    plain Chrome with all login pages (GenOptima's slider rejects automated windows)
   collector.py status           show the last run and the Weibo login state
@@ -507,9 +509,9 @@ def percent_session(page):
     finally:
         page.remove_listener("request", on_request)
     if "/user/login" in page.url:
-        raise NeedsUser("百分点登录已失效，需要运行 collector.py login percent 重新登录")
+        raise NeedsUser("百分点登录已失效，需要重新登录（多半是同一账号在别处登录，把采集器挤下线了）")
     if not captured:
-        raise NeedsUser("百分点舆情页没有发出查询，可能需要重新登录")
+        raise NeedsUser("百分点登录已失效，需要重新登录（多半是同一账号在别处登录，把采集器挤下线了）")
     return json.loads(captured[-1])
 
 
@@ -524,7 +526,7 @@ def percent_query(page, base, start_ms, end_ms, sensitive, offset=0, limit=500):
     if payload.get("code") != 0:
         desc = str(payload.get("desc") or payload.get("msg") or payload.get("code"))[:80]
         if payload.get("code") in (301, 401, 403) or "Token" in desc or "登录" in desc:
-            raise NeedsUser(f"百分点会话失效（{desc}），需要运行 collector.py login percent")
+            raise NeedsUser(f"百分点登录已失效（{desc}），需要重新登录（多半是同一账号在别处登录，把采集器挤下线了）")
         raise RuntimeError(f"百分点查询失败：{desc}")
     return payload.get("data") or {}
 
