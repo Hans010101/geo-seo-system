@@ -189,10 +189,16 @@ export default function CommandCenter() {
           <CardContent>
             {recentArticles.length ? <div className="divide-y">
               {recentArticles.map(article => (
-                <div key={article.id} className="grid gap-1 py-3 first:pt-0 last:pb-0 sm:grid-cols-[minmax(0,1fr)_auto] sm:gap-4">
+                <button
+                  key={article.id}
+                  type="button"
+                  className="grid w-full gap-1 py-3 text-left transition-colors first:pt-0 last:pb-0 hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:grid-cols-[minmax(0,1fr)_auto] sm:gap-4"
+                  onClick={() => setArticleId(article.id)}
+                  title="查看情报详情"
+                >
                   <div className="min-w-0"><p className="truncate text-sm font-medium">{article.title}</p><p className="mt-1 text-xs text-muted-foreground">{article.domain} · {SOURCE_PLATFORM_META[article.sourcePlatform || ""]?.label || article.sourcePlatform || "Web/新闻"}</p></div>
                   <div className="flex items-center gap-2 text-xs"><Badge variant="secondary">{THREAT_META[article.threatLevel || "none"]?.label || "无威胁"}</Badge><span className="text-muted-foreground">{timeAgo(article.publishedAt)}</span></div>
-                </div>
+                </button>
               ))}
             </div> : <Empty icon={FileSearch} text="近 7 天暂无重点情报" />}
           </CardContent>
