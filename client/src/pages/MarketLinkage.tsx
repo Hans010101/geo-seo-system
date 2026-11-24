@@ -357,7 +357,6 @@ export default function MarketLinkage() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold tracking-tight">币价联动</h1>
-        <p className="text-muted-foreground text-sm mt-1">TRON 生态币种走势、相对大盘的超额收益，以及与舆情事件的关系</p>
       </div>
       <Overview />
       <Linkage />

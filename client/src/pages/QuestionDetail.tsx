@@ -136,10 +136,10 @@ export default function QuestionDetail() {
         <h1 className="text-2xl font-bold tracking-tight">回答监测</h1>
         <p className="text-muted-foreground text-sm mt-1">
           {source === "genoptima"
-            ? "智推时代每天采集的国内 6 个平台回答（孙宇晨 10 个主题、TRON 3 个主题，共 65 个问题），情感为服务商判定"
+            ? "智推时代 · 国内 6 个平台 · 每天；情感为服务商判定"
             : source === "topics"
-            ? "按主题并排看智推时代（国内 6 个平台、每天）和自测采集（11 个平台、每周）的回答情绪"
-            : "本系统每周采集的 11 个平台回答（孙宇晨线 + TRON 线），点击卡片查看完整内容与分析"}
+            ? "智推时代（国内 6 个平台、每天）与自测采集（11 个平台、每周）按主题对比"
+            : "自测采集 · 11 个平台 · 每周"}
         </p>
       </div>
       {sourceSwitch}

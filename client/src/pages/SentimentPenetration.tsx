@@ -70,9 +70,6 @@ export default function SentimentPenetration() {
             <Network className="h-6 w-6 text-primary" />
             <h1 className="text-2xl font-bold">信源穿透 · GEO 联动</h1>
           </div>
-          <p className="text-sm text-muted-foreground mt-1">
-            上游舆情信源 × 下游 AI 引用双向关联 —— 哪些舆情源正在被 AI 平台引用、进而影响 AI 对我们的回答
-          </p>
         </div>
         <Link
           href="/sentiment-monitor"

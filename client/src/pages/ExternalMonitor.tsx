@@ -366,7 +366,7 @@ export default function ExternalMonitor() {
       <div>
         <h1 className="text-2xl font-bold tracking-tight">{isPercent ? "百分点数据" : "智推时代数据"}</h1>
         <p className="text-muted-foreground text-sm mt-1">
-          {isPercent ? "百分点 Mediaforce 舆情服务的每日总量快照" : "服务商智推时代的交付情况与监测内容：国内 6 个 AI 平台，孙宇晨 10 个主题 + TRON 3 个主题（每个主题 5 种问法，共 65 个问题），每天约 3 轮"}
+          {isPercent ? "每日总量快照" : "国内 6 个 AI 平台 · 65 个问题（孙宇晨 10 个主题、TRON 3 个主题）· 每天约 3 轮"}
         </p>
       </div>
       {isPercent ? <PercentTab /> : <GeoTab />}

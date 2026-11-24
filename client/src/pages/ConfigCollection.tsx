@@ -303,7 +303,6 @@ export default function ConfigCollection() {
       <GeoSubNav items={GEO_SETUP_NAV} />
       <div>
         <h1 className="text-2xl font-bold tracking-tight">采集任务</h1>
-        <p className="text-muted-foreground text-sm mt-1">手动触发采集任务，查看采集记录和详情</p>
       </div>
 
       {(singleQ.syncError || singleP.syncError || batch.syncError) && (

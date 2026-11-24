@@ -104,7 +104,7 @@ export default function ConfigQuestions() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight">问题库</h1>
           <p className="text-muted-foreground text-sm mt-1">
-            管理GEO监测的问题集，共 {questionsList?.length || 0} 个问题
+            共 {questionsList?.length || 0} 个问题
           </p>
         </div>
         <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>

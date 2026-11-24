@@ -103,7 +103,6 @@ export default function SentimentMonitor() {
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">舆情情报</h1>
-          <p className="text-muted-foreground text-sm mt-1">涉及孙宇晨 / 波场的最新内容，点任一条查看全文、AI 分析与处置。</p>
         </div>
         <div className="flex items-center gap-3 flex-wrap">
           {isDeveloper && (

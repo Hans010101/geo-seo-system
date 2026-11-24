@@ -116,7 +116,7 @@ export default function ConfigOurContent() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight">己方 URL 库</h1>
           <p className="text-muted-foreground text-sm mt-1">
-            管理己方已布局的内容URL，共 {contentList?.length || 0} 条
+            共 {contentList?.length || 0} 条
           </p>
         </div>
         <div className="flex gap-2">

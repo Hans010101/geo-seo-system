@@ -72,7 +72,7 @@ export default function IndustryReports() {
             <h1 className="text-2xl font-bold tracking-tight">行业报告</h1>
           </div>
           <p className="text-muted-foreground text-sm mt-1">
-            行业周报/月报：重大事件、宏观与竞品数据、对 TRON 的影响。周期与舆情、GEO 报告一致；每周五、每月 1 日自动生成上一期。
+            每周五、每月 1 日自动生成上一期
           </p>
           <Link href="/industry" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground mt-1.5">查看实时行业动态 →</Link>
         </div>

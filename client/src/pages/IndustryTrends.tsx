@@ -336,7 +336,6 @@ export default function IndustryTrends() {
     <div className="space-y-4">
       <div>
         <h1 className="text-2xl font-bold tracking-tight">行业动态</h1>
-        <p className="text-sm text-muted-foreground mt-1">加密 / web3 行业快讯、影响加密市场的宏观金融大事，以及 Binance、Solana、Tether、Circle、以太坊等竞品动向。每小时采集，AI 分类、去重并评估与 TRON 的关联。</p>
       </div>
       <Tabs value={tab} onValueChange={v => navigate(v === "news" ? "/industry" : `/industry/${v}`)}>
         <TabsList>

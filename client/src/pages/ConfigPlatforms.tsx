@@ -131,7 +131,7 @@ export default function ConfigPlatforms() {
       <div>
         <h1 className="text-2xl font-bold tracking-tight">平台配置</h1>
         <p className="text-muted-foreground text-sm mt-1">
-          管理AI平台的启用状态、API密钥和采集参数。共 {configuredPlatforms.length} 个平台，已启用 {enabledCount} 个。
+          共 {configuredPlatforms.length} 个平台，已启用 {enabledCount} 个
         </p>
       </div>
 

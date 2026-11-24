@@ -185,10 +185,6 @@ export default function MonitorReports() {
             <ClipboardList className="h-6 w-6 text-primary" />
             <h1 className="text-2xl font-bold">舆情报告</h1>
           </div>
-          <p className="text-sm text-muted-foreground mt-1">
-            舆情监控周报/月报：文章、信源、威胁、GEO
-            穿透与成本汇总（与「周报」页的 AI 平台情感周报相互独立）
-          </p>
           <Link
             href="/sentiment-monitor"
             className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground mt-1.5"

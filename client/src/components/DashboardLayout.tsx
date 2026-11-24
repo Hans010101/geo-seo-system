@@ -246,7 +246,7 @@ function LoginForm() {
             <h1 className="text-2xl font-bold tracking-tight">TRON GEO 系统</h1>
           </div>
           <p className="text-sm text-muted-foreground text-center max-w-sm">
-            生成式引擎优化监测平台 — {loginMode === "email"
+            {loginMode === "email"
               ? "使用邮箱验证码登录"
               : isRegistering ? "注册新账号" : "请登录以访问仪表盘"}
           </p>

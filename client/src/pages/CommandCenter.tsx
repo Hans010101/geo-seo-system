@@ -74,7 +74,6 @@ export default function CommandCenter() {
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">GEO 与舆情工作台</h1>
-          <p className="mt-1 text-sm text-muted-foreground">从情报发现到风险处置，在同一处掌握今天最重要的变化。</p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" asChild><Link href="/report-center">查看报告</Link></Button>
@@ -145,7 +144,6 @@ export default function CommandCenter() {
           <CardHeader className="flex-row items-center justify-between space-y-0">
             <div>
               <CardTitle className="text-base">今日待处置</CardTitle>
-              <p className="mt-1 text-xs text-muted-foreground">按严重度聚合的有效预警</p>
             </div>
             <Button variant="ghost" size="sm" asChild><Link href="/alerts">全部预警 <ArrowRight className="ml-1 h-3.5 w-3.5" /></Link></Button>
           </CardHeader>
@@ -180,7 +178,6 @@ export default function CommandCenter() {
           <CardHeader className="flex-row items-center justify-between space-y-0">
             <div>
               <CardTitle className="text-base">近 30 天舆情分布</CardTitle>
-              <p className="mt-1 text-xs text-muted-foreground">点任一项直达对应列表</p>
             </div>
             <Button variant="ghost" size="sm" asChild><Link href="/sentiment-monitor?range=30d&relevance=all">全部舆情 <ArrowRight className="ml-1 h-3.5 w-3.5" /></Link></Button>
           </CardHeader>
@@ -205,7 +202,7 @@ export default function CommandCenter() {
 
         <Card>
           <CardHeader className="flex-row items-center justify-between space-y-0">
-            <div><CardTitle className="text-base">最新重点情报</CardTitle><p className="mt-1 text-xs text-muted-foreground">仅展示高、中相关且通过时效过滤的信息</p></div>
+            <div><CardTitle className="text-base">最新重点情报</CardTitle></div>
             <Button variant="ghost" size="sm" asChild><Link href="/sentiment-monitor">进入舆情情报 <ArrowRight className="ml-1 h-3.5 w-3.5" /></Link></Button>
           </CardHeader>
           <CardContent>

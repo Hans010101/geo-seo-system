@@ -97,7 +97,6 @@ export default function OperationsCenter() {
             <span className="text-xs text-muted-foreground">每分钟自动刷新</span>
           </div>
           <h1 className="text-2xl font-semibold tracking-tight">运行中心</h1>
-          <p className="mt-1 text-sm text-muted-foreground">查看舆情采集、信源健康、GEO 进度与资源成本；定时监控开关与「立即运行一轮」也在这里。</p>
         </div>
         <Button variant="outline" onClick={() => query.refetch()} disabled={query.isFetching}>
           <Activity className={`mr-2 h-4 w-4 ${query.isFetching ? "animate-spin" : ""}`} />刷新状态

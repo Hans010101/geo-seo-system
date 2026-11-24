@@ -293,7 +293,7 @@ export default function DailyBriefs() {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">早晚报</h1>
-          <p className="text-muted-foreground text-sm mt-1">每日 09:30 早报、17:30 晚报（提前 15 分钟整理数据），由系统汇总舆情、AI 回答与币价后自动生成并发送</p>
+          <p className="text-muted-foreground text-sm mt-1">每日 09:30 早报、17:30 晚报</p>
         </div>
         {list && list.length ? (
           <Select value={id} onValueChange={(v) => navigate(`/briefs/${v}`)}>

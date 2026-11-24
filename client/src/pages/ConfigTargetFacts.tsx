@@ -94,7 +94,7 @@ export default function ConfigTargetFacts() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight">事实与口径</h1>
           <p className="text-muted-foreground text-sm mt-1">
-            我们希望 AI 说到的关键事实，以及各平台实际说到的比例（自测采集；孙宇晨类事实只统计孙宇晨线问题，TRON 类只统计 TRON 线问题）
+            口径：自测采集；孙宇晨类事实只统计孙宇晨线问题，TRON 类只统计 TRON 线问题
           </p>
           <p className="text-sm mt-2">
             {avgRate === null ? <span className="text-muted-foreground">所选时间内暂无自测分析</span> : <>

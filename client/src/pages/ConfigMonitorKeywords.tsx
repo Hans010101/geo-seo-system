@@ -88,7 +88,7 @@ export default function ConfigMonitorKeywords() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight">监控关键词</h1>
           <p className="text-muted-foreground text-sm mt-1">
-            舆情监控每轮会对所有启用的关键词做 Serper 搜索。共 {keywords?.length ?? 0} 个关键词。
+            共 {keywords?.length ?? 0} 个关键词
           </p>
         </div>
         <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>

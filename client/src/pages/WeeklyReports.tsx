@@ -115,9 +115,6 @@ export default function WeeklyReports() {
             <FileBarChart className="h-6 w-6 text-primary" />
             <h1 className="text-2xl font-bold tracking-tight">GEO 报告</h1>
           </div>
-          <p className="text-muted-foreground text-sm mt-1">
-            GEO 监测周报/月报：模型表现、事实覆盖、引用与预警（月报附上月环比）
-          </p>
         </div>
         {canEdit && (
           <div className="flex items-center gap-3 flex-wrap">

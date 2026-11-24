@@ -122,7 +122,7 @@ export default function CitationAnalysis() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">引用源分析</h1>
-          <p className="text-muted-foreground text-sm mt-1">AI 回答引用了哪些来源、己方内容有没有被引用；「国内平台信源」来自智推时代数据</p>
+          <p className="text-muted-foreground text-sm mt-1">口径：「国内平台信源」来自智推时代</p>
         </div>
         <div className="flex items-center gap-2">
         <Select value={timeRange} onValueChange={(v) => setTimeRange(v as TimeRange)}>

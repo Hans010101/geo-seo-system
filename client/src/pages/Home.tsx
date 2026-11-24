@@ -145,7 +145,7 @@ export default function Home() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">GEO 总览</h1>
-          <p className="text-muted-foreground text-sm mt-1">各 AI 平台回答中 TRON 的情感、来源、事实覆盖与己方引用。指标来自自测采集（每周）；国内平台的每日情况来自智推时代</p>
+          <p className="text-muted-foreground text-sm mt-1">口径：指标来自自测采集（每周）；国内平台每日情况来自智推时代</p>
         </div>
         <div className="flex flex-wrap gap-2">
           <Select value={timeRange} onValueChange={(v) => setTimeRange(v as TimeRange)}>
