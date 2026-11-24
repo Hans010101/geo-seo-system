@@ -20,6 +20,7 @@ import { useState } from "react";
 import MonitorArticleDetailSheet from "@/components/MonitorArticleDetailSheet";
 import CollectionDetailSheet from "@/components/CollectionDetailSheet";
 import { buildBriefingText } from "@/lib/commandBriefing";
+import { BRIEF_LIGHT, BRIEF_TREND } from "@/lib/briefMeta";
 import { METRICS, metricTitle } from "@shared/metric-definitions";
 
 const week = () => ({ startTime: Date.now() - 7 * 86_400_000, endTime: Date.now() });
@@ -40,6 +41,8 @@ export default function CommandCenter() {
   const { data: geo, isLoading: geoLoading } = trpc.dashboard.summary.useQuery(weekRange, { staleTime: 30_000 });
   const { data: sentiment, isLoading: sentimentLoading, isError: sentimentError } = trpc.monitor.stats.useQuery(undefined, { staleTime: 30_000 });
   const { data: alerts, isError: alertsError } = trpc.alerts.list.useQuery({ status: "active", limit: 5, offset: 0 }, { staleTime: 15_000 });
+  const { data: briefList } = trpc.briefs.list.useQuery(undefined, { staleTime: 60_000 });
+  const { data: latestBriefData } = trpc.briefs.get.useQuery({ id: briefList?.[0]?.id ?? "" }, { enabled: !!briefList?.[0]?.id, staleTime: 60_000 });
   const { data: articles } = trpc.monitor.listArticles.useQuery({ page: 0, pageSize: 6, focus: true, startTime: weekRange.startTime, sort: "time" });
 
   const activeAlerts = alerts?.data ?? [];
@@ -62,6 +65,9 @@ export default function CommandCenter() {
     activeAlertTotal,
   };
   const briefing = buildBriefingText(briefingInput);
+  const latestBriefMeta = briefList?.[0];
+  const latestBrief = latestBriefData && latestBriefMeta ? latestBriefData : null;
+  const light = BRIEF_LIGHT[latestBrief?.verdict.level ?? ""] ?? BRIEF_LIGHT["关注"];
 
   return (
     <div className="space-y-6">
@@ -76,15 +82,54 @@ export default function CommandCenter() {
         </div>
       </header>
 
-      <section aria-labelledby="briefing-title" className="rounded-xl border bg-card p-5 lg:p-6">
-        <div className="flex items-center gap-2 text-primary">
-          <Radar className="h-4 w-4" />
-          <h2 id="briefing-title" className="text-sm font-semibold">今日简报</h2>
-        </div>
-        <p className="mt-3 text-lg font-medium leading-7">{briefing}</p>
-        <p className="mt-2 text-sm text-muted-foreground">
-          近 24 小时新增舆情 {sentiment?.todayNew ?? "—"} 条；近 7 天 GEO 事实覆盖率 {geo?.targetFactsCoverage ?? "—"}%。
-        </p>
+      <section aria-labelledby="briefing-title" className="overflow-hidden rounded-xl border bg-card">
+        {latestBrief ? (
+          <div className="grid sm:grid-cols-[auto_minmax(0,1fr)]">
+            <div className={`${light.bg} grid place-content-center gap-0.5 px-6 py-4 text-center text-white`}>
+              <b className="text-xl">{light.icon} {latestBrief.verdict.level}</b>
+              <span className="text-xs opacity-90">较上期 {latestBrief.verdict.change}</span>
+            </div>
+            <div className="grid min-w-0 gap-3 p-5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2 text-primary">
+                  <Radar className="h-4 w-4" />
+                  <h2 id="briefing-title" className="text-sm font-semibold">最新研判</h2>
+                  <span className="text-xs font-normal text-muted-foreground">{latestBriefMeta ? `${latestBriefMeta.day.slice(5)} ${latestBriefMeta.kind === "am" ? "早报" : "晚报"} · ${timeAgo(latestBriefMeta.generatedAt)}` : ""}</span>
+                </div>
+                <Button variant="ghost" size="sm" asChild><Link href={`/briefs/${latestBriefMeta?.id ?? ""}`}>看完整{latestBriefMeta?.kind === "am" ? "早报" : "晚报"} <ArrowRight className="ml-1 h-3.5 w-3.5" /></Link></Button>
+              </div>
+              <p className="text-base font-semibold leading-7">{latestBrief.verdict.lead}</p>
+              <ol className="grid list-decimal gap-1 pl-5 text-sm">
+                {latestBrief.verdict.points.map((point, index) => {
+                  const [head, ...rest] = point.split("：");
+                  return <li key={index}>{rest.length ? <><b>{head}：</b>{rest.join("：")}</> : point}</li>;
+                })}
+              </ol>
+              {latestBrief.events.length ? (
+                <div className="flex flex-wrap gap-2 border-t pt-3">
+                  {latestBrief.events.map(event => {
+                    const trend = BRIEF_TREND[event.trend] ?? BRIEF_TREND.flat;
+                    return (
+                      <Link key={event.key} href={`/briefs/${latestBriefMeta?.id ?? ""}`} title={event.title} className="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs transition-colors hover:bg-muted/60">
+                        <span className="font-medium">{event.short}</span>
+                        <span className={trend.cls}>{trend.text}</span>
+                        <span className="tabular-nums text-muted-foreground">{event.count} 条</span>
+                      </Link>
+                    );
+                  })}
+                </div>
+              ) : null}
+            </div>
+          </div>
+        ) : (
+          <div className="p-5 lg:p-6">
+            <div className="flex items-center gap-2 text-primary">
+              <Radar className="h-4 w-4" />
+              <h2 id="briefing-title" className="text-sm font-semibold">今日简报</h2>
+            </div>
+            <p className="mt-3 text-lg font-medium leading-7">{briefing}</p>
+          </div>
+        )}
       </section>
 
       <section aria-label="核心指标" className="grid grid-cols-2 gap-3 lg:grid-cols-5">

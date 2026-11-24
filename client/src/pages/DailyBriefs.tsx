@@ -6,6 +6,7 @@ import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useLocation, useRoute } from "wouter";
 import { toast } from "sonner";
+import { BRIEF_LIGHT, BRIEF_TREND } from "@/lib/briefMeta";
 import type { inferRouterOutputs } from "@trpc/server";
 import type { AppRouter } from "../../../server/routers";
 
@@ -18,15 +19,8 @@ const signed = (v: number | null | undefined) => (v === null || v === undefined 
 const price = (v: number | null | undefined) => (v === null || v === undefined ? "—" : v >= 0.01 ? `$${v.toFixed(4)}` : `$${v.toExponential(3)}`);
 const tone = (v: number | null | undefined) => (v === null || v === undefined ? "" : v >= 0 ? "text-green-600" : "text-red-600");
 
-const LIGHT: Record<string, { icon: string; bg: string }> = {
-  平稳: { icon: "🟢", bg: "bg-green-600" }, 关注: { icon: "🟡", bg: "bg-amber-600" },
-  警戒: { icon: "🟠", bg: "bg-orange-600" }, 危机: { icon: "🔴", bg: "bg-red-700" },
-};
-const TREND: Record<string, { text: string; cls: string }> = {
-  up: { text: "▲ 升温", cls: "text-red-600" }, down: { text: "▼ 缓和", cls: "text-green-600" },
-  flat: { text: "● 持平", cls: "text-muted-foreground" }, new: { text: "◆ 新增", cls: "text-blue-600" },
-  closed: { text: "✓ 结案", cls: "text-muted-foreground" },
-};
+const LIGHT = BRIEF_LIGHT;
+const TREND = BRIEF_TREND;
 const LEVEL_BG: Record<string, string> = { P1: "bg-red-600", P2: "bg-amber-600", P3: "bg-blue-600" };
 const SOURCE_TAG: Record<string, string> = {
   媒体: "border-blue-500 text-blue-600", 公众号: "border-green-600 text-green-700", 网帖: "border-gray-400 text-muted-foreground",
