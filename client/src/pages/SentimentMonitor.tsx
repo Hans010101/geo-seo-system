@@ -34,13 +34,13 @@ export default function SentimentMonitor() {
   const { isAdmin, isDeveloper } = useRole();
   const utils = trpc.useUtils();
   const [page, setPage] = useState(0);
-  // ?range=30d&threat=high&relevance=all deep-links from the 工作台 KPI cards.
+  // ?range=30d&threat=high&relevance=all&source=… deep-links from the 工作台 KPI cards.
   const [threat, setThreat] = useState<string>(() => urlParam("threat", ["high", "medium", "low", "none"]) ?? "all");
   const [stance, setStance] = useState<string>("all");
   const [relevance, setRelevance] = useState<string>(() => urlParam("relevance", ["focus", "all", "high", "medium", "low", "irrelevant"]) ?? "focus");
   const [range, setRange] = useState<string>(() => urlParam("range", ["24h", "3d", "7d", "30d", "100d"]) ?? "100d");
   const [sort, setSort] = useState<string>("time"); // default: 最新发布
-  const [source, setSource] = useState<string>("all");
+  const [source, setSource] = useState<string>(() => urlParam("source", Object.keys(SOURCE_PLATFORM_META)) ?? "all");
   const [detailId, setDetailId] = useState<number | null>(null);
 
   const listInput = useMemo(() => {

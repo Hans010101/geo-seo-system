@@ -1,5 +1,4 @@
 import { Link } from "wouter";
-import { useRole } from "@/hooks/useRole";
 import { trpc } from "@/lib/trpc";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -9,7 +8,6 @@ import {
   Activity,
   AlertTriangle,
   ArrowRight,
-  Bot,
   CheckCircle2,
   FileSearch,
   Link2,
@@ -17,7 +15,6 @@ import {
   ShieldAlert,
   Target,
 } from "lucide-react";
-import { PLATFORM_LABELS, type Platform } from "@shared/geo-types";
 import { SOURCE_PLATFORM_META, THREAT_META } from "@/lib/monitorLabels";
 import { useState } from "react";
 import MonitorArticleDetailSheet from "@/components/MonitorArticleDetailSheet";
@@ -37,7 +34,6 @@ function timeAgo(value?: number | string | null) {
 }
 
 export default function CommandCenter() {
-  const { isDeveloper } = useRole();
   const [articleId, setArticleId] = useState<number | null>(null);
   const [collectionId, setCollectionId] = useState<number | null>(null);
   const [weekRange] = useState(week);
@@ -49,12 +45,16 @@ export default function CommandCenter() {
 
   const activeAlerts = alerts?.data ?? [];
   const recentArticles = articles?.data ?? [];
-  const weakPlatforms = [...(geo?.platformBreakdown ?? [])]
-    .filter(item => item.collectionCount > 0)
-    .sort((a, b) => a.sentimentAvg - b.sentimentAvg)
-    .slice(0, 4);
+  const threatDistribution = sentiment?.threatDistribution ?? {};
+  const threatRows = (["high", "medium", "low", "none"] as const).map(key => ({ key, label: THREAT_META[key].label, color: THREAT_META[key].color, value: threatDistribution[key] ?? 0 }));
+  const threatMax = Math.max(1, ...threatRows.map(row => row.value));
+  const sourceRows = (sentiment?.sourceQuality ?? [])
+    .filter(row => row.focused > 0 && row.sourcePlatform !== "unknown")
+    .sort((a, b) => b.focused - a.focused)
+    .slice(0, 5)
+    .map(row => ({ key: row.sourcePlatform, label: SOURCE_PLATFORM_META[row.sourcePlatform]?.label || row.sourcePlatform, value: row.focused }));
+  const sourceMax = Math.max(1, ...sourceRows.map(row => row.value));
   const worker = cloudflare as any;
-  const currentProfile = worker?.profiles?.monitor_primary_news;
   const workerHealthy = worker?.ok && ["success", "queued", "running"].includes(worker?.taskStatus);
   const activeAlertTotal = alerts?.total ?? 0;
   const briefingInput = {
@@ -163,24 +163,30 @@ export default function CommandCenter() {
         <Card>
           <CardHeader className="flex-row items-center justify-between space-y-0">
             <div>
-              <CardTitle className="text-base">GEO 薄弱平台</CardTitle>
-              <p className="mt-1 text-xs text-muted-foreground">近 7 天按情感均值升序</p>
+              <CardTitle className="text-base">近 30 天舆情分布</CardTitle>
+              <p className="mt-1 text-xs text-muted-foreground">点任一项直达对应列表</p>
             </div>
-            <Button variant="ghost" size="sm" asChild><Link href="/geo">进入 GEO <ArrowRight className="ml-1 h-3.5 w-3.5" /></Link></Button>
+            <Button variant="ghost" size="sm" asChild><Link href="/sentiment-monitor?range=30d&relevance=all">全部舆情 <ArrowRight className="ml-1 h-3.5 w-3.5" /></Link></Button>
           </CardHeader>
-          <CardContent className="space-y-3">
-            {weakPlatforms.length ? weakPlatforms.map(item => (
-              <div key={item.platform} className="grid grid-cols-[minmax(0,1fr)_3rem_5rem] items-center gap-3 text-sm">
-                <span className="truncate font-medium">{PLATFORM_LABELS[item.platform as Platform] || item.platform}</span>
-                <span className="text-right font-semibold tabular-nums">{item.sentimentAvg.toFixed(1)}</span>
-                <div className="h-1.5 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-primary" style={{ width: `${Math.max(4, item.sentimentAvg * 20)}%` }} /></div>
+          <CardContent className="space-y-5">
+            {sentimentLoading ? <Skeleton className="h-40 w-full" /> : sentiment ? <>
+              <div>
+                <p className="mb-1.5 text-xs font-medium text-muted-foreground">威胁等级</p>
+                {threatRows.map(row => (
+                  <DistributionRow key={row.key} href={`/sentiment-monitor?range=30d&threat=${row.key}&relevance=all`} label={row.label} value={row.value} max={threatMax} color={row.color} title={`查看近 30 天${row.label}舆情`} />
+                ))}
               </div>
-            )) : <Empty icon={Bot} text="本周暂无 GEO 采集数据" />}
+              <div>
+                <p className="mb-1.5 text-xs font-medium text-muted-foreground">重点情报主要来源</p>
+                {sourceRows.length ? sourceRows.map(row => (
+                  <DistributionRow key={row.key} href={`/sentiment-monitor?range=30d&source=${row.key}`} label={row.label} value={row.value} max={sourceMax} title={`查看近 30 天来自${row.label}的重点情报`} />
+                )) : <p className="py-2 text-sm text-muted-foreground">近 30 天暂无重点情报</p>}
+              </div>
+            </> : <Empty icon={AlertTriangle} text="舆情统计加载失败" />}
           </CardContent>
         </Card>
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-[1.35fr_.65fr]">
         <Card>
           <CardHeader className="flex-row items-center justify-between space-y-0">
             <div><CardTitle className="text-base">最新重点情报</CardTitle><p className="mt-1 text-xs text-muted-foreground">仅展示高、中相关且通过时效过滤的信息</p></div>
@@ -204,17 +210,6 @@ export default function CommandCenter() {
           </CardContent>
         </Card>
 
-        <Card>
-          <CardHeader><CardTitle className="text-base">运行摘要</CardTitle></CardHeader>
-          <CardContent className="space-y-4 text-sm">
-            <RuntimeRow label="新闻采集" value={currentProfile?.status || "等待状态"} detail={`${currentProfile?.inserted ?? 0} 入库 / ${currentProfile?.analyzed ?? 0} 分析`} />
-            <RuntimeRow label="币安广场" value={worker?.binance?.status || "等待状态"} detail={worker?.binance?.provider || "未报告通道"} />
-            <RuntimeRow label="日常 GEO" value={worker?.dailyGeo?.status || "等待状态"} detail={timeAgo(worker?.dailyGeo?.finishedAt)} />
-            <RuntimeRow label="周度 GEO" value={worker?.weeklyGeo?.status || "等待状态"} detail={timeAgo(worker?.weeklyGeo?.finishedAt)} />
-            {isDeveloper && <Button variant="outline" className="w-full" asChild><Link href="/operations">查看运行中心</Link></Button>}
-          </CardContent>
-        </Card>
-      </div>
 
       <MonitorArticleDetailSheet
         articleId={articleId}
@@ -242,8 +237,8 @@ function StatusLine({ ok, label, value }: { ok: boolean | null; label: string; v
   return <div className="flex items-center justify-between gap-3"><span className="text-muted-foreground">{label}</span><span className="flex items-center gap-1.5 font-medium"><span className={`h-1.5 w-1.5 rounded-full ${dot}`} />{value}</span></div>;
 }
 
-function RuntimeRow({ label, value, detail }: { label: string; value: string; detail: string }) {
-  return <div className="flex items-start justify-between gap-3 border-b pb-3 last:border-0"><div><p className="font-medium">{label}</p><p className="mt-0.5 text-xs text-muted-foreground">{detail}</p></div><Badge variant={value === "success" ? "default" : "secondary"}>{value === "success" ? "正常" : value === "running" ? "运行中" : value === "queued" ? "已排队" : value === "partial" ? "部分完成" : value}</Badge></div>;
+function DistributionRow({ href, label, value, max, color, title }: { href: string; label: string; value: number; max: number; color?: string; title: string }) {
+  return <Link href={href} title={title} className="grid grid-cols-[minmax(0,1fr)_3.5rem_6rem] items-center gap-3 rounded-md px-2 py-1.5 text-sm transition-colors -mx-2 hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><span className="truncate">{label}</span><span className="text-right font-semibold tabular-nums">{value}</span><span className="h-1.5 overflow-hidden rounded-full bg-muted"><span className={`block h-full rounded-full ${color ? "" : "bg-primary"}`} style={{ width: `${value ? Math.max(4, (value / max) * 100) : 0}%`, ...(color ? { backgroundColor: color } : {}) }} /></span></Link>;
 }
 
 function Empty({ icon: Icon, text }: { icon: typeof Activity; text: string }) {
