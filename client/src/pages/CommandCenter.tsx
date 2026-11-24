@@ -117,11 +117,11 @@ export default function CommandCenter() {
       </section>
 
       <section aria-label="核心指标" className="grid grid-cols-2 gap-3 lg:grid-cols-5">
-        <Metric label={metricTitle("highThreat", "days30")} help={METRICS.highThreat.help} value={sentiment?.highThreat} suffix="条" icon={ShieldAlert} loading={sentimentLoading} danger={!!sentiment?.highThreat} />
+        <Metric label={metricTitle("highThreat", "days30")} help={METRICS.highThreat.help} value={sentiment?.highThreat} suffix="条" icon={ShieldAlert} loading={sentimentLoading} danger={!!sentiment?.highThreat} href="/sentiment-monitor?range=30d&threat=high&relevance=all" linkTitle="查看近 30 天高威胁舆情" />
         <Metric label={metricTitle("geoSentiment", "week")} help={METRICS.geoSentiment.help} value={geo?.overallSentimentAvg?.toFixed(1)} suffix="/ 5" icon={Activity} loading={geoLoading} />
         <Metric label={metricTitle("factCoverage", "week")} help={METRICS.factCoverage.help} value={geo?.targetFactsCoverage} suffix="%" icon={Target} loading={geoLoading} />
         <Metric label={metricTitle("ownCitation", "week")} help={METRICS.ownCitation.help} value={geo?.ourContentRate} suffix="%" icon={Link2} loading={geoLoading} />
-        <Metric label={metricTitle("openAlerts", "all")} help={METRICS.openAlerts.help} value={alerts?.total ?? 0} suffix="项" icon={AlertTriangle} loading={!alerts} danger={!!alerts?.total} />
+        <Metric label={metricTitle("openAlerts", "all")} help={METRICS.openAlerts.help} value={alerts?.total ?? 0} suffix="项" icon={AlertTriangle} loading={!alerts} danger={!!alerts?.total} href="/alerts" linkTitle="查看全部待处置预警" />
       </section>
 
       <div className="grid gap-4 xl:grid-cols-[1.15fr_.85fr]">
@@ -230,8 +230,10 @@ export default function CommandCenter() {
   );
 }
 
-function Metric({ label, help, value, suffix, icon: Icon, loading, danger }: { label: string; help?: string; value: string | number | null | undefined; suffix: string; icon: typeof Activity; loading: boolean; danger?: boolean }) {
-  return <div className="rounded-xl border bg-card p-4" title={help}><div className="flex items-center justify-between text-xs text-muted-foreground"><span>{label}</span><Icon className={`h-4 w-4 ${danger ? "text-red-500" : "text-primary"}`} /></div>{loading ? <Skeleton className="mt-4 h-7 w-20" /> : <p className={`mt-3 text-2xl font-semibold tabular-nums ${danger ? "text-red-600" : ""}`}>{value ?? "—"} <span className="text-xs font-normal text-muted-foreground">{suffix}</span></p>}</div>;
+function Metric({ label, help, value, suffix, icon: Icon, loading, danger, href, linkTitle }: { label: string; help?: string; value: string | number | null | undefined; suffix: string; icon: typeof Activity; loading: boolean; danger?: boolean; href?: string; linkTitle?: string }) {
+  const body = <><div className="flex items-center justify-between text-xs text-muted-foreground"><span>{label}</span><Icon className={`h-4 w-4 ${danger ? "text-red-500" : "text-primary"}`} /></div>{loading ? <Skeleton className="mt-4 h-7 w-20" /> : <p className={`mt-3 text-2xl font-semibold tabular-nums ${danger ? "text-red-600" : ""}`}>{value ?? "—"} <span className="text-xs font-normal text-muted-foreground">{suffix}</span>{href && <ArrowRight className="ml-1 inline h-3.5 w-3.5 align-middle text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />}</p>}</>;
+  if (!href) return <div className="rounded-xl border bg-card p-4" title={help}>{body}</div>;
+  return <Link href={href} title={linkTitle ?? help} className="group block rounded-xl border bg-card p-4 transition-colors hover:border-primary/40 hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{body}</Link>;
 }
 
 // ok=null means "not known yet" (still loading) and renders a neutral dot instead of green/amber.

@@ -25,14 +25,20 @@ import { THREAT_META, STANCE_META, RELEVANCE_LABELS, FETCH_ENGINE_LABELS, SOURCE
 
 const PAGE_SIZE = 50;
 
+function urlParam(name: string, allowed: string[]) {
+  const value = typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get(name);
+  return value && allowed.includes(value) ? value : null;
+}
+
 export default function SentimentMonitor() {
   const { isAdmin, isDeveloper } = useRole();
   const utils = trpc.useUtils();
   const [page, setPage] = useState(0);
-  const [threat, setThreat] = useState<string>("all");
+  // ?range=30d&threat=high&relevance=all deep-links from the 工作台 KPI cards.
+  const [threat, setThreat] = useState<string>(() => urlParam("threat", ["high", "medium", "low", "none"]) ?? "all");
   const [stance, setStance] = useState<string>("all");
-  const [relevance, setRelevance] = useState<string>("focus");
-  const [range, setRange] = useState<string>("100d");
+  const [relevance, setRelevance] = useState<string>(() => urlParam("relevance", ["focus", "all", "high", "medium", "low", "irrelevant"]) ?? "focus");
+  const [range, setRange] = useState<string>(() => urlParam("range", ["24h", "3d", "7d", "30d", "100d"]) ?? "100d");
   const [sort, setSort] = useState<string>("time"); // default: 最新发布
   const [source, setSource] = useState<string>("all");
   const [detailId, setDetailId] = useState<number | null>(null);
