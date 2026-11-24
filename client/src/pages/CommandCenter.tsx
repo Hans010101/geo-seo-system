@@ -19,7 +19,7 @@ import { SOURCE_PLATFORM_META, THREAT_META } from "@/lib/monitorLabels";
 import { useState } from "react";
 import MonitorArticleDetailSheet from "@/components/MonitorArticleDetailSheet";
 import CollectionDetailSheet from "@/components/CollectionDetailSheet";
-import { briefingState, buildBriefingText } from "@/lib/commandBriefing";
+import { buildBriefingText } from "@/lib/commandBriefing";
 import { METRICS, metricTitle } from "@shared/metric-definitions";
 
 const week = () => ({ startTime: Date.now() - 7 * 86_400_000, endTime: Date.now() });
@@ -41,7 +41,6 @@ export default function CommandCenter() {
   const { data: sentiment, isLoading: sentimentLoading, isError: sentimentError } = trpc.monitor.stats.useQuery(undefined, { staleTime: 30_000 });
   const { data: alerts, isError: alertsError } = trpc.alerts.list.useQuery({ status: "active", limit: 5, offset: 0 }, { staleTime: 15_000 });
   const { data: articles } = trpc.monitor.listArticles.useQuery({ page: 0, pageSize: 6, focus: true, startTime: weekRange.startTime, sort: "time" });
-  const { data: cloudflare } = trpc.system.cloudflareStatus.useQuery(undefined, { staleTime: 30_000, refetchInterval: 60_000 });
 
   const activeAlerts = alerts?.data ?? [];
   const recentArticles = articles?.data ?? [];
@@ -54,8 +53,6 @@ export default function CommandCenter() {
     .slice(0, 5)
     .map(row => ({ key: row.sourcePlatform, label: SOURCE_PLATFORM_META[row.sourcePlatform]?.label || row.sourcePlatform, value: row.focused }));
   const sourceMax = Math.max(1, ...sourceRows.map(row => row.value));
-  const worker = cloudflare as any;
-  const workerHealthy = worker?.ok && ["success", "queued", "running"].includes(worker?.taskStatus);
   const activeAlertTotal = alerts?.total ?? 0;
   const briefingInput = {
     sentimentLoaded: !!sentiment,
@@ -64,21 +61,12 @@ export default function CommandCenter() {
     highThreat: sentiment?.highThreat ?? 0,
     activeAlertTotal,
   };
-  const riskState = briefingState(briefingInput);
   const briefing = buildBriefingText(briefingInput);
-  const workerKnown = cloudflare !== undefined;
 
   return (
     <div className="space-y-6">
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <div className="mb-2 flex items-center gap-2">
-            <Badge variant="outline" className="gap-1.5 font-normal">
-              <span className={`h-1.5 w-1.5 rounded-full ${!workerKnown ? "bg-muted-foreground" : workerHealthy ? "bg-emerald-500" : "bg-amber-500"}`} />
-              Cloudflare {!workerKnown ? "检查中" : workerHealthy ? "运行正常" : "需关注"}
-            </Badge>
-            <span className="text-xs text-muted-foreground">更新于 {timeAgo(worker?.finishedAt || worker?.fetchedAt)}</span>
-          </div>
           <h1 className="text-2xl font-semibold tracking-tight">GEO 与舆情工作台</h1>
           <p className="mt-1 text-sm text-muted-foreground">从情报发现到风险处置，在同一处掌握今天最重要的变化。</p>
         </div>
@@ -88,32 +76,15 @@ export default function CommandCenter() {
         </div>
       </header>
 
-      <section aria-labelledby="briefing-title" className="overflow-hidden rounded-xl border bg-card">
-        <div className="grid lg:grid-cols-[1.45fr_1fr]">
-          <div className="p-5 lg:p-6">
-            <div className="flex items-center gap-2 text-primary">
-              <Radar className="h-4 w-4" />
-              <h2 id="briefing-title" className="text-sm font-semibold">今日简报</h2>
-            </div>
-            <p className="mt-3 text-lg font-medium leading-7">{briefing}</p>
-            <p className="mt-2 text-sm text-muted-foreground">
-              近 24 小时新增舆情 {sentiment?.todayNew ?? "—"} 条；近 30 天有效情报率 {sentiment?.focusRate ?? "—"}%、正文成功率 {sentiment?.fullTextRate ?? "—"}%；近 7 天 GEO 事实覆盖率 {geo?.targetFactsCoverage ?? "—"}%。
-            </p>
-          </div>
-          <div className="border-t bg-muted/35 p-5 lg:border-l lg:border-t-0 lg:p-6">
-            <p className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">系统判断</p>
-            <div className="mt-3 space-y-2 text-sm">
-              <StatusLine
-                ok={riskState === "ready" ? !sentiment?.highThreat : null}
-                label="舆情风险"
-                value={riskState === "loading" ? "加载中…" : riskState === "error" ? "无法判断" : sentiment?.highThreat ? "存在高威胁信号" : "风险平稳"}
-              />
-              <StatusLine ok={sentiment ? (sentiment.focusRate ?? 0) >= 60 : null} label="情报质量" value={`有效 ${sentiment?.focusRate ?? "—"}% · 正文 ${sentiment?.fullTextRate ?? "—"}%`} />
-              <StatusLine ok={geo ? (geo.targetFactsCoverage ?? 0) >= 80 : null} label="事实一致性" value={`${geo?.targetFactsCoverage ?? "—"}%`} />
-              <StatusLine ok={workerKnown ? !!workerHealthy : null} label="采集主链" value={!workerKnown ? "检查中…" : workerHealthy ? "定时任务持续运行" : "请进入运行中心检查"} />
-            </div>
-          </div>
+      <section aria-labelledby="briefing-title" className="rounded-xl border bg-card p-5 lg:p-6">
+        <div className="flex items-center gap-2 text-primary">
+          <Radar className="h-4 w-4" />
+          <h2 id="briefing-title" className="text-sm font-semibold">今日简报</h2>
         </div>
+        <p className="mt-3 text-lg font-medium leading-7">{briefing}</p>
+        <p className="mt-2 text-sm text-muted-foreground">
+          近 24 小时新增舆情 {sentiment?.todayNew ?? "—"} 条；近 7 天 GEO 事实覆盖率 {geo?.targetFactsCoverage ?? "—"}%。
+        </p>
       </section>
 
       <section aria-label="核心指标" className="grid grid-cols-2 gap-3 lg:grid-cols-5">
@@ -229,12 +200,6 @@ function Metric({ label, help, value, suffix, icon: Icon, loading, danger, href,
   const body = <><div className="flex items-center justify-between text-xs text-muted-foreground"><span>{label}</span><Icon className={`h-4 w-4 ${danger ? "text-red-500" : "text-primary"}`} /></div>{loading ? <Skeleton className="mt-4 h-7 w-20" /> : <p className={`mt-3 text-2xl font-semibold tabular-nums ${danger ? "text-red-600" : ""}`}>{value ?? "—"} <span className="text-xs font-normal text-muted-foreground">{suffix}</span>{href && <ArrowRight className="ml-1 inline h-3.5 w-3.5 align-middle text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />}</p>}</>;
   if (!href) return <div className="rounded-xl border bg-card p-4" title={help}>{body}</div>;
   return <Link href={href} title={linkTitle ?? help} className="group block rounded-xl border bg-card p-4 transition-colors hover:border-primary/40 hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{body}</Link>;
-}
-
-// ok=null means "not known yet" (still loading) and renders a neutral dot instead of green/amber.
-function StatusLine({ ok, label, value }: { ok: boolean | null; label: string; value: string }) {
-  const dot = ok === null ? "bg-muted-foreground/50" : ok ? "bg-emerald-500" : "bg-amber-500";
-  return <div className="flex items-center justify-between gap-3"><span className="text-muted-foreground">{label}</span><span className="flex items-center gap-1.5 font-medium"><span className={`h-1.5 w-1.5 rounded-full ${dot}`} />{value}</span></div>;
 }
 
 function DistributionRow({ href, label, value, max, color, title }: { href: string; label: string; value: number; max: number; color?: string; title: string }) {
