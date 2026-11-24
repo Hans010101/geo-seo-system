@@ -56,18 +56,6 @@ const primaryGroups: NavGroup[] = [
     ],
   },
   {
-    icon: Newspaper, label: "报告中心", tabs: [
-      { label: "早晚报", path: "/briefs", prefixes: ["/briefs/"] },
-      { label: "周月报", path: "/report-center", prefixes: ["/reports", "/sentiment-monitor/reports", "/industry-reports"] },
-    ],
-  },
-  {
-    icon: Globe, label: "行业与币价", tabs: [
-      { label: "行业动态", path: "/industry", prefixes: ["/industry/"] },
-      { label: "币价联动", path: "/market" },
-    ],
-  },
-  {
     // GEO work loop: 看结果 → 看回答 → 看来源 → 管口径 → 看供应商 → 管问题与采集 (11-12).
     // 自测 and 智推时代 data are fused into the views; 智推时代数据 stays separate for supplier evaluation.
     icon: Bot, label: "GEO 洞察", tabs: [
@@ -77,6 +65,18 @@ const primaryGroups: NavGroup[] = [
       { label: "事实与口径", path: "/config/target-facts" },
       { label: "智推时代数据", path: "/external" },
       { label: "问题与采集", path: "/config/questions", prefixes: ["/config/collection"], adminOnly: true },
+    ],
+  },
+  {
+    icon: Newspaper, label: "报告中心", tabs: [
+      { label: "早晚报", path: "/briefs", prefixes: ["/briefs/"] },
+      { label: "周月报", path: "/report-center", prefixes: ["/reports", "/sentiment-monitor/reports", "/industry-reports"] },
+    ],
+  },
+  {
+    icon: Globe, label: "行业与币价", tabs: [
+      { label: "行业动态", path: "/industry", prefixes: ["/industry/"] },
+      { label: "币价联动", path: "/market" },
     ],
   },
 ];
