@@ -43,6 +43,7 @@ import {
   type InsertMonitorReport,
 } from "../drizzle/schema";
 import { MONITOR_RETENTION_DAYS } from "./monitor/util";
+import { hammingHex, simHashBands, SIMHASH_MAX_DISTANCE } from "./monitor/signals";
 
 
 type Database = ReturnType<typeof drizzle>;
@@ -664,6 +665,7 @@ export async function listAlerts(filters?: { severity?: string; isRead?: boolean
       resolvedAt: alerts.resolvedAt,
       resolvedBy: alerts.resolvedBy,
       resolutionNote: alerts.resolutionNote,
+      escalations: alerts.escalations,
       occurrenceCount: sql<number>`CASE WHEN ${alerts.dedupKey} IS NULL THEN 1 ELSE (
         SELECT COUNT(*) FROM alerts a3
         WHERE a3.dedupKey = ${alerts.dedupKey} AND a3.status = ${targetStatus}
@@ -745,6 +747,28 @@ export async function findRecentAlertByDedupKey(dedupKey: string, withinHours = 
     .orderBy(desc(alerts.createdAt))
     .limit(1);
   return rows[0] ?? null;
+}
+
+/** The open negative_article alert for an event, with its severity timeline. */
+export async function getActiveAlertByDedupKey(dedupKey: string) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const rows = await db
+    .select({ id: alerts.id, severity: alerts.severity, title: alerts.title, escalations: alerts.escalations })
+    .from(alerts)
+    .where(and(eq(alerts.dedupKey, dedupKey), eq(alerts.status, "active")))
+    .orderBy(desc(alerts.id))
+    .limit(1);
+  return rows[0];
+}
+
+export async function updateAlertEscalation(id: number, patch: { severity: string; title: string; escalations: unknown[] }) {
+  const db = await getDb();
+  if (!db) return;
+  await db
+    .update(alerts)
+    .set({ severity: patch.severity as any, title: patch.title.slice(0, 256), escalations: patch.escalations, isRead: false })
+    .where(eq(alerts.id, id));
 }
 
 // H3 (2026-06): fetch the most recent prior sentimentScore for the same (questionId, platform)
@@ -1284,7 +1308,9 @@ export async function getMonitorArticleByUrlHash(urlHash: string) {
 export async function getRecentMonitorArticleDuplicate(input: {
   contentHashes: string[];
   title?: string | null;
-}) {
+  /** Also match near-duplicates (simhash within 3 bits) first seen in the last 7 days. */
+  simHash?: string | null;
+}): Promise<{ id: number; url: string; match: "exact" | "similar" } | undefined> {
   const db = await getDb();
   if (!db) return undefined;
   const hashes = Array.from(new Set(input.contentHashes.filter(Boolean)));
@@ -1292,17 +1318,89 @@ export async function getRecentMonitorArticleDuplicate(input: {
   if (hashes.length > 0) duplicateConditions.push(inArray(monitorArticles.contentHash, hashes));
   const title = input.title?.trim();
   if (title) duplicateConditions.push(eq(monitorArticles.title, title.slice(0, 512)));
-  if (duplicateConditions.length === 0) return undefined;
-  const retentionCutoff = Date.now() - MONITOR_RETENTION_DAYS * 86_400_000;
+  if (duplicateConditions.length > 0) {
+    const retentionCutoff = Date.now() - MONITOR_RETENTION_DAYS * 86_400_000;
+    const rows = await db
+      .select({ id: monitorArticles.id, url: monitorArticles.url })
+      .from(monitorArticles)
+      .where(and(
+        gte(monitorArticles.publishedAt, retentionCutoff),
+        or(...duplicateConditions),
+      ))
+      .limit(1);
+    if (rows[0]) return { ...rows[0], match: "exact" };
+  }
+  if (!input.simHash) return undefined;
+  const near = await findSimilarMonitorArticle(input.simHash);
+  return near ? { id: near.id, url: near.url, match: "similar" } : undefined;
+}
+
+/** Nearest article (simhash ≤ SIMHASH_MAX_DISTANCE bits) first seen in the last `days` days. */
+export async function findSimilarMonitorArticle(hex: string, days = 7) {
+  const db = await getDb();
+  if (!db || !/^[0-9a-f]{16}$/.test(hex)) return undefined;
+  const bands = simHashBands(hex);
   const rows = await db
-    .select({ id: monitorArticles.id, url: monitorArticles.url })
+    .select({ id: monitorArticles.id, url: monitorArticles.url, simHash: monitorArticles.simHash })
     .from(monitorArticles)
     .where(and(
-      gte(monitorArticles.publishedAt, retentionCutoff),
-      or(...duplicateConditions),
+      gte(monitorArticles.firstSeenAt, Date.now() - days * 86_400_000),
+      sql`${monitorArticles.simHash} IS NOT NULL`,
+      or(...bands.map((band, i) => sql`substr(${monitorArticles.simHash}, ${i * 4 + 1}, 4) = ${band}`)),
     ))
+    .orderBy(asc(monitorArticles.id))
+    .limit(200);
+  let best: { id: number; url: string; distance: number } | undefined;
+  for (const row of rows) {
+    if (!row.simHash) continue;
+    const distance = hammingHex(hex, row.simHash);
+    if (distance <= SIMHASH_MAX_DISTANCE && (!best || distance < best.distance)) best = { id: row.id, url: row.url, distance };
+  }
+  return best;
+}
+
+/**
+ * Count one more copy (another URL with the same or nearly the same text) against an article and
+ * return its spread fields for alert escalation.
+ */
+export async function foldSimilarIntoMonitorArticle(id: number, copyPlatform: string, at = Date.now()) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const [current] = await db
+    .select({ similarPlatforms: monitorArticles.similarPlatforms })
+    .from(monitorArticles)
+    .where(eq(monitorArticles.id, id))
     .limit(1);
-  return rows[0];
+  if (!current) return undefined;
+  const platforms = Array.isArray(current.similarPlatforms) ? (current.similarPlatforms as string[]) : [];
+  if (copyPlatform && !platforms.includes(copyPlatform)) platforms.push(copyPlatform);
+  const [row] = await db
+    .update(monitorArticles)
+    .set({
+      similarCount: sql`COALESCE(${monitorArticles.similarCount}, 0) + 1`,
+      lastSimilarAt: at,
+      similarPlatforms: platforms.slice(0, 20),
+    })
+    .where(eq(monitorArticles.id, id))
+    .returning({
+      id: monitorArticles.id,
+      url: monitorArticles.url,
+      urlHash: monitorArticles.urlHash,
+      title: monitorArticles.title,
+      domain: monitorArticles.domain,
+      sourcePlatform: monitorArticles.sourcePlatform,
+      threatLevel: monitorArticles.threatLevel,
+      similarCount: monitorArticles.similarCount,
+      similarPlatforms: monitorArticles.similarPlatforms,
+      authorName: monitorArticles.authorName,
+      authorFollowers: monitorArticles.authorFollowers,
+      authorVerified: monitorArticles.authorVerified,
+      likeCount: monitorArticles.likeCount,
+      commentCount: monitorArticles.commentCount,
+      shareCount: monitorArticles.shareCount,
+      viewCount: monitorArticles.viewCount,
+    });
+  return row;
 }
 
 export async function createMonitorArticle(data: InsertMonitorArticle) {
@@ -1375,7 +1473,7 @@ export async function listMonitorArticles(filters?: {
   focus?: boolean; // default view: only high+medium (hide low/irrelevant noise)
   startTime?: number;
   endTime?: number;
-  sort?: "time" | "collected" | "threat" | "sentiment"; // default 'time' = publishedAt DESC (最新发布在上)
+  sort?: "time" | "collected" | "threat" | "sentiment" | "spread"; // default 'time' = publishedAt DESC (最新发布在上)
   limit?: number;
   offset?: number;
 }) {
@@ -1416,6 +1514,15 @@ export async function listMonitorArticles(filters?: {
     analyzedAt: monitorArticles.analyzedAt,
     costUsd: monitorArticles.costUsd,
     archived: monitorArticles.archived,
+    authorName: monitorArticles.authorName,
+    authorFollowers: monitorArticles.authorFollowers,
+    authorVerified: monitorArticles.authorVerified,
+    likeCount: monitorArticles.likeCount,
+    commentCount: monitorArticles.commentCount,
+    shareCount: monitorArticles.shareCount,
+    viewCount: monitorArticles.viewCount,
+    similarCount: monitorArticles.similarCount,
+    similarPlatforms: monitorArticles.similarPlatforms,
     stance: monitorSourceRules.stance,
     authorityLevel: monitorSourceRules.authorityLevel,
   };
@@ -1433,6 +1540,12 @@ export async function listMonitorArticles(filters?: {
         ? [sql`${monitorArticles.sentimentScore} IS NULL`, asc(monitorArticles.sentimentScore), desc(monitorArticles.publishedAt)]
         : filters?.sort === "collected"
           ? [desc(monitorArticles.firstSeenAt)]
+          : filters?.sort === "spread"
+            ? [
+                desc(sql`COALESCE(${monitorArticles.similarCount}, 0)`),
+                desc(sql`COALESCE(${monitorArticles.commentCount}, 0) + COALESCE(${monitorArticles.shareCount}, 0)`),
+                desc(monitorArticles.publishedAt),
+              ]
           : [desc(monitorArticles.publishedAt), desc(monitorArticles.firstSeenAt)];
   const [data, totalResult] = await Promise.all([
     db

@@ -8,6 +8,14 @@ import { SOURCE_PLATFORM_LABELS } from "./sources/registry";
 import { isSharedPlatformDomain, log, normalizeDomain } from "./util";
 import { CITATION_WINDOW_DAYS, getDomainAiCitation, getSourcePenetration, type DomainAiCitation } from "./penetration";
 import { sendEmailAlert, buildAlertEmailHtml } from "./email-alert";
+import {
+  parseEscalations,
+  SEVERITY_LABEL,
+  severityRank,
+  spreadReasons,
+  type AlertEscalation,
+  type SpreadInput,
+} from "./signals";
 
 const CFG = {
   briefingEnabled: "monitor_briefing_enabled",
@@ -63,15 +71,18 @@ const isFlagged = (i: BriefingItem) => (i.sentimentScore ?? 3) <= 2 || i.threatL
 const rank = (i: BriefingItem) =>
   (i.threatLevel === "high" ? 100 : i.threatLevel === "medium" ? 50 : 0) + (i.sentimentScore != null ? (5 - i.sentimentScore) * 5 : 0);
 
-// Severity follows the analysed threat level first; AI amplification or extreme negativity only
-// raises it one step. A medium-threat post can reach "high" but never "critical" on its own.
+// Severity follows the analysed threat level first; AI amplification, spread (similar copies,
+// engagement, an influential author) or extreme negativity only raises it one step. A medium-threat
+// post can reach "high" (严重) but never "critical" (重大) on its own.
 export function negativeAlertSeverity(
   threatLevel: string | null | undefined,
   sentimentScore: number | null | undefined,
   amplified: boolean,
+  spreading = false,
 ): "critical" | "high" | "medium" {
-  if (threatLevel === "high") return amplified || sentimentScore === 1 ? "critical" : "high";
-  if (threatLevel === "medium" && amplified) return "high";
+  const boosted = amplified || spreading;
+  if (threatLevel === "high") return boosted || sentimentScore === 1 ? "critical" : "high";
+  if (threatLevel === "medium" && boosted) return "high";
   return "medium";
 }
 
@@ -189,6 +200,8 @@ export async function dispatchHighThreatAlert(a: {
   sentimentScore: number | null;
   summary: string | null;
   threatLevel?: string | null; // actual threat of THIS article (may be medium now that threshold is configurable)
+  /** Engagement / author / vendor-similar signals of the post (raise severity one step). */
+  spread?: SpreadInput;
 }, options?: {
   deliveryEnabledOverride?: boolean;
   /** Below this severity the alert is recorded in the alert center but not pushed. */
@@ -213,14 +226,20 @@ export async function dispatchHighThreatAlert(a: {
   }
   const amplified = pen.aiPlatforms > 0;
   const threat = a.threatLevel === "high" ? "高" : a.threatLevel === "medium" ? "中" : a.threatLevel === "low" ? "低" : "—";
-  const severity = negativeAlertSeverity(a.threatLevel, a.sentimentScore, amplified);
+  const spread = spreadReasons(a.spread);
+  const severity = negativeAlertSeverity(a.threatLevel, a.sentimentScore, amplified, spread.length > 0);
   const penLine = amplified
     ? `\n🔴 GEO 穿透: ${pen.matchLevel === "url" ? "此帖" : "此信源"}近 ${CITATION_WINDOW_DAYS} 天已被 ${pen.aiPlatforms} 个 AI 平台引用（${pen.platformList.slice(0, 6).join("/")}${pen.platformList.length > 6 ? "…" : ""}，累计 ${pen.citationCount} 次）— 负面正被 AI 放大`
     : "";
   const content =
     `🚨 负面舆情预警\n${a.title.slice(0, 100)}\n` +
     `来源: ${a.domain || "?"}（${stanceLabel}） | 威胁: ${threat}${amplified ? " | ⚠️已入AI引用" : ""}\n` +
-    `${(a.summary || "").slice(0, 300)}${penLine}\n原文: ${a.url}`;
+    `${(a.summary || "").slice(0, 300)}${penLine}${spread.length ? `\n📈 扩散: ${spread.join("，")}` : ""}\n原文: ${a.url}`;
+  const created: AlertEscalation = {
+    at: Date.now(),
+    to: severity,
+    reason: ["创建", amplified ? "已入AI引用" : "", ...spread].filter(Boolean).join("，"),
+  };
   const alertId = await db.createAlert({
     alertType: "negative_article" as any,
     severity: severity as any,
@@ -228,6 +247,7 @@ export async function dispatchHighThreatAlert(a: {
     description: content.slice(0, 1000),
     relatedPlatform: a.domain ? a.domain.slice(0, 32) : null,
     dedupKey,
+    escalations: [created],
   } as any);
 
   if (deliveryEnabled && meetsPushFloor(severity, options?.pushMinSeverity)) {
@@ -250,4 +270,66 @@ export async function dispatchHighThreatAlert(a: {
     log.info(`High-threat alert row created (realtime push disabled) ${a.url}`);
   }
   return { created: true, content };
+}
+
+/**
+ * 预警升级: a negative post kept spreading (another copy folded in, a big account reposted it, …).
+ * Raises its open alert one step at most (一般→严重, 严重→重大), appends the step to the alert's
+ * timeline and pushes the new level like a fresh alert. Never lowers a level; closed alerts stay closed.
+ */
+export async function escalateArticleAlert(a: {
+  url: string;
+  urlHash: string;
+  title: string | null;
+  domain: string | null;
+  threatLevel: string | null;
+  spread: SpreadInput;
+  /** Extra reasons not visible in the article's own fields, e.g. "被 @某大V（粉丝 52万）转载". */
+  extraReasons?: string[];
+}, options?: {
+  deliveryEnabledOverride?: boolean;
+  pushMinSeverity?: "high" | "critical";
+}): Promise<{ escalated: boolean; severity?: string }> {
+  const dedupKey = `negative_article:${a.urlHash}`;
+  const alert = await db.getActiveAlertByDedupKey(dedupKey);
+  if (!alert) return { escalated: false };
+  const reasons = [...spreadReasons(a.spread), ...(a.extraReasons || [])];
+  if (reasons.length === 0) return { escalated: false };
+  const target = negativeAlertSeverity(a.threatLevel, null, false, true);
+  if (severityRank(target) <= severityRank(alert.severity)) return { escalated: false };
+
+  const history = parseEscalations(alert.escalations);
+  const step: AlertEscalation = { at: Date.now(), from: alert.severity, to: target, reason: reasons.join("，") };
+  await db.updateAlertEscalation(alert.id, { severity: target, title: alert.title, escalations: [...history, step].slice(-20) });
+
+  const cfg = await getPushConfig();
+  const deliveryEnabled = options?.deliveryEnabledOverride ?? cfg.realtimeEnabled;
+  const from = SEVERITY_LABEL[alert.severity] || alert.severity;
+  const to = SEVERITY_LABEL[target] || target;
+  if (deliveryEnabled && meetsPushFloor(target, options?.pushMinSeverity)) {
+    const content =
+      `⬆️ 舆情升级 ${from} → ${to}\n${(a.title || "").slice(0, 100)}\n` +
+      `原因: ${step.reason}\n来源: ${a.domain || "?"}\n原文: ${a.url}`;
+    const html = `<p><b>舆情升级 ${from} → ${to}</b></p><p>${escapeHtml(a.title || "")}</p>` +
+      `<p>原因：${escapeHtml(step.reason)}</p><p><a href="${escapeHtml(a.url)}">查看原文</a></p>`;
+    const [telegramResult, emailResult] = await Promise.allSettled([
+      dispatchNotification({
+        messageType: "alert",
+        alertId: alert.id,
+        severity: target,
+        title: `【升级·${to}】负面舆情 - ${a.domain || ""}`,
+        content,
+        dedupKey: `${dedupKey}:esc:${target}`,
+      }),
+      sendEmailAlert(`【舆情升级·${to}】${(a.title || "").slice(0, 50)}`, html),
+    ]);
+    if (telegramResult.status === "rejected") log.warn(`Escalation notify failed: ${telegramResult.reason}`);
+    if (emailResult.status === "rejected") log.warn(`Escalation email failed: ${emailResult.reason}`);
+  }
+  log.info(`Alert ${alert.id} escalated ${alert.severity}→${target}: ${step.reason}`);
+  return { escalated: true, severity: target };
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }

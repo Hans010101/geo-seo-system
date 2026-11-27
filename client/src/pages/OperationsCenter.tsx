@@ -18,7 +18,8 @@ const SOURCE_LABELS: Record<string, string> = {
 };
 const REJECTION_LABELS: Record<string, string> = {
   duplicate_url: "重复链接",
-  duplicate_content: "重复内容",
+  duplicate_content: "重复内容（计入相似转载）",
+  rule_noise: "仅话题标签",
   source_date_unverifiable: "日期不可验证",
   source_date_failed: "日期识别失败",
   freshness_stale: "内容过期",

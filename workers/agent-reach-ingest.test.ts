@@ -145,6 +145,17 @@ describe("Agent-Reach pilot boundary", () => {
     expect(mocks.run.mock.calls[0][0]).toMatchObject({ alertPushMinSeverity: "high" });
     expect(parseReport({ platforms: { percent: { discovered: 3 }, genoptima: { discovered: 0 } } })).toHaveProperty("genoptima");
   });
+  it("keeps validated engagement metrics and drops bad ones", () => {
+    const item = { ...validPost(), channel: "percent", platform: "weibo", url: "https://m.weibo.cn/detail/5369881472009817",
+      title: "孙宇晨 测试", text: "【微博】@蒲欣然r：孙宇晨 这是一条测试内容",
+      metrics: { authorName: "蒲欣然r", authorFollowers: "2.4万", authorVerified: "person", commentCount: 3, likeCount: -5, vendorSimilar: 4, extra: "x" } };
+    expect(parsePost(item)).toMatchObject({
+      author: "蒲欣然r",
+      metrics: { authorName: "蒲欣然r", authorFollowers: 24_000, authorVerified: "person", commentCount: 3, vendorSimilar: 4 },
+    });
+    expect(parsePost(item).metrics).not.toHaveProperty("likeCount");
+    expect(parsePost({ ...item, metrics: "junk" })).not.toHaveProperty("metrics");
+  });
   it("validates GenOptima answer batches and 百分点 daily stats", () => {
     const record = { id: "01a1bdad-ad97-7206-9d9f-5f78289785da", platform: "doubao", question: "波场TRON合规吗？",
       answer: "回答", sentiment: "negative", brandMentioned: null, brandRank: null, intentType: 3,

@@ -8,6 +8,7 @@ import { Bell, CheckCheck, Eye, Check, X, ChevronLeft, ChevronRight, ExternalLin
 import { toast } from "sonner";
 import { SEVERITY_LABELS, SEVERITY_COLORS, PLATFORM_LABELS, type Platform } from "@shared/geo-types";
 import { getAlertSourceUrl } from "@/lib/alertSource";
+import { escalationSteps } from "@/lib/spread";
 export { getAlertSourceUrl } from "@/lib/alertSource";
 
 export default function AlertCenter() {
@@ -187,6 +188,11 @@ export default function AlertCenter() {
                     <p className="text-xs text-muted-foreground/60 mt-2">
                       {new Date(alert.createdAt).toLocaleString("zh-CN")}
                     </p>
+                    {escalationSteps(alert.escalations).map((step) => (
+                      <p key={step.at} className="text-xs text-orange-600 dark:text-orange-400 mt-1">
+                        ⬆ {new Date(step.at).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false })} 升级 {step.text}
+                      </p>
+                    ))}
                     {statusFilter !== "active" && (alert.resolvedAt || alert.resolutionNote) && (
                       <p className="text-xs text-muted-foreground mt-1">
                         {alert.resolvedBy || "系统"} · {alert.resolvedAt ? new Date(alert.resolvedAt).toLocaleString("zh-CN") : ""}

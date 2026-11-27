@@ -7,6 +7,7 @@
 import * as db from "../../db";
 import * as budget from "../budget";
 import { log, keywordMatchesText, fetchWithTimeout } from "../util";
+import { sanitizeMetrics, type PostMetrics } from "../signals";
 import type { SocialSource, DiscoveredPost, SearchOpts } from "./types";
 
 const BASE_DEFAULT = "https://api.twitterapi.io";
@@ -31,7 +32,7 @@ const DEFAULT_MIN_ENGAGEMENT = 2; // mentions only; founder timeline is exempt
 // shared per-cycle analysis budget (validated: 39/50 slots). Cap X's ingest, founder-timeline-first.
 const MAX_KEEP_PER_CYCLE = 52;
 
-type Tw = { url: string; text: string; author: string | null; publishedAt: number | null; own: boolean };
+type Tw = { url: string; text: string; author: string | null; publishedAt: number | null; own: boolean; metrics?: PostMetrics };
 let cache: { at: number; tweets: Tw[]; errors: string[]; failed: boolean } | null = null;
 
 async function getCfg(): Promise<{ apiKey: string | null; base: string; minEng: number }> {
@@ -72,6 +73,16 @@ const toTw = (t: any, own: boolean): Tw => ({
   author: t.author?.userName ? `@${t.author.userName}` : null,
   publishedAt: t.createdAt ? Date.parse(t.createdAt) || null : null,
   own,
+  metrics: sanitizeMetrics({
+    authorName: t.author?.userName ? `@${t.author.userName}` : undefined,
+    authorFollowers: t.author?.followers,
+    // Business / government accounts count as organisations; a paid blue check alone does not.
+    authorVerified: t.author?.verifiedType === "Business" || t.author?.verifiedType === "Government" ? "org" : undefined,
+    likeCount: t.likeCount,
+    commentCount: t.replyCount,
+    shareCount: (t.retweetCount || 0) + (t.quoteCount || 0),
+    viewCount: t.viewCount,
+  }),
 });
 
 async function ensureTweets(opts?: SearchOpts): Promise<Tw[]> {
@@ -146,6 +157,7 @@ export const xSource: SocialSource = {
       fullContent: tw.text,
       author: tw.author,
       publishedAt: tw.publishedAt,
+      metrics: tw.metrics,
       sourceName: "x",
       sourcePlatform: "x",
       fetchEngineHint: "x_api",

@@ -221,6 +221,8 @@ export const alerts = mysqlTable("alerts", {
   resolvedAt: bigint("resolvedAt", { mode: "number" }),
   resolvedBy: varchar("resolvedBy", { length: 320 }),
   resolutionNote: text("resolutionNote"),
+  // Severity timeline for negative_article alerts: [{at, from?, to, reason}] (server/monitor/signals.ts).
+  escalations: json("escalations"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 }, (table) => [
   index("alerts_status_createdAt_idx").on(table.status, table.createdAt),
@@ -434,6 +436,19 @@ export const monitorArticles = mysqlTable(
     threatLevel: mysqlEnum("threatLevel", ["high", "medium", "low", "none"]),
     analysisSummary: text("analysisSummary"),
     analyzedAt: bigint("analyzedAt", { mode: "number" }),
+    // Spread signals (server/monitor/signals.ts; scripts/monitor-signals.sql): who posted it, how far it
+    // went, and how many near-duplicate copies folded into it.
+    authorName: varchar("authorName", { length: 64 }),
+    authorFollowers: int("authorFollowers"),
+    authorVerified: varchar("authorVerified", { length: 8 }), // 'org' | 'person'
+    likeCount: int("likeCount"),
+    commentCount: int("commentCount"),
+    shareCount: int("shareCount"),
+    viewCount: int("viewCount"),
+    simHash: varchar("simHash", { length: 16 }),
+    similarCount: int("similarCount").default(0).notNull(),
+    lastSimilarAt: bigint("lastSimilarAt", { mode: "number" }),
+    similarPlatforms: json("similarPlatforms"), // string[] of platforms the copies came from
     // Cost/token telemetry — mirrors collections.* (H1 pattern)
     promptTokens: int("promptTokens"),
     completionTokens: int("completionTokens"),

@@ -12,6 +12,7 @@ import {
   SENTIMENT_MONITOR_COLORS,
 } from "@/lib/monitorLabels";
 import { PLATFORM_LABELS, PLATFORM_COLORS } from "@shared/geo-types";
+import { formatCount, platformNames } from "@/lib/spread";
 
 const platLabel = (p: string) => (PLATFORM_LABELS as Record<string, string>)[p] || p;
 const platColor = (p: string) => (PLATFORM_COLORS as Record<string, string>)[p] || "#64748b";
@@ -124,6 +125,32 @@ export default function MonitorArticleDetailSheet({
                       </p>
                     </div>
                   )}
+                  {(() => {
+                    const d = detail as any;
+                    const rows: [string, string][] = [];
+                    if (d.authorName) {
+                      rows.push(["作者", [d.authorName, d.authorFollowers != null ? `粉丝 ${formatCount(d.authorFollowers)}` : "", d.authorVerified === "org" ? "机构认证" : d.authorVerified === "person" ? "个人认证" : ""].filter(Boolean).join(" · ")]);
+                    }
+                    const eng = [
+                      d.commentCount != null ? `评论 ${formatCount(d.commentCount)}` : "",
+                      d.shareCount != null ? `转发 ${formatCount(d.shareCount)}` : "",
+                      d.likeCount != null ? `点赞 ${formatCount(d.likeCount)}` : "",
+                      d.viewCount != null ? `播放/阅读 ${formatCount(d.viewCount)}` : "",
+                    ].filter(Boolean);
+                    if (eng.length) rows.push(["互动", eng.join(" · ")]);
+                    if ((d.similarCount ?? 0) > 0) {
+                      const where = platformNames(d.similarPlatforms);
+                      rows.push(["相似转载", `${d.similarCount} 条${where ? `（${where}）` : ""}${d.lastSimilarAt ? ` · 最近 ${new Date(d.lastSimilarAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false })}` : ""}`]);
+                    }
+                    if (rows.length === 0) return null;
+                    return (
+                      <div className="rounded-lg border px-4 py-2.5 space-y-1">
+                        {rows.map(([k, v]) => (
+                          <p key={k} className="text-xs"><span className="text-muted-foreground inline-block w-16">{k}</span>{v}</p>
+                        ))}
+                      </div>
+                    );
+                  })()}
                   {detail.analysisSummary && (
                     <div className="bg-muted/40 rounded-lg px-4 py-3">
                       <p className="text-sm leading-[1.6] whitespace-pre-wrap">{detail.analysisSummary}</p>

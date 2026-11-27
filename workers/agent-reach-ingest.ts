@@ -4,6 +4,7 @@ import { withHyperdriveDatabase } from "../server/db";
 import { runMonitorCycle } from "../server/monitor/pipeline";
 import { normalizeUrl, sha256 } from "../server/monitor/util";
 import type { DiscoveredPost } from "../server/monitor/sources/types";
+import { sanitizeMetrics } from "../server/monitor/signals";
 import type { WorkersAiBinding } from "../server/_core/cloudflare-env";
 import { parseMarketRows } from "../server/market-calc";
 import { storeMarketRows, type D1Like } from "../server/market";
@@ -87,11 +88,13 @@ export function parsePost(value: unknown, now = Date.now()): DiscoveredPost {
   // Local posts (Weibo, Tieba threads, video titles, note titles) are often short; others keep 40.
   const minText = local ? 8 : 40;
   const body = checkPostBody(p, minText, now);
+  const metrics = sanitizeMetrics(p.metrics);
   return {
     url: normalizeUrl(url.href), title: body.title, contentSnippet: body.text,
     publishedAt: body.publishedAt, sourcePlatform: platform,
     sourceName: local ? "local_browser" : "agent_reach",
     fetchEngineHint: local ? "local_browser" : "agent_reach_public", fetchCostUsdHint: 0,
+    ...(metrics ? { metrics, author: metrics.authorName ?? null } : {}),
   };
 }
 
@@ -108,10 +111,12 @@ function checkPostBody(p: Record<string, unknown>, minText: number, now: number)
 function parsePercentPost(p: Record<string, unknown>, url: URL, now: number): DiscoveredPost {
   const body = checkPostBody(p, 8, now);
   const platform = typeof p.platform === "string" && PERCENT_PLATFORMS.has(p.platform) ? p.platform : "web";
+  const metrics = sanitizeMetrics(p.metrics);
   return {
     url: normalizeUrl(url.href), title: body.title, contentSnippet: body.text,
     publishedAt: body.publishedAt, sourcePlatform: platform,
     sourceName: "percent", fetchEngineHint: "percent", fetchCostUsdHint: 0,
+    ...(metrics ? { metrics, author: metrics.authorName ?? null } : {}),
   };
 }
 

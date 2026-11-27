@@ -2,6 +2,8 @@ import * as db from "../server/db";
 import { withHyperdriveDatabase } from "../server/db";
 import { withCloudflareEnv, type CloudflareRuntimeEnv } from "../server/_core/cloudflare-env";
 import { analyzeArticle, shouldStoreMonitorAnalysis } from "../server/monitor/analyzer";
+import { metricsColumns, ruleNoiseReason, simHashHex } from "../server/monitor/signals";
+import { foldCopyIntoArticle } from "../server/monitor/spread";
 import {
   alertThresholdMet,
   dispatchHighThreatAlert,
@@ -2380,15 +2382,21 @@ async function candidate(task: CandidateTask, env: QueueEnv): Promise<void> {
     await settleCandidate(env, task, "content_keyword_mismatch");
     return;
   }
+  if (ruleNoiseReason(title, contentMd)) {
+    await settleCandidate(env, task, "rule_noise");
+    return;
+  }
   const rawContentHash = contentMd ? sha256(contentMd) : "";
   let contentHash = contentMd ? monitorContentHash(contentMd) : "";
-  if (
-    contentMd &&
-    await db.getRecentMonitorArticleDuplicate({
-      contentHashes: [rawContentHash, contentHash],
-      title,
-    })
-  ) {
+  let simHash = contentMd ? simHashHex(contentMd) : null;
+  const knownCopy = contentMd
+    ? await db.getRecentMonitorArticleDuplicate({ contentHashes: [rawContentHash, contentHash], title, simHash })
+    : undefined;
+  if (knownCopy) {
+    // Count the copy as spread of the stored article (may escalate its open alert) instead of dropping it.
+    await foldCopyIntoArticle(knownCopy.id, post, {
+      deliveryEnabledOverride: getCloudflareFeatureFlags(env).realtimeAlerts,
+    });
     await settleCandidate(env, task, "duplicate_content", {
       dedupExisting: true,
     });
@@ -2429,11 +2437,17 @@ async function candidate(task: CandidateTask, env: QueueEnv): Promise<void> {
   if (fetched) {
     contentMd = (fetched.contentMd || "").slice(0, 20_000);
     contentHash = contentMd ? monitorContentHash(contentMd) : "";
+    simHash = contentMd ? simHashHex(contentMd) : null;
     const relevant = detectContentLang(`${title} ${contentMd}`).allowed &&
       monitorArticleMatchesKeywords(task.matchedKeywords, title, contentMd);
-    const duplicate = contentMd && await db.getRecentMonitorArticleDuplicate({
-      contentHashes: [sha256(contentMd), contentHash], title,
-    });
+    const duplicate = contentMd ? await db.getRecentMonitorArticleDuplicate({
+      contentHashes: [sha256(contentMd), contentHash], title, simHash,
+    }) : undefined;
+    if (relevant && duplicate) {
+      await foldCopyIntoArticle(duplicate.id, post, {
+        deliveryEnabledOverride: getCloudflareFeatureFlags(env).realtimeAlerts,
+      });
+    }
     if (!relevant || duplicate) {
       await completeCandidate(env, task, { inserted: false, dedupConflict: Boolean(duplicate), sourcePlatform: post.sourcePlatform });
       return;
@@ -2477,6 +2491,8 @@ async function candidate(task: CandidateTask, env: QueueEnv): Promise<void> {
         title: title || null,
         contentMd: contentMd || null,
         contentHash: contentHash || null,
+        simHash,
+        ...metricsColumns(post.metrics, post.author),
         publishedAt: effectivePublishedAt,
         firstSeenAt: Date.now(),
         fetchEngine,
@@ -2520,6 +2536,7 @@ async function candidate(task: CandidateTask, env: QueueEnv): Promise<void> {
         sentimentScore: analysis.sentimentScore,
         summary: analysis.summary,
         threatLevel: analysis.threatLevel,
+        spread: { ...post.metrics, similarCount: post.metrics?.vendorSimilar ?? 0 },
       }, {
         deliveryEnabledOverride: true,
       });

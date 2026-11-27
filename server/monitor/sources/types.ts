@@ -12,6 +12,8 @@ export type SearchOpts = {
   onFallback?: (reason: string) => void;
 };
 
+import type { PostMetrics } from "../signals";
+
 export interface DiscoveredPost {
   url: string;
   title: string;
@@ -25,6 +27,8 @@ export interface DiscoveredPost {
   // stamp the engine + attributed cost so the pipeline records them instead of the "source_api"/0 default.
   fetchEngineHint?: string;
   fetchCostUsdHint?: number;
+  /** Engagement and author fields when the source reports them (server/monitor/signals.ts). */
+  metrics?: PostMetrics;
 }
 
 export interface SocialSource {

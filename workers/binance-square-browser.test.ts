@@ -36,6 +36,9 @@ describe("parseBinanceSquareResponse", () => {
             content: "孙宇晨发布了关于 TRON 生态的新进展，内容足够长。",
             authorName: "alice",
             date: 1_700_000_000,
+            likeCount: 12,
+            commentCount: "3",
+            viewCount: 4500,
           },
           {
             id: "widget",
@@ -53,6 +56,7 @@ describe("parseBinanceSquareResponse", () => {
       publishedAt: 1_700_000_000_000,
       sourcePlatform: "binance_square",
       fetchEngineHint: "cloudflare_browser",
+      metrics: { authorName: "alice", likeCount: 12, commentCount: 3, viewCount: 4500 },
     });
   });
 

@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import MonitorArticleDetailSheet from "@/components/MonitorArticleDetailSheet";
+import { spreadBits } from "@/lib/spread";
 import { THREAT_META, STANCE_META, RELEVANCE_LABELS, FETCH_ENGINE_LABELS, SOURCE_PLATFORM_META } from "@/lib/monitorLabels";
 
 const PAGE_SIZE = 50;
@@ -143,7 +144,7 @@ export default function SentimentMonitor() {
         <FilterSelect value={source} onChange={(v) => { setSource(v); resetPage(); }} placeholder="来源平台"
           options={[["all", "全部来源"], ["web", "Web/新闻"], ["binance_square", "币安广场"], ["gate_square", "Gate广场"], ["wechat", "微信公众号（历史）"], ["rss", "RSS媒体"], ["telegram", "Telegram"], ["x", "X"], ["xiaohongshu", "小红书"], ["douyin", "抖音"], ["kuaishou", "快手"], ["bilibili", "B站"], ["weibo", "微博"], ["tieba", "百度贴吧"], ["zhihu", "知乎"]]} />
         <FilterSelect value={sort} onChange={(v) => { setSort(v); resetPage(); }} placeholder="排序"
-          options={[["time", "最新发布"], ["collected", "最新入库"], ["threat", "威胁优先"], ["sentiment", "最负面优先"]]} />
+          options={[["time", "最新发布"], ["collected", "最新入库"], ["threat", "威胁优先"], ["sentiment", "最负面优先"], ["spread", "传播优先"]]} />
       </div>
 
       {/* Table */}
@@ -176,8 +177,7 @@ export default function SentimentMonitor() {
                       <td className={`p-2.5 max-w-[340px] ${a.archived ? "opacity-60" : ""}`}>
                         <p className="truncate">{a.title || "(无标题)"}</p>
                         <span className="text-[10px] text-muted-foreground">
-                          {a.relevance ? RELEVANCE_LABELS[a.relevance] : ""}
-                          {a.archived ? (a.relevance ? " · " : "") + "已归档" : ""}
+                          {[a.relevance ? RELEVANCE_LABELS[a.relevance] : "", a.archived ? "已归档" : "", ...spreadBits(a)].filter(Boolean).join(" · ")}
                         </span>
                       </td>
                       <td className="p-2.5">

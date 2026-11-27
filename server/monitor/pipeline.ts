@@ -13,6 +13,8 @@ import {
 } from "./sources/chinese-social-source";
 import { isTrustedDiscoveryPublishedAt, verifySourcePublishedAt } from "./source-date";
 import { dispatchHighThreatAlert, sendBriefing, alertThresholdMet, type BriefingItem } from "./notify";
+import { metricsColumns, ruleNoiseReason, simHashHex } from "./signals";
+import { foldCopyIntoArticle } from "./spread";
 import {
   normalizeUrl,
   sha256,
@@ -53,6 +55,9 @@ export type MonitorCycleResult = {
   fetchCostUsd: number;
   analysisCostUsd: number;
   failed: number;
+  ruleNoise: number; // tag-only posts skipped before analysis (signals.ruleNoiseReason)
+  foldedCopies: number; // posts counted as a copy of an already stored article
+  escalatedAlerts: number; // open alerts raised a level because the post spread
   realtimeAlerts: number; // high-threat alerts created this cycle
   briefingSent: boolean;
   tbs: string;
@@ -199,7 +204,8 @@ export async function runMonitorCycle(opts?: MonitorCycleOptions): Promise<Monit
     analysisPromptTokens: 0, analysisCompletionTokens: 0, analysisNeurons: 0,
     analysisFallbacks: 0, analysisFallbackReasons: [],
     engineDist: {}, sourceDist: {},
-    fetchCostUsd: 0, analysisCostUsd: 0, failed: 0, realtimeAlerts: 0, briefingSent: false,
+    fetchCostUsd: 0, analysisCostUsd: 0, failed: 0,
+    ruleNoise: 0, foldedCopies: 0, escalatedAlerts: 0, realtimeAlerts: 0, briefingSent: false,
     tbs: tbsOverride ?? "auto(d/w)",
   };
   const briefingItems: BriefingItem[] = []; // relevance high/medium, collected for the briefing
@@ -258,16 +264,28 @@ export async function runMonitorCycle(opts?: MonitorCycleOptions): Promise<Monit
           continue;
         }
 
+        const noise = ruleNoiseReason(title, contentMd);
+        if (noise) {
+          stats.ruleNoise++;
+          log.info(`Rule noise (${noise}): skipped ${p.url}`);
+          continue;
+        }
+
         const rawContentHash = contentMd ? sha256(contentMd) : "";
         const contentHash = contentMd ? monitorContentHash(contentMd) : "";
-        if (
-          contentMd &&
-          await db.getRecentMonitorArticleDuplicate({
-            contentHashes: [rawContentHash, contentHash],
-            title,
-          })
-        ) {
-          log.info(`Content dedup: skipped duplicate ${p.url}`);
+        const simHash = contentMd ? simHashHex(contentMd) : null;
+        const duplicate = contentMd
+          ? await db.getRecentMonitorArticleDuplicate({ contentHashes: [rawContentHash, contentHash], title, simHash })
+          : undefined;
+        if (duplicate) {
+          // Same (or nearly the same) text under another URL: count it as spread of the stored article.
+          const fold = await foldCopyIntoArticle(duplicate.id, p, {
+            deliveryEnabledOverride: opts?.suppressNotifications ? false : undefined,
+            pushMinSeverity: opts?.alertPushMinSeverity,
+          });
+          if (fold.folded) stats.foldedCopies++;
+          if (fold.escalated) stats.escalatedAlerts++;
+          log.info(`Content dedup (${duplicate.match}): ${p.url} counted as a copy of #${duplicate.id}`);
           continue;
         }
 
@@ -291,6 +309,8 @@ export async function runMonitorCycle(opts?: MonitorCycleOptions): Promise<Monit
           title: (title || "").slice(0, 512) || null,
           contentMd: contentMd || null,
           contentHash: contentHash || null,
+          simHash,
+          ...metricsColumns(p.metrics, p.author),
           publishedAt: cur.publishedAt,
           firstSeenAt: Date.now(),
           fetchEngine,
@@ -350,6 +370,7 @@ export async function runMonitorCycle(opts?: MonitorCycleOptions): Promise<Monit
                 sentimentScore: analysis.sentimentScore,
                 summary: analysis.summary,
                 threatLevel: analysis.threatLevel,
+                spread: { ...p.metrics, similarCount: p.metrics?.vendorSimilar ?? 0 },
               }, opts?.alertPushMinSeverity ? { pushMinSeverity: opts.alertPushMinSeverity } : undefined);
               if (res.created) stats.realtimeAlerts++;
             } catch (e: any) {

@@ -2859,7 +2859,7 @@ const monitorRouter = router({
           focus: z.boolean().optional(), // default view: high+medium only
           startTime: z.number().optional(),
           endTime: z.number().optional(),
-          sort: z.enum(["time", "collected", "threat", "sentiment"]).optional(), // default time = publishedAt DESC
+          sort: z.enum(["time", "collected", "threat", "sentiment", "spread"]).optional(), // default time = publishedAt DESC; spread = 相似转载+互动
         })
         .optional()
     )

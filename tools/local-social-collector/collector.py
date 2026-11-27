@@ -93,6 +93,20 @@ def strip_html(text):
     return re.sub(r"[ \t ]+", " ", html.unescape(text)).strip()
 
 
+def metrics_of(**fields):
+    """Engagement/author fields for the ingest worker; drops empty values (the worker re-validates)."""
+    out = {k: v for k, v in fields.items() if v not in (None, "", [], {})}
+    return out or None
+
+
+def weibo_verified(user):
+    """Weibo verified_type: 0 = 个人认证 (orange V), 1-7 = 机构 (blue V), 200+ = 达人 (personal)."""
+    if not user.get("verified"):
+        return None
+    vt = user.get("verified_type")
+    return "person" if vt in (0, None) or (isinstance(vt, int) and vt >= 200) else "org"
+
+
 def title_of(text, limit=60):
     first = next((line.strip() for line in text.splitlines() if line.strip()), text.strip())
     return first[:limit] + ("…" if len(first) > limit else "")
@@ -123,12 +137,17 @@ def weibo_posts(payload):
         retweet = mblog.get("retweeted_status") or {}
         if retweet.get("text"):
             text = f"{text}\n//转发：{strip_html(retweet.get('text'))}"
-        user = (mblog.get("user") or {}).get("screen_name") or ""
+        profile = mblog.get("user") or {}
+        user = profile.get("screen_name") or ""
         posts.append({
             "url": f"https://m.weibo.cn/detail/{mblog['id']}",
             "title": title_of(text) or f"{user} 的微博",
             "text": (f"@{user}：" if user else "") + text,
             "publishedAt": weibo_time(mblog.get("created_at")),
+            "metrics": metrics_of(
+                authorName=user, authorFollowers=profile.get("followers_count"), authorVerified=weibo_verified(profile),
+                likeCount=mblog.get("attitudes_count"), commentCount=mblog.get("comments_count"),
+                shareCount=mblog.get("reposts_count")),
         })
     return posts
 
@@ -139,9 +158,10 @@ WEIBO_CARDS_JS = """() => Array.from(document.querySelectorAll('div.card-wrap[mi
   const full = card.querySelector('p.txt[node-type="feed_list_content_full"]');
   const txt = full || card.querySelector('p.txt[node-type="feed_list_content"]') || card.querySelector('p.txt');
   const quoted = card.querySelector('div.card-comment p.txt');
+  const act = Array.from(card.querySelectorAll('div.card-act li')).map(li => li.innerText.replace(/\\s+/g, ' ').trim());
   return { mid: card.getAttribute('mid'), time: from ? from.textContent.trim() : '',
            user: (card.querySelector('a.name') || {}).textContent || '',
-           text: txt ? txt.innerText.trim() : '', quoted: quoted ? quoted.innerText.trim() : '' };
+           text: txt ? txt.innerText.trim() : '', quoted: quoted ? quoted.innerText.trim() : '', act };
 })"""
 
 
@@ -168,6 +188,18 @@ def weibo_display_time(text, now=None):
     return None
 
 
+def weibo_act_counts(act):
+    """Desktop card footer ['转发 12', '评论 3', '赞 1.2万'] → counts; a bare label means 0."""
+    out = {}
+    for label, key in (("转发", "shareCount"), ("评论", "commentCount"), ("赞", "likeCount")):
+        for item in act or []:
+            if label in item:
+                m = re.search(r"(\d+(?:\.\d+)?万?)", item)
+                out[key] = m.group(1) if m else 0
+                break
+    return out
+
+
 def weibo_cards_to_posts(cards, now=None):
     posts, seen = [], set()
     for card in cards:
@@ -185,6 +217,7 @@ def weibo_cards_to_posts(cards, now=None):
             "title": title_of(text) or f"{user} 的微博",
             "text": (f"@{user}：" if user else "") + text,
             "publishedAt": weibo_display_time(card.get("time"), now),
+            "metrics": metrics_of(authorName=user, **weibo_act_counts(card.get("act"))),
         })
     return posts
 
@@ -246,7 +279,7 @@ BILI_VIDEOS_JS = """() => { const found = []; const seen = new Set();
     if (typeof o !== 'object') return;
     if (typeof o.bvid === 'string' && typeof o.pubdate === 'number') {
       if (!seen.has(o.bvid)) { seen.add(o.bvid); found.push({ bvid: o.bvid, pubdate: o.pubdate, title: o.title || '',
-        author: o.author || '', description: o.description || '' }); }
+        author: o.author || '', description: o.description || '', play: o.play, like: o.like, review: o.review }); }
       return; }
     Object.values(o).forEach(x => walk(x, d + 1)); };
   walk(window.__pinia, 0); return found; }"""
@@ -267,6 +300,8 @@ def bili_posts(videos):
             "title": title or f"{author} 的视频",
             "text": (f"UP主 {author}：" if author else "") + title + (f"\n{desc}" if desc else ""),
             "publishedAt": int(video["pubdate"]) * 1000,
+            "metrics": metrics_of(authorName=author, viewCount=video.get("play"), likeCount=video.get("like"),
+                                  commentCount=video.get("review")),
         })
     return posts
 
@@ -331,12 +366,15 @@ def xhs_posts(payloads, now=None):
             title = strip_html(card.get("display_title") or card.get("title"))
             desc = strip_html(card.get("desc"))
             user = ((card.get("user") or {}).get("nickname") or (card.get("user") or {}).get("nick_name") or "").strip()
+            interact = card.get("interact_info") or {}
             posts.append({
                 # No xsec_token: it changes per search and would break URL dedup.
                 "url": f"https://www.xiaohongshu.com/explore/{note_id}",
                 "title": title or title_of(desc) or f"{user} 的笔记",
                 "text": (f"@{user}：" if user else "") + (title or "") + (f"\n{desc}" if desc and desc != title else ""),
                 "publishedAt": xhs_time(corner, now) if corner else (int(card["time"]) if str(card.get("time") or "").isdigit() else None),
+                "metrics": metrics_of(authorName=user, likeCount=interact.get("liked_count"),
+                                      commentCount=interact.get("comment_count"), shareCount=interact.get("shared_count")),
             })
     return posts
 
@@ -380,8 +418,11 @@ XHS_FEEDS_JS = """() => { const s = window.__INITIAL_STATE__ && window.__INITIAL
   const f = s && s.feeds; const arr = f && (f._value || f.value || f._rawValue || f);
   if (!Array.isArray(arr)) return [];
   return arr.map(x => { const n = x.noteCard || x.note_card || {}; const u = n.user || {};
+    const i = n.interactInfo || n.interact_info || {};
     return { id: x.id, note_card: { display_title: n.displayTitle || n.display_title || '', desc: n.desc || '',
       user: { nickname: u.nickname || u.nickName || u.nick_name || '' },
+      interact_info: { liked_count: i.likedCount || i.liked_count || '', comment_count: i.commentCount || i.comment_count || '',
+                       shared_count: i.sharedCount || i.shared_count || '' },
       corner_tag_info: n.cornerTagInfo || n.corner_tag_info || [] } }; }); }"""
 
 
@@ -468,6 +509,16 @@ def percent_platform(item):
     return PERCENT_DOC_TYPES.get(item.get("docType"), "web")
 
 
+def percent_verified(label):
+    """百分点 'verified': 个人认证 → person; 机构/企业/政府/媒体/官方/蓝V → org; 未认证 → None."""
+    label = str(label or "")
+    if "个人" in label or "橙" in label:
+        return "person"
+    if any(word in label for word in ("机构", "企业", "政府", "政务", "媒体", "官方", "蓝")):
+        return "org"
+    return None
+
+
 def percent_posts(items):
     posts, seen = [], set()
     for item in items:
@@ -488,6 +539,10 @@ def percent_posts(items):
         posts.append({
             "url": url, "title": title or f"{author} 的内容", "text": text,
             "publishedAt": int(item["pubTime"]), "platform": percent_platform(item), "label": label or "其他",
+            "metrics": metrics_of(
+                authorName=author, authorFollowers=item.get("fansCount"), authorVerified=percent_verified(item.get("verified")),
+                likeCount=item.get("likeCount"), commentCount=item.get("replyCount"), shareCount=item.get("repostCount"),
+                vendorSimilar=item.get("similarityNumber")),
         })
     return posts
 
@@ -862,6 +917,7 @@ def deliver(cfg, db, platform, posts, stats):
             "channel": platform, "url": post["url"], "title": post["title"][:500], "text": post["text"][:12_000],
             "publishedAt": post["publishedAt"], "access": "public", "completenessVerified": False,
             "collector": "local_browser", **({"platform": post["platform"]} if post.get("platform") else {}),
+            **({"metrics": post["metrics"]} if post.get("metrics") else {}),
         })
         if status == 429:
             stats["capped"] = True

@@ -54,7 +54,7 @@ def test_bilibili_posts():
         {"bvid": "bad", "pubdate": 1, "title": "x"},
     ])
     assert posts == [{"url": "https://www.bilibili.com/video/BV1fnWn6QEh1", "title": "如何评价孙宇晨",
-                      "text": "UP主 某UP：如何评价孙宇晨", "publishedAt": 1794135959000}]
+                      "text": "UP主 某UP：如何评价孙宇晨", "publishedAt": 1794135959000, "metrics": {"authorName": "某UP"}}]
 
 
 def test_xhs_times_and_posts():
@@ -70,7 +70,8 @@ def test_xhs_times_and_posts():
     ]}}
     posts = c.xhs_posts([payload], NOW)
     assert posts == [{"url": "https://www.xiaohongshu.com/explore/6720a1b2000000001b012345", "title": "孙宇晨又上热搜",
-                      "text": "@小红：孙宇晨又上热搜", "publishedAt": ms(NOW - dt.timedelta(minutes=5))}]
+                      "text": "@小红：孙宇晨又上热搜", "publishedAt": ms(NOW - dt.timedelta(minutes=5)),
+                      "metrics": {"authorName": "小红"}}]
     assert c.xhs_guest_flag([{"data": {"guest": False}}]) is False
     assert c.xhs_guest_flag([]) is None
 
@@ -127,6 +128,25 @@ def test_market_rows():
                              "last_updated": "2026-11-01T00:42:10.000Z"}])
     assert snap == [{"symbol": "HYPE", "ts": t0, "price": 74.1, "marketCap": 2.5e10, "volume": 3e8}]
 
+
+
+def test_metrics_from_sources():
+    mblog = {"id": "5369881472009817", "text": "孙宇晨：有人质疑我的财富量级", "created_at": "Fri Nov 27 15:00:00 +0800 2026",
+             "attitudes_count": 75, "comments_count": 14, "reposts_count": 12,
+             "user": {"screen_name": "丰塞卡go特", "followers_count": "2.4万", "verified": True, "verified_type": 3}}
+    post = c.weibo_posts({"ok": 1, "data": {"cards": [{"mblog": mblog}]}})[0]
+    assert post["metrics"] == {"authorName": "丰塞卡go特", "authorFollowers": "2.4万", "authorVerified": "org",
+                               "likeCount": 75, "commentCount": 14, "shareCount": 12}
+    assert c.weibo_act_counts(["收藏", "转发 12", "评论", "赞 1.2万"]) == {"shareCount": "12", "commentCount": 0, "likeCount": "1.2万"}
+    item = {"url": "https://m.weibo.cn/detail/1", "pubTime": 1795763870000, "content": "孙宇晨 测试", "author": "蒲欣然r",
+            "platform": "微博", "fansCount": 11831, "verified": "个人认证", "likeCount": 0, "replyCount": 3,
+            "repostCount": 1, "similarityNumber": 4}
+    assert c.percent_posts([item])[0]["metrics"] == {"authorName": "蒲欣然r", "authorFollowers": 11831, "authorVerified": "person",
+                                                     "likeCount": 0, "commentCount": 3, "shareCount": 1, "vendorSimilar": 4}
+    assert c.percent_verified("机构认证") == "org" and c.percent_verified("未认证") is None
+    video = {"bvid": "BV1bMtP6hE6S", "pubdate": 1787910984, "title": "孙宇晨", "author": "福睿达-Fred", "play": 718971, "like": 9236, "review": 919}
+    assert c.bili_posts([video])[0]["metrics"] == {"authorName": "福睿达-Fred", "viewCount": 718971, "likeCount": 9236, "commentCount": 919}
+    assert c.metrics_of(authorName="", likeCount=None) is None
 
 if __name__ == "__main__":
     for name, fn in list(globals().items()):

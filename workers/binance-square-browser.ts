@@ -1,4 +1,5 @@
 import type { DiscoveredPost } from "../server/monitor/sources/types";
+import { sanitizeMetrics } from "../server/monitor/signals";
 
 const POST_CARD_TYPES = new Set(["BUZZ_SHORT", "BUZZ_LONG"]);
 
@@ -46,6 +47,15 @@ function record(value: unknown): JsonRecord | null {
 
 function text(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
+}
+
+/** First present count among a list of field aliases (Binance renames these between versions). */
+function firstCount(item: JsonRecord, keys: string[]): number | undefined {
+  for (const key of keys) {
+    const v = item[key];
+    if (typeof v === "number" || (typeof v === "string" && v.trim())) return v as any;
+  }
+  return undefined;
 }
 
 function numericTimestamp(value: unknown): number | null {
@@ -108,6 +118,14 @@ export function parseBinanceSquareResponse(payload: unknown): DiscoveredPost[] {
       title: content.replace(/\s+/g, " ").slice(0, 80),
       fullContent: content.slice(0, 20_000),
       author: text(item.authorName) || text(item.username) || null,
+      metrics: sanitizeMetrics({
+        authorName: text(item.authorName) || text(item.username) || undefined,
+        authorFollowers: firstCount(item, ["authorFollowerCount", "followerCount", "fansCount", "authorFansCount"]),
+        likeCount: firstCount(item, ["likeCount", "likes", "likeNum"]),
+        commentCount: firstCount(item, ["commentCount", "comments", "replyCount", "commentNum"]),
+        shareCount: firstCount(item, ["shareCount", "shares", "repostCount", "quoteCount"]),
+        viewCount: firstCount(item, ["viewCount", "views", "readCount", "viewNum"]),
+      }),
       publishedAt: firstNumericTimestamp([
         item.date,
         item.publishTime,
