@@ -1,6 +1,6 @@
 """行业动态 collection for the TRON GEO system (imported by collector.py, runs at every :05 run).
 
-- Feeds: Chinese newsflash RSS (ChainCatcher, TechFlow, Odaily, 吴说), English media (The Block,
+- Feeds: Chinese newsflash RSS (ChainCatcher, TechFlow, Odaily), 吴说's official Telegram channel, English media (The Block,
   Cointelegraph, Decrypt), Binance announcements and Tether's news feed → /industry-news.
   The cron queue de-duplicates and classifies them with an LLM.
 - Macro: hourly Yahoo Finance closes for NASDAQ / S&P 500 / DXY / US10Y / gold → /market-prices.
@@ -26,7 +26,9 @@ FEEDS = (
     ("chaincatcher", "https://www.chaincatcher.com/rss/clist"),
     ("techflow", "https://www.techflowpost.com/rss.aspx"),
     ("odaily", "https://rss.odaily.news/rss/newsflash"),
-    ("wublock", "https://wublock123.com/rss"),
+    # 吴说 closed its RSS on 2026-11-24 ("RSS subscription requires authorization"); its only official
+    # Telegram channel is public, so the preview page t.me/s/… stands in (English posts).
+    ("wublock", "https://t.me/s/wublockchainenglish"),
     ("theblock", "https://www.theblock.co/rss.xml"),
     ("cointelegraph", "https://cointelegraph.com/rss"),
     ("decrypt", "https://decrypt.co/feed"),
@@ -95,6 +97,40 @@ def parse_feed(source, xml):
     return items
 
 
+def _plain(fragment):
+    text = re.sub(r"<[^>]+>", " ", fragment)
+    return re.sub(r"\s+", " ", html.unescape(text)).strip(" —-")
+
+
+def parse_telegram(source, page):
+    """Public channel preview (t.me/s/…) → same items as parse_feed. The first line of a post is its
+    headline; the article link inside the post is preferred over the Telegram permalink."""
+    items = []
+    for block in page.split("tgme_widget_message_wrap")[1:]:
+        body = re.search(r"tgme_widget_message_text[^>]*>(.*?)</div>", block, re.S)
+        link = re.search(r'tgme_widget_message_date"\s+href="(https://t\.me/[^"]+)"', block)
+        when = re.search(r'<time datetime="([^"]+)"', block)
+        if not body or not link or not when:
+            continue
+        text = re.sub(r"\s*—\s*<a [^>]*>.*?</a>\s*$", "", body.group(1), flags=re.S)  # trailing "— <a>link</a>"
+        lines = [line for line in (_plain(part) for part in re.split(r"<br\s*/?>", text)) if line]
+        if not lines:
+            continue
+        title, rest = lines[0], lines[1:]
+        if not rest and len(title) > 160:  # one paragraph: its first sentence is the headline
+            head = re.match(r"(.{20,200}?[.!?。！？])\s", title)
+            if head:
+                title, rest = head.group(1), [title[head.end():]]
+        try:
+            published = datetime.fromisoformat(when.group(1).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        article = re.search(r'href="(https?://(?!t\.me/)[^"]+)"', body.group(1))
+        items.append({"source": source, "url": article.group(1) if article else link.group(1), "title": title[:300],
+                      "excerpt": " ".join(rest)[:600], "publishedAt": int(published.timestamp() * 1000)})
+    return items
+
+
 def binance_items(payload):
     items = []
     for catalog in (payload or {}).get("data", {}).get("catalogs", []):
@@ -120,6 +156,8 @@ def collect_feeds(state, ssl_context):
         try:
             if source == "binance":
                 got = binance_items(fetch_json(url, ssl_context))
+            elif url.startswith("https://t.me/s/"):
+                got = parse_telegram(source, fetch(url, ssl_context).decode("utf-8", "replace"))
             else:
                 got = parse_feed(source, fetch(url, ssl_context).decode("utf-8", "replace"))
             floor = max(now - 3 * DAY_MS, int(marks.get(source) or 0) - 2 * HOUR_MS)

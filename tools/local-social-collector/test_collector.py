@@ -148,13 +148,6 @@ def test_metrics_from_sources():
     assert c.bili_posts([video])[0]["metrics"] == {"authorName": "福睿达-Fred", "viewCount": 718971, "likeCount": 9236, "commentCount": 919}
     assert c.metrics_of(authorName="", likeCount=None) is None
 
-if __name__ == "__main__":
-    for name, fn in list(globals().items()):
-        if name.startswith("test_") and callable(fn):
-            fn()
-    print("ok")
-
-
 def test_industry_feed_parsing():
     import industry
     xml = """<rss><channel><item><title><![CDATA[ Tether 冻结 2100 万枚 USDT ]]></title>
@@ -181,3 +174,27 @@ def test_industry_binance_items():
                                      {"catalogId": 51, "articles": [{"code": "api", "title": "API update", "releaseDate": 1794300000000}]}]}}
     assert industry.binance_items(payload) == [{"source": "binance", "url": "https://www.binance.com/zh-CN/support/announcement/detail/abc",
                                                 "title": "[币安上币] Binance Will List X", "excerpt": "", "publishedAt": 1794300000000}]
+
+
+def test_industry_telegram_parsing():
+    import industry
+    page = """<div class="tgme_widget_message_wrap js-widget_message_wrap"><div class="tgme_widget_message_text js-message_text" dir="auto">
+    WLFI Plunges Over 59% &#036;6.3B<br/><br/>According to Binance market data, WLFI fell. — <a href="https://wublockchain.xyz/news/news-21830" target="_blank">Link</a></div>
+    <a class="tgme_widget_message_date" href="https://t.me/wublockchainenglish/26981"><time datetime="2026-11-28T06:15:43+00:00" class="time">06:15</time></a></div>
+    <div class="tgme_widget_message_wrap js-widget_message_wrap"><div class="tgme_widget_message_text js-message_text" dir="auto">Short note only</div>
+    <a class="tgme_widget_message_date" href="https://t.me/wublockchainenglish/26982"><time datetime="2026-11-28T07:12:16+00:00" class="time">07:12</time></a></div>
+    <div class="tgme_widget_message_wrap js-widget_message_wrap"><div class="tgme_widget_message_photo"></div>
+    <a class="tgme_widget_message_date" href="https://t.me/wublockchainenglish/26983"><time datetime="2026-11-28T07:20:00+00:00"></time></a></div>"""
+    assert industry.parse_telegram("wublock", page) == [
+        {"source": "wublock", "url": "https://wublockchain.xyz/news/news-21830", "title": "WLFI Plunges Over 59% $6.3B",
+         "excerpt": "According to Binance market data, WLFI fell.", "publishedAt": 1795846543000},
+        {"source": "wublock", "url": "https://t.me/wublockchainenglish/26982", "title": "Short note only",
+         "excerpt": "", "publishedAt": 1795849936000},
+    ]
+
+
+if __name__ == "__main__":
+    for name, fn in list(globals().items()):
+        if name.startswith("test_") and callable(fn):
+            fn()
+    print("ok")
